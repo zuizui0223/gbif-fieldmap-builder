@@ -3,24 +3,24 @@ GBIF FieldMap Builder
 
 Interactive field-survey planning app.
 
-Workflow:
+Core workflow:
 1. Load occurrences from GBIF scientific-name search or any coordinate CSV.
-2. Build occurrence-supported candidate survey sites with thinning, DBSCAN, and medoid/centroid selection.
-3. Build SDM directly from loaded occurrences:
-   - occurrence records are used as presence points,
+2. Build occurrence-supported candidate sites with spatial thinning, DBSCAN, and medoid/centroid selection.
+3. Build a lightweight ensemble SDM directly from loaded occurrences:
+   - occurrences are used as presence points,
    - background points are generated automatically,
+   - background and exploration points are always constrained to land only,
    - WorldClim rasters are downloaded from the web,
    - raster resolution is user-selectable: 2.5m, 5m, 10m, 30s,
-   - VIF threshold is user-editable, default 10,
    - environmental variables start empty; users choose them,
    - ensemble algorithms start empty; users choose them,
-   - optional Java MaxEnt is supported by uploading maxent.jar.
+   - VIF threshold is user-editable, default 10.
 4. Suggest occurrence-supported sites and SDM-high / occurrence-low exploration sites.
 5. Export map, candidate CSV, validation template, SDM metrics, VIF table, and SDM training table.
 
-Important:
-- maxent.jar is not bundled for licensing/reproducibility reasons.
-- If Java or maxent.jar is unavailable, the app skips MaxEnt and keeps the other ensemble models.
+MaxEnt note:
+This app intentionally does not run Java MaxEnt/maxent.jar. For strict MaxEnt analyses,
+export the SDM training table and run ENMeval/maxnet or Java MaxEnt externally.
 """
 
 from __future__ import annotations
@@ -28,9 +28,6 @@ from __future__ import annotations
 import math
 import os
 import re
-import shutil
-import subprocess
-import tempfile
 import urllib.parse
 import zipfile
 from dataclasses import dataclass
@@ -47,7 +44,9 @@ from folium import FeatureGroup, LayerControl, Map
 from folium.plugins import MarkerCluster
 from geopy.distance import geodesic
 from rasterio.windows import Window
-from shapely.geometry import MultiPoint, Point
+from shapely.geometry import MultiPoint, Point, shape
+from shapely.ops import unary_union
+from shapely.prepared import prep
 from sklearn.cluster import DBSCAN
 from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
@@ -63,6 +62,7 @@ EARTH_RADIUS_M = 6_371_008.8
 GBIF_SPECIES_MATCH_URL = "https://api.gbif.org/v1/species/match"
 GBIF_OCCURRENCE_SEARCH_URL = "https://api.gbif.org/v1/occurrence/search"
 WC_BASE = "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
+LAND_GEOJSON_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_land.geojson"
 CACHE_DIR = Path(os.environ.get("GBIF_FIELDMAP_CACHE", "/tmp/gbif_fieldmap_builder"))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -77,10 +77,8 @@ LOCALITY_CANDIDATES = ["locality", "municipality", "county", "stateprovince", "l
 
 BIO_VARS = [f"bio{i}" for i in range(1, 20)]
 ENV_VARS = ["elevation", "slope", "roughness"] + BIO_VARS
-DEFAULT_VARS: list[str] = []
 RESOLUTIONS = ["2.5m", "5m", "10m", "30s"]
-ALGORITHMS = ["Logistic regression", "Random forest", "ExtraTrees", "Gradient boosting", "MaxEnt (java maxent.jar)"]
-MAXENT_ALGORITHM = "MaxEnt (java maxent.jar)"
+ALGORITHMS = ["Logistic regression", "Random forest", "ExtraTrees", "Gradient boosting"]
 
 
 @dataclass(frozen=True)
@@ -103,18 +101,6 @@ class GBIFTaxonMatch:
     rank: str = ""
     status: str = ""
     confidence: Optional[int] = None
-
-
-@dataclass
-class JavaMaxEntModel:
-    jar_path: str
-    workdir: str
-    species_name: str
-    variables: list[str]
-
-    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        probs = predict_java_maxent(self, X)
-        return np.vstack([1 - probs, probs]).T
 
 
 def normalize_name(name: str) -> str:
@@ -287,6 +273,23 @@ def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, countr
         if payload.get("endOfRecords") is True:
             break
     return match, gbif_records_to_dataframe(records)
+
+
+@st.cache_resource(show_spinner=False)
+def load_land_geometry():
+    response = requests.get(LAND_GEOJSON_URL, timeout=120)
+    response.raise_for_status()
+    geojson = response.json()
+    geoms = [shape(feature["geometry"]) for feature in geojson.get("features", [])]
+    land = unary_union(geoms)
+    return prep(land)
+
+
+def is_land(lon: float, lat: float, prepared_land) -> bool:
+    try:
+        return bool(prepared_land.contains(Point(float(lon), float(lat))))
+    except Exception:
+        return False
 
 
 def spatial_thin(df: pd.DataFrame, thinning_m: float) -> pd.DataFrame:
@@ -569,19 +572,41 @@ def extract_web_environment(points: pd.DataFrame, variables: list[str], lat_col:
     return out
 
 
-def generate_background_points(occ: pd.DataFrame, n_background: int, expansion_deg: float, random_state: int = 42) -> pd.DataFrame:
+def generate_land_points(occ: pd.DataFrame, n_points: int, expansion_deg: float, random_state: int = 42, status=None) -> pd.DataFrame:
     rng = np.random.default_rng(random_state)
     min_lat, max_lat = occ["_latitude"].min() - expansion_deg, occ["_latitude"].max() + expansion_deg
     min_lon, max_lon = occ["_longitude"].min() - expansion_deg, occ["_longitude"].max() + expansion_deg
-    lat = rng.uniform(max(-90, min_lat), min(90, max_lat), int(n_background))
-    lon = rng.uniform(max(-180, min_lon), min(180, max_lon), int(n_background))
-    return pd.DataFrame({"latitude": lat, "longitude": lon, "presence": 0})
+    min_lat, max_lat = max(-90, min_lat), min(90, max_lat)
+    min_lon, max_lon = max(-180, min_lon), min(180, max_lon)
+    land = load_land_geometry()
+    rows = []
+    attempts = 0
+    max_attempts = max(int(n_points) * 200, 10000)
+    batch_size = max(1000, int(n_points) * 3)
+    while len(rows) < int(n_points) and attempts < max_attempts:
+        lats = rng.uniform(min_lat, max_lat, batch_size)
+        lons = rng.uniform(min_lon, max_lon, batch_size)
+        for lat, lon in zip(lats, lons):
+            attempts += 1
+            if is_land(lon, lat, land):
+                rows.append({"latitude": float(lat), "longitude": float(lon)})
+                if len(rows) >= int(n_points):
+                    break
+        if status is not None:
+            status.write(f"Generating land-only random points: {len(rows):,}/{int(n_points):,}")
+    if len(rows) < int(n_points):
+        raise RuntimeError(
+            f"Could only generate {len(rows)} land points out of {int(n_points)}. "
+            "Try increasing bounding-box expansion or reducing point count."
+        )
+    return pd.DataFrame(rows)
 
 
-def build_presence_background_from_occurrences(occ: pd.DataFrame, n_background: int, expansion_deg: float) -> pd.DataFrame:
+def build_presence_background_from_occurrences(occ: pd.DataFrame, n_background: int, expansion_deg: float, status=None) -> pd.DataFrame:
     pres = occ[["_latitude", "_longitude"]].rename(columns={"_latitude": "latitude", "_longitude": "longitude"}).copy()
     pres["presence"] = 1
-    bg = generate_background_points(occ, n_background, expansion_deg)
+    bg = generate_land_points(occ, n_background, expansion_deg, random_state=42, status=status)
+    bg["presence"] = 0
     return pd.concat([pres, bg], ignore_index=True)
 
 
@@ -639,99 +664,7 @@ def make_model(name: str, random_state: int = 42):
     raise ValueError(f"Unknown algorithm: {name}")
 
 
-def java_available() -> bool:
-    return shutil.which("java") is not None
-
-
-def save_uploaded_maxent_jar(uploaded_jar: Any) -> Optional[str]:
-    if uploaded_jar is None:
-        return None
-    jar_path = CACHE_DIR / "maxent.jar"
-    with open(jar_path, "wb") as f:
-        f.write(uploaded_jar.getbuffer())
-    return str(jar_path)
-
-
-def write_maxent_swd(path: Path, df: pd.DataFrame, variables: list[str], species_name: str) -> None:
-    out = df.copy()
-    if "longitude" not in out.columns or "latitude" not in out.columns:
-        raise ValueError("MaxEnt SWD table requires longitude and latitude columns.")
-    out = out[["longitude", "latitude"] + variables].copy()
-    out.insert(0, "species", species_name)
-    out.to_csv(path, index=False)
-
-
-def parse_maxent_prediction(output_dir: Path, n_rows: int) -> Optional[np.ndarray]:
-    csv_files = list(output_dir.rglob("*.csv"))
-    preferred = [p for p in csv_files if "prediction" in p.name.lower() or "projection" in p.name.lower()]
-    for path in preferred + csv_files:
-        try:
-            df = pd.read_csv(path)
-        except Exception:
-            continue
-        numeric = df.select_dtypes(include=[np.number])
-        for col in numeric.columns:
-            if col.lower() in {"logistic", "cloglog", "prediction", "suitability"} and len(numeric[col]) == n_rows:
-                return np.clip(numeric[col].to_numpy(dtype=float), 0, 1)
-        for col in reversed(list(numeric.columns)):
-            if len(numeric[col]) == n_rows:
-                arr = numeric[col].to_numpy(dtype=float)
-                if np.nanmin(arr) >= 0 and np.nanmax(arr) <= 1:
-                    return arr
-    return None
-
-
-def fit_java_maxent(train_df: pd.DataFrame, variables: list[str], jar_path: Optional[str], species_name: str, status=None) -> tuple[Optional[JavaMaxEntModel], dict[str, Any]]:
-    if not java_available():
-        return None, {"algorithm": MAXENT_ALGORITHM, "test_auc": np.nan, "note": "Java executable was not found."}
-    if jar_path is None or not Path(jar_path).exists():
-        return None, {"algorithm": MAXENT_ALGORITHM, "test_auc": np.nan, "note": "maxent.jar was not uploaded."}
-    workdir = Path(tempfile.mkdtemp(prefix="maxent_", dir=str(CACHE_DIR)))
-    samples_path = workdir / "samples_swd.csv"
-    background_path = workdir / "background_swd.csv"
-    output_dir = workdir / "output"
-    output_dir.mkdir(exist_ok=True)
-    pres = train_df[pd.to_numeric(train_df["presence"], errors="coerce").eq(1)].copy()
-    bg = train_df[pd.to_numeric(train_df["presence"], errors="coerce").eq(0)].copy()
-    if pres.empty or bg.empty:
-        return None, {"algorithm": MAXENT_ALGORITHM, "test_auc": np.nan, "note": "Presence/background rows were missing."}
-    write_maxent_swd(samples_path, pres, variables, species_name)
-    write_maxent_swd(background_path, bg, variables, species_name)
-    cmd = ["java", "-mx1024m", "-jar", jar_path, f"samplesfile={samples_path}", f"environmentallayers={background_path}", f"outputdirectory={output_dir}", "outputformat=logistic", "autorun", "nowarnings", "noaskoverwrite", "nopictures", "responsecurves=false", "jackknife=false"]
-    if status is not None:
-        status.write("Fitting Java MaxEnt from uploaded maxent.jar...")
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        if result.returncode != 0:
-            return None, {"algorithm": MAXENT_ALGORITHM, "test_auc": np.nan, "note": (result.stderr or result.stdout)[-500:]}
-    except Exception as exc:
-        return None, {"algorithm": MAXENT_ALGORITHM, "test_auc": np.nan, "note": str(exc)}
-    model = JavaMaxEntModel(jar_path=jar_path, workdir=str(workdir), species_name=species_name, variables=variables)
-    return model, {"algorithm": MAXENT_ALGORITHM, "test_auc": np.nan, "note": "Fitted; AUC not parsed from MaxEnt output in this lightweight wrapper."}
-
-
-def predict_java_maxent(model: JavaMaxEntModel, X: pd.DataFrame) -> np.ndarray:
-    workdir = Path(model.workdir)
-    projection_path = workdir / "projection_swd.csv"
-    pred_dir = workdir / "projection_output"
-    pred_dir.mkdir(exist_ok=True)
-    proj = X[model.variables].copy()
-    proj.insert(0, "latitude", np.arange(len(proj), dtype=float))
-    proj.insert(0, "longitude", np.arange(len(proj), dtype=float))
-    write_maxent_swd(projection_path, proj, model.variables, model.species_name)
-    cmd = ["java", "-mx1024m", "-jar", model.jar_path, f"samplesfile={workdir / 'samples_swd.csv'}", f"environmentallayers={workdir / 'background_swd.csv'}", f"projectionlayers={projection_path}", f"outputdirectory={pred_dir}", "outputformat=logistic", "autorun", "nowarnings", "noaskoverwrite", "nopictures", "responsecurves=false", "jackknife=false"]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
-        if result.returncode == 0:
-            parsed = parse_maxent_prediction(pred_dir, len(X))
-            if parsed is not None:
-                return parsed
-    except Exception:
-        pass
-    return np.full(len(X), 0.5, dtype=float)
-
-
-def fit_ensemble_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str], test_size: float, maxent_jar_path: Optional[str], species_name: str, status=None, progress=None, start: float = 0.0, span: float = 0.2) -> dict[str, Any]:
+def fit_ensemble_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str], test_size: float, status=None, progress=None, start: float = 0.0, span: float = 0.2) -> dict[str, Any]:
     data = train_df.copy()
     y = pd.to_numeric(data["presence"], errors="coerce")
     mask = y.isin([0, 1])
@@ -750,23 +683,14 @@ def fit_ensemble_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: l
             status.write(f"Fitting {alg} [{i}/{total}]...")
         if progress is not None:
             progress.progress(min(1.0, start + span * (i - 1) / total))
-        if alg == MAXENT_ALGORITHM:
-            train_for_maxent = data[["latitude", "longitude", "presence"] + variables].copy()
-            model, metric = fit_java_maxent(train_for_maxent, variables, maxent_jar_path, species_name=species_name, status=status)
-            if model is not None:
-                models[alg] = model
-            metrics.append(metric)
-            continue
         model = make_model(alg)
         model.fit(X_train, y_train)
         prob = model.predict_proba(X_test)[:, 1]
         auc = roc_auc_score(y_test, prob) if y_test.nunique() == 2 else np.nan
         models[alg] = model
-        metrics.append({"algorithm": alg, "test_auc": round(float(auc), 3) if np.isfinite(auc) else np.nan, "note": ""})
+        metrics.append({"algorithm": alg, "test_auc": round(float(auc), 3) if np.isfinite(auc) else np.nan})
     if progress is not None:
         progress.progress(min(1.0, start + span))
-    if not models:
-        raise ValueError("No SDM algorithms were successfully fitted.")
     return {"models": models, "metrics": pd.DataFrame(metrics), "variables": variables}
 
 
@@ -782,12 +706,7 @@ def predict_ensemble_suitability(table: pd.DataFrame, sdm_result: Optional[dict[
         out["sdm_note"] = f"Missing environmental variables: {', '.join(missing)}"
         return out
     X = out[variables].apply(pd.to_numeric, errors="coerce")
-    preds = []
-    for _, model in sdm_result["models"].items():
-        try:
-            preds.append(model.predict_proba(X)[:, 1])
-        except Exception:
-            continue
+    preds = [model.predict_proba(X)[:, 1] for model in sdm_result["models"].values()]
     out["sdm_suitability"] = np.mean(np.vstack(preds), axis=0).round(3) if preds else np.nan
     out["sdm_note"] = "Ensemble mean suitability from selected algorithms."
     return out
@@ -815,7 +734,7 @@ def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: O
     if not sdm_result or prediction_grid is None or prediction_grid.empty:
         return pd.DataFrame(columns=columns)
     if status is not None:
-        status.write("Predicting SDM suitability across exploration grid...")
+        status.write("Predicting SDM suitability across land-only exploration grid...")
     pred = predict_ensemble_suitability(prediction_grid.copy(), sdm_result).dropna(subset=["sdm_suitability"]).copy()
     if pred.empty:
         return pd.DataFrame(columns=columns)
@@ -841,7 +760,7 @@ def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: O
     for i, (_, group) in enumerate(pred.groupby("exploration_cluster", sort=True), start=0):
         best = group.sort_values("sdm_suitability", ascending=False).iloc[0]
         site_id = start_site_id + i
-        rows.append({"site_id": site_id, "candidate_type": "SDM-high / occurrence-low exploration site", "cluster_id": int(best["exploration_cluster"]), "latitude": float(best["latitude"]), "longitude": float(best["longitude"]), "n_occurrences": 0, "species_summary": "", "year_min": None, "year_max": None, "representative_gbif_id": "", "representative_media_url": "", "representative_locality": "", "candidate_method": "SDM exploration grid maximum", "selection_reason": f"Selected because ensemble SDM suitability is high ({float(best['sdm_suitability']):.3f}) and no known occurrence/candidate exists within {int(min_distance_known_m)} m.", "bias_warning": "New exploration candidate: high SDM suitability but no nearby occurrence evidence. Important for validation/discovery, but field confirmation risk is higher.", "priority_score": round(float(best["sdm_suitability"]), 3), "sdm_suitability": round(float(best["sdm_suitability"]), 3), "distance_to_nearest_known_m": float(best["distance_to_nearest_known_m"])})
+        rows.append({"site_id": site_id, "candidate_type": "SDM-high / occurrence-low exploration site", "cluster_id": int(best["exploration_cluster"]), "latitude": float(best["latitude"]), "longitude": float(best["longitude"]), "n_occurrences": 0, "species_summary": "", "year_min": None, "year_max": None, "representative_gbif_id": "", "representative_media_url": "", "representative_locality": "", "candidate_method": "Land-only SDM exploration grid maximum", "selection_reason": f"Selected from land-only exploration grid because ensemble SDM suitability is high ({float(best['sdm_suitability']):.3f}) and no known occurrence/candidate exists within {int(min_distance_known_m)} m.", "bias_warning": "New exploration candidate: high SDM suitability but no nearby occurrence evidence. Important for validation/discovery, but field confirmation risk is higher.", "priority_score": round(float(best["sdm_suitability"]), 3), "sdm_suitability": round(float(best["sdm_suitability"]), 3), "distance_to_nearest_known_m": float(best["distance_to_nearest_known_m"])})
     out = pd.DataFrame(rows).sort_values("sdm_suitability", ascending=False).head(int(max_candidates)).reset_index(drop=True)
     for col in columns:
         if col not in out.columns:
@@ -1003,19 +922,15 @@ def load_input_controls() -> None:
 
 def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame) -> tuple[pd.DataFrame, Optional[dict[str, Any]], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     st.subheader("Environment variables and ensemble SDM")
-    st.caption("Loaded occurrences are used directly as presences. Background points and exploration grid are generated automatically.")
+    st.caption("Loaded occurrences are used directly as presences. Background points and exploration grid are generated automatically and constrained to land only.")
     with st.expander("SDM settings", expanded=True):
         resolution = st.selectbox("WorldClim raster resolution", RESOLUTIONS, index=0, help="30s is finest but slowest. 2.5m is the default balance for app use.")
         selected_web_vars = st.multiselect("Environmental variables", ENV_VARS, default=[])
         algorithms = st.multiselect("Ensemble algorithms", ALGORITHMS, default=[])
-        maxent_jar = None
-        if MAXENT_ALGORITHM in algorithms:
-            st.info("Java MaxEnt requires a local maxent.jar upload. If Java or the jar is unavailable, MaxEnt will be skipped and the other algorithms will continue.")
-            maxent_jar = st.file_uploader("Upload maxent.jar", type=["jar"], key="maxent_jar")
         vif_threshold = st.number_input("VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0, help="Default = 10. Variables are removed stepwise until all remaining VIF values are below this threshold.")
         use_vif = st.checkbox("Apply VIF stepwise filtering", value=True)
-        n_background = st.number_input("Number of background points", min_value=100, max_value=20000, value=min(5000, max(500, len(occ) * 3)), step=100)
-        pred_n = st.number_input("Prediction/exploration grid random points", min_value=100, max_value=50000, value=3000, step=500)
+        n_background = st.number_input("Number of land-only background points", min_value=100, max_value=20000, value=min(5000, max(500, len(occ) * 3)), step=100)
+        pred_n = st.number_input("Land-only prediction/exploration grid random points", min_value=100, max_value=50000, value=3000, step=500)
         bbox_expansion = st.number_input("Background/grid bounding-box expansion in degrees", min_value=0.0, max_value=5.0, value=0.2, step=0.1)
         test_size = st.slider("Test split proportion", min_value=0.1, max_value=0.5, value=0.25, step=0.05)
     if not selected_web_vars:
@@ -1028,15 +943,14 @@ def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame
     status = st.empty()
     if st.button("Build environment table and run ensemble SDM", type="primary"):
         try:
-            jar_path = save_uploaded_maxent_jar(maxent_jar) if MAXENT_ALGORITHM in algorithms else None
-            status.write("Step 1/7: generating presence/background table...")
+            status.write("Step 1/7: generating land-only presence/background table...")
             progress.progress(0.05)
-            pb = build_presence_background_from_occurrences(occ, int(n_background), float(bbox_expansion))
+            pb = build_presence_background_from_occurrences(occ, int(n_background), float(bbox_expansion), status=status)
             status.write("Step 2/7: downloading/extracting raster values for training data...")
             env_train = extract_web_environment(pb, selected_web_vars, "latitude", "longitude", resolution, status=status, progress=progress, start=0.10, span=0.30)
-            status.write("Step 3/7: generating exploration grid...")
+            status.write("Step 3/7: generating land-only exploration grid...")
             progress.progress(0.42)
-            pred_grid = generate_background_points(occ, int(pred_n), float(bbox_expansion)).drop(columns=["presence"], errors="ignore")
+            pred_grid = generate_land_points(occ, int(pred_n), float(bbox_expansion), random_state=123, status=status)
             status.write("Step 4/7: extracting raster values for exploration grid...")
             pred_grid = extract_web_environment(pred_grid, selected_web_vars, "latitude", "longitude", resolution, status=status, progress=progress, start=0.45, span=0.20)
             status.write(f"Step 5/7: running VIF stepwise filtering; threshold = {vif_threshold}...")
@@ -1046,8 +960,7 @@ def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame
                 kept_vars = selected_web_vars
                 vif_table = compute_vif_table(env_train, selected_web_vars) if len(selected_web_vars) > 1 else pd.DataFrame({"variable": selected_web_vars, "vif": [1.0], "status": ["kept"]})
             status.write("Step 6/7: fitting selected ensemble SDM algorithms...")
-            species_name = str(occ.get("_species", pd.Series(["species"])).dropna().astype(str).iloc[0]) if "_species" in occ.columns and occ["_species"].notna().any() else "species"
-            sdm_result = fit_ensemble_sdm(env_train, kept_vars, algorithms, float(test_size), jar_path, species_name, status=status, progress=progress, start=0.76, span=0.16)
+            sdm_result = fit_ensemble_sdm(env_train, kept_vars, algorithms, float(test_size), status=status, progress=progress, start=0.76, span=0.16)
             st.session_state.sdm_train_table = env_train
             st.session_state.prediction_grid = pred_grid
             st.session_state.sdm_result = sdm_result
@@ -1114,7 +1027,7 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="🗺️", layout="wide")
     init_session_state()
     st.title("🗺️ GBIF FieldMap Builder")
-    st.caption("Survey planning from GBIF/coordinate occurrences, web environmental rasters, ensemble SDM, optional Java MaxEnt, and validation templates.")
+    st.caption("Survey planning from GBIF/coordinate occurrences, land-only SDM sampling, web environmental rasters, lightweight ensemble SDM, and validation templates.")
     st.sidebar.header("Data source")
     load_input_controls()
     st.sidebar.divider()
@@ -1168,7 +1081,7 @@ def main() -> None:
     col2.metric("After thinning", f"{len(occ):,}")
     col3.metric("Occurrence clusters", f"{total_clusters:,}")
     col4.metric("Occurrence candidates", f"{len(occurrence_candidates):,}")
-    col5.metric("SDM exploration", f"{n_explore:,}")
+    col5.metric("Land-only SDM exploration", f"{n_explore:,}")
     col6.metric("Noise points", f"{noise_points:,}")
     if route_url:
         c1, c2 = st.columns(2)
@@ -1192,7 +1105,7 @@ def main() -> None:
     html_bytes = fmap.get_root().render().encode("utf-8")
     candidates_csv = all_candidates.to_csv(index=False).encode("utf-8-sig")
     validation_csv = validation_template.to_csv(index=False).encode("utf-8-sig")
-    sdm_metrics_csv = sdm_result["metrics"].to_csv(index=False).encode("utf-8-sig") if sdm_result else b"algorithm,test_auc,note\n"
+    sdm_metrics_csv = sdm_result["metrics"].to_csv(index=False).encode("utf-8-sig") if sdm_result else b"algorithm,test_auc\n"
     vif_csv = vif_table.to_csv(index=False).encode("utf-8-sig") if vif_table is not None else b"variable,vif,status\n"
     train_csv = env_train.to_csv(index=False).encode("utf-8-sig") if env_train is not None else b""
     dl1, dl2, dl3, dl4, dl5, dl6 = st.columns(6)
