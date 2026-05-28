@@ -3,23 +3,20 @@ GBIF FieldMap Builder
 
 Interactive field-survey planning app.
 
-Workflow:
-1. Load occurrence records from any coordinate CSV or GBIF scientific-name search.
-2. Build occurrence-supported candidate sites by spatial thinning + DBSCAN + medoid/centroid.
-3. Optionally run an ensemble SDM directly from loaded occurrences:
-   - loaded occurrences are used as presence points,
+Main workflow:
+1. Load occurrence records from a coordinate CSV or GBIF scientific-name search.
+2. Build occurrence-supported candidate sites using spatial thinning, DBSCAN, and medoid/centroid selection.
+3. Run an ensemble SDM directly from the loaded occurrences:
+   - occurrences become presence points,
    - background points are generated automatically,
-   - default web environmental variables are elevation, slope, roughness, and bio19,
-   - variables can be selected interactively,
-   - VIF filtering removes strongly collinear variables,
-   - selected algorithms are ensembled.
-4. Propose two candidate types:
-   - occurrence-supported sites: high-confidence recollection/sampling targets,
-   - SDM-high / occurrence-low exploration sites: new survey targets away from known records.
-5. Export HTML map, candidate CSV, field-validation template, SDM metrics, and VIF table.
-
-Web environmental layers use WorldClim 2.1 30 arc-sec downloads. These files can be large;
-Streamlit caches downloaded rasters, and CSV fallback is available if web download is slow.
+   - WorldClim rasters are downloaded from the web,
+   - raster resolution is user-selectable: 30s, 2.5m, 5m, 10m,
+   - default variables are elevation, slope, roughness, and bio19,
+   - VIF threshold is user-editable, default 10,
+   - algorithms are user-selectable,
+   - progress is shown step by step.
+4. Suggest both occurrence-supported sites and SDM-high / occurrence-low exploration sites.
+5. Export map, candidate table, field-validation template, SDM metrics, VIF table, and SDM training table.
 """
 
 from __future__ import annotations
@@ -71,12 +68,12 @@ MEDIA_CANDIDATES = ["mediaurl", "media_url", "imageurl", "image_url", "identifie
 GBIF_ID_CANDIDATES = ["gbifid", "gbif_id", "key", "occurrenceid", "occurrence_id"]
 LOCALITY_CANDIDATES = ["locality", "municipality", "county", "stateprovince", "location", "place", "site", "場所", "地点"]
 PRESENCE_CANDIDATES = ["presence", "pa", "occurrence", "target_species_found", "found", "label"]
-SITE_ID_CANDIDATES = ["site_id", "site", "id", "candidate_id"]
 
 BIO_VARS = [f"bio{i}" for i in range(1, 20)]
-SUGGESTED_ENV_VARS = ["elevation", "slope", "roughness"] + BIO_VARS
-DEFAULT_WEB_VARS = ["elevation", "slope", "roughness", "bio19"]
-DEFAULT_MODEL_VARS = ["elevation", "slope", "roughness", "bio19"]
+ENV_VARS = ["elevation", "slope", "roughness"] + BIO_VARS
+DEFAULT_VARS = ["elevation", "slope", "roughness", "bio19"]
+RESOLUTIONS = ["2.5m", "5m", "10m", "30s"]
+ALGORITHMS = ["Logistic regression", "Random forest", "ExtraTrees", "Gradient boosting"]
 
 
 @dataclass(frozen=True)
@@ -123,10 +120,10 @@ def init_session_state() -> None:
     defaults = {
         "raw_df": None,
         "source_message": "No occurrence data loaded yet.",
-        "source_kind": None,
         "source_key": None,
         "sdm_result": None,
         "sdm_train_table": None,
+        "prediction_grid": None,
         "vif_table": None,
     }
     for key, value in defaults.items():
@@ -135,7 +132,7 @@ def init_session_state() -> None:
 
 
 def clear_loaded_data() -> None:
-    for key in ["raw_df", "source_kind", "source_key", "sdm_result", "sdm_train_table", "vif_table"]:
+    for key in ["raw_df", "source_key", "sdm_result", "sdm_train_table", "prediction_grid", "vif_table"]:
         st.session_state[key] = None
     st.session_state.source_message = "No occurrence data loaded yet."
 
@@ -207,8 +204,6 @@ def read_uploaded_csv(uploaded: Any) -> pd.DataFrame:
 
 
 def match_gbif_taxon(scientific_name: str, timeout_s: int = 30) -> GBIFTaxonMatch:
-    if not scientific_name.strip():
-        raise ValueError("Scientific name is empty.")
     response = requests.get(GBIF_SPECIES_MATCH_URL, params={"name": scientific_name.strip()}, timeout=timeout_s)
     response.raise_for_status()
     payload = response.json()
@@ -380,23 +375,6 @@ def add_priority_rank(sites: pd.DataFrame) -> pd.DataFrame:
     return out.merge(rank[["site_id", "priority_rank"]], on="site_id", how="left")
 
 
-def nearest_neighbor_order(sites: pd.DataFrame) -> pd.DataFrame:
-    if sites.empty:
-        return sites.copy()
-    remaining = sites.copy().reset_index(drop=True)
-    start_idx = remaining["longitude"].idxmin()
-    route_rows = [remaining.loc[start_idx]]
-    remaining = remaining.drop(index=start_idx).reset_index(drop=True)
-    while not remaining.empty:
-        current = route_rows[-1]
-        current_xy = (float(current["latitude"]), float(current["longitude"]))
-        distances = remaining.apply(lambda row: geodesic(current_xy, (float(row["latitude"]), float(row["longitude"]))).km, axis=1)
-        next_idx = distances.idxmin()
-        route_rows.append(remaining.loc[next_idx])
-        remaining = remaining.drop(index=next_idx).reset_index(drop=True)
-    return pd.DataFrame(route_rows)
-
-
 def order_sites(sites: pd.DataFrame, mode: str) -> pd.DataFrame:
     if sites.empty:
         out = sites.copy()
@@ -424,23 +402,25 @@ def order_sites(sites: pd.DataFrame, mode: str) -> pd.DataFrame:
     return ordered
 
 
+def nearest_neighbor_order(sites: pd.DataFrame) -> pd.DataFrame:
+    if sites.empty:
+        return sites.copy()
+    remaining = sites.copy().reset_index(drop=True)
+    start_idx = remaining["longitude"].idxmin()
+    route_rows = [remaining.loc[start_idx]]
+    remaining = remaining.drop(index=start_idx).reset_index(drop=True)
+    while not remaining.empty:
+        current = route_rows[-1]
+        current_xy = (float(current["latitude"]), float(current["longitude"]))
+        distances = remaining.apply(lambda row: geodesic(current_xy, (float(row["latitude"]), float(row["longitude"]))).km, axis=1)
+        next_idx = distances.idxmin()
+        route_rows.append(remaining.loc[next_idx])
+        remaining = remaining.drop(index=next_idx).reset_index(drop=True)
+    return pd.DataFrame(route_rows)
+
+
 def make_google_maps_point_url(latitude: float, longitude: float) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={latitude:.6f}%2C{longitude:.6f}"
-
-
-def make_google_maps_route_url(sites: pd.DataFrame, travelmode: str = "driving", max_waypoints: int = 8) -> str:
-    if sites.empty:
-        return ""
-    ordered = sites.sort_values("route_order") if "route_order" in sites.columns else sites.copy()
-    coords = [(float(row["latitude"]), float(row["longitude"])) for _, row in ordered.iterrows()]
-    if len(coords) == 1:
-        return make_google_maps_point_url(coords[0][0], coords[0][1])
-    params = {"api": "1", "origin": f"{coords[0][0]:.6f},{coords[0][1]:.6f}", "destination": f"{coords[-1][0]:.6f},{coords[-1][1]:.6f}", "travelmode": travelmode}
-    if travelmode != "transit":
-        waypoints = coords[1:-1][:max_waypoints]
-        if waypoints:
-            params["waypoints"] = "|".join(f"{lat:.6f},{lon:.6f}" for lat, lon in waypoints)
-    return "https://www.google.com/maps/dir/?" + urllib.parse.urlencode(params, safe=",|")
 
 
 def add_navigation_columns(sites: pd.DataFrame) -> pd.DataFrame:
@@ -463,11 +443,26 @@ def add_navigation_columns(sites: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def make_google_maps_route_url(sites: pd.DataFrame, travelmode: str = "driving", max_waypoints: int = 8) -> str:
+    if sites.empty:
+        return ""
+    ordered = sites.sort_values("route_order") if "route_order" in sites.columns else sites.copy()
+    coords = [(float(row["latitude"]), float(row["longitude"])) for _, row in ordered.iterrows()]
+    if len(coords) == 1:
+        return make_google_maps_point_url(coords[0][0], coords[0][1])
+    params = {"api": "1", "origin": f"{coords[0][0]:.6f},{coords[0][1]:.6f}", "destination": f"{coords[-1][0]:.6f},{coords[-1][1]:.6f}", "travelmode": travelmode}
+    if travelmode != "transit":
+        waypoints = coords[1:-1][:max_waypoints]
+        if waypoints:
+            params["waypoints"] = "|".join(f"{lat:.6f},{lon:.6f}" for lat, lon in waypoints)
+    return "https://www.google.com/maps/dir/?" + urllib.parse.urlencode(params, safe=",|")
+
+
 def download_file(url: str, dest: Path) -> Path:
     if dest.exists() and dest.stat().st_size > 0:
         return dest
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    with requests.get(url, stream=True, timeout=120) as response:
+    with requests.get(url, stream=True, timeout=180) as response:
         response.raise_for_status()
         with open(tmp, "wb") as f:
             for chunk in response.iter_content(chunk_size=1024 * 1024):
@@ -478,15 +473,16 @@ def download_file(url: str, dest: Path) -> Path:
 
 
 @st.cache_data(show_spinner=False)
-def get_worldclim_raster_path(var: str) -> str:
+def get_worldclim_raster_path(var: str, resolution: str) -> str:
     var = var.lower()
+    resolution = resolution.lower()
     if var in {"elevation", "slope", "roughness"}:
-        zip_name = "wc2.1_30s_elev.zip"
-        tif_name = "wc2.1_30s_elev.tif"
+        zip_name = f"wc2.1_{resolution}_elev.zip"
+        tif_name = f"wc2.1_{resolution}_elev.tif"
     elif var.startswith("bio"):
         n = int(var.replace("bio", ""))
-        zip_name = "wc2.1_30s_bio.zip"
-        tif_name = f"wc2.1_30s_bio_{n}.tif"
+        zip_name = f"wc2.1_{resolution}_bio.zip"
+        tif_name = f"wc2.1_{resolution}_bio_{n}.tif"
     else:
         raise ValueError(f"Unsupported web variable: {var}")
     zip_path = CACHE_DIR / zip_name
@@ -497,21 +493,11 @@ def get_worldclim_raster_path(var: str) -> str:
     extract_dir.mkdir(parents=True, exist_ok=True)
     download_file(f"{WC_BASE}/{zip_name}", zip_path)
     with zipfile.ZipFile(zip_path, "r") as zf:
-        members = [m for m in zf.namelist() if m.endswith(tif_name)]
-        if not members:
-            zf.extractall(extract_dir)
-        else:
-            zf.extract(members[0], extract_dir)
-            extracted = extract_dir / members[0]
-            if extracted != raster_path:
-                raster_path.parent.mkdir(parents=True, exist_ok=True)
-                extracted.replace(raster_path)
-    if not raster_path.exists():
-        matches = list(extract_dir.rglob(tif_name))
-        if matches:
-            return str(matches[0])
+        zf.extractall(extract_dir)
+    matches = list(extract_dir.rglob(tif_name))
+    if not matches:
         raise FileNotFoundError(f"Could not find {tif_name} after extracting {zip_name}")
-    return str(raster_path)
+    return str(matches[0])
 
 
 def sample_raster_values(points: pd.DataFrame, raster_path: str, lat_col: str, lon_col: str, derived: Optional[str] = None) -> np.ndarray:
@@ -529,8 +515,7 @@ def sample_raster_values(points: pd.DataFrame, raster_path: str, lat_col: str, l
             else:
                 try:
                     r, c = src.index(lon, lat)
-                    window = Window(c - 1, r - 1, 3, 3)
-                    arr = src.read(1, window=window, boundless=True, fill_value=np.nan).astype(float)
+                    arr = src.read(1, window=Window(c - 1, r - 1, 3, 3), boundless=True, fill_value=np.nan).astype(float)
                     if nodata is not None:
                         arr[arr == nodata] = np.nan
                     if derived == "roughness":
@@ -546,18 +531,25 @@ def sample_raster_values(points: pd.DataFrame, raster_path: str, lat_col: str, l
     return np.array(values, dtype=float)
 
 
-def extract_web_environment(points: pd.DataFrame, variables: list[str], lat_col: str, lon_col: str) -> pd.DataFrame:
+def extract_web_environment(points: pd.DataFrame, variables: list[str], lat_col: str, lon_col: str, resolution: str, status=None, progress=None, start: float = 0.0, span: float = 1.0) -> pd.DataFrame:
     out = points.copy()
-    for var in variables:
+    total = max(len(variables), 1)
+    for i, var in enumerate(variables, start=1):
+        if status is not None:
+            status.write(f"Extracting {var} ({resolution}) [{i}/{total}]...")
+        if progress is not None:
+            progress.progress(min(1.0, start + span * (i - 1) / total))
         if var == "slope":
-            elev_path = get_worldclim_raster_path("elevation")
+            elev_path = get_worldclim_raster_path("elevation", resolution)
             out[var] = sample_raster_values(out, elev_path, lat_col, lon_col, derived="slope")
         elif var == "roughness":
-            elev_path = get_worldclim_raster_path("elevation")
+            elev_path = get_worldclim_raster_path("elevation", resolution)
             out[var] = sample_raster_values(out, elev_path, lat_col, lon_col, derived="roughness")
         else:
-            raster_path = get_worldclim_raster_path(var)
+            raster_path = get_worldclim_raster_path(var, resolution)
             out[var] = sample_raster_values(out, raster_path, lat_col, lon_col)
+    if progress is not None:
+        progress.progress(min(1.0, start + span))
     return out
 
 
@@ -589,10 +581,6 @@ def numeric_columns(df: pd.DataFrame, exclude: Optional[list[str]] = None) -> li
     return cols
 
 
-def detect_presence_column(df: pd.DataFrame) -> Optional[str]:
-    return detect_column(list(df.columns), PRESENCE_CANDIDATES)
-
-
 def compute_vif_table(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
     rows = []
     X = df[variables].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
@@ -611,10 +599,16 @@ def compute_vif_table(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("vif", ascending=False).reset_index(drop=True)
 
 
-def vif_step(df: pd.DataFrame, variables: list[str], threshold: float = 10.0) -> tuple[list[str], pd.DataFrame]:
+def vif_step(df: pd.DataFrame, variables: list[str], threshold: float = 10.0, status=None, progress=None, start: float = 0.0, span: float = 0.1) -> tuple[list[str], pd.DataFrame]:
     kept = list(dict.fromkeys(variables))
     removed_rows = []
+    iter_n = 0
     while len(kept) > 1:
+        iter_n += 1
+        if status is not None:
+            status.write(f"Running VIF step {iter_n} with threshold {threshold}...")
+        if progress is not None:
+            progress.progress(min(1.0, start + span * min(iter_n, 10) / 10))
         table = compute_vif_table(df, kept)
         top = table.iloc[0]
         if float(top["vif"]) <= threshold:
@@ -641,26 +635,33 @@ def make_model(name: str, random_state: int = 42):
     raise ValueError(f"Unknown algorithm: {name}")
 
 
-def fit_ensemble_sdm(train_df: pd.DataFrame, variables: list[str], presence_col: str, algorithms: list[str], test_size: float = 0.25, random_state: int = 42) -> dict[str, Any]:
+def fit_ensemble_sdm(train_df: pd.DataFrame, variables: list[str], presence_col: str, algorithms: list[str], test_size: float, status=None, progress=None, start: float = 0.0, span: float = 0.2) -> dict[str, Any]:
     data = train_df.copy()
     y = pd.to_numeric(data[presence_col], errors="coerce")
     mask = y.isin([0, 1])
     data = data.loc[mask].copy()
     y = y.loc[mask].astype(int)
     if y.nunique() < 2:
-        raise ValueError("SDM training data must contain both presence=1 and absence/background=0 rows.")
+        raise ValueError("SDM training data must contain both presence=1 and background/absence=0 rows.")
     X = data[variables].apply(pd.to_numeric, errors="coerce")
     stratify = y if y.value_counts().min() >= 2 else None
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=stratify)
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=stratify)
     models = {}
     metrics = []
-    for alg in algorithms:
-        model = make_model(alg, random_state=random_state)
+    total = max(len(algorithms), 1)
+    for i, alg in enumerate(algorithms, start=1):
+        if status is not None:
+            status.write(f"Fitting {alg} [{i}/{total}]...")
+        if progress is not None:
+            progress.progress(min(1.0, start + span * (i - 1) / total))
+        model = make_model(alg)
         model.fit(X_train, y_train)
         prob = model.predict_proba(X_test)[:, 1]
         auc = roc_auc_score(y_test, prob) if y_test.nunique() == 2 else np.nan
         models[alg] = model
         metrics.append({"algorithm": alg, "test_auc": round(float(auc), 3) if np.isfinite(auc) else np.nan})
+    if progress is not None:
+        progress.progress(min(1.0, start + span))
     return {"models": models, "metrics": pd.DataFrame(metrics), "variables": variables, "presence_col": presence_col}
 
 
@@ -699,15 +700,15 @@ def min_distance_to_points(coord: tuple[float, float], point_df: pd.DataFrame, l
     return min(geodesic(coord, (float(r[lat_col]), float(r[lon_col]))).m for _, r in point_df.iterrows())
 
 
-def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: Optional[dict[str, Any]], known_occ: pd.DataFrame, occurrence_candidates: pd.DataFrame, min_suitability: float, quantile_cutoff: float, min_distance_known_m: float, cluster_distance_m: float, max_candidates: int, start_site_id: int) -> pd.DataFrame:
+def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: Optional[dict[str, Any]], known_occ: pd.DataFrame, occurrence_candidates: pd.DataFrame, min_suitability: float, quantile_cutoff: float, min_distance_known_m: float, cluster_distance_m: float, max_candidates: int, start_site_id: int, status=None, progress=None, start: float = 0.9, span: float = 0.08) -> pd.DataFrame:
     columns = list(occurrence_candidates.columns)
     if not sdm_result or prediction_grid is None or prediction_grid.empty:
         return pd.DataFrame(columns=columns)
+    if status is not None:
+        status.write("Predicting SDM suitability across exploration grid...")
+    if progress is not None:
+        progress.progress(start)
     grid = prediction_grid.copy()
-    lat_col = detect_column(list(grid.columns), LAT_CANDIDATES)
-    lon_col = detect_column(list(grid.columns), LON_CANDIDATES)
-    if lat_col is None or lon_col is None:
-        return pd.DataFrame(columns=columns)
     pred = predict_ensemble_suitability(grid, sdm_result).dropna(subset=["sdm_suitability"]).copy()
     if pred.empty:
         return pd.DataFrame(columns=columns)
@@ -715,12 +716,12 @@ def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: O
     pred = pred[pred["sdm_suitability"] >= max(float(min_suitability), float(q))].copy()
     if pred.empty:
         return pd.DataFrame(columns=columns)
-    occ_points = known_occ[["_latitude", "_longitude"]].dropna().copy() if known_occ is not None and not known_occ.empty else pd.DataFrame(columns=["_latitude", "_longitude"])
-    cand_points = occurrence_candidates[["latitude", "longitude"]].dropna().copy() if occurrence_candidates is not None and not occurrence_candidates.empty else pd.DataFrame(columns=["latitude", "longitude"])
+    occ_points = known_occ[["_latitude", "_longitude"]].dropna().copy()
+    cand_points = occurrence_candidates[["latitude", "longitude"]].dropna().copy() if not occurrence_candidates.empty else pd.DataFrame(columns=["latitude", "longitude"])
     keep = []
     min_dists = []
     for _, row in pred.iterrows():
-        coord = (float(row[lat_col]), float(row[lon_col]))
+        coord = (float(row["latitude"]), float(row["longitude"]))
         d = min(min_distance_to_points(coord, occ_points, "_latitude", "_longitude"), min_distance_to_points(coord, cand_points, "latitude", "longitude"))
         keep.append(d >= float(min_distance_known_m))
         min_dists.append(round(d))
@@ -728,17 +729,19 @@ def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: O
     pred = pred[pd.Series(keep, index=pred.index)].copy()
     if pred.empty:
         return pd.DataFrame(columns=columns)
-    pred["exploration_cluster"] = haversine_dbscan(pred, lat_col, lon_col, cluster_distance_m, 1)
+    if status is not None:
+        status.write("Clustering high-suitability exploration grid points...")
+    pred["exploration_cluster"] = haversine_dbscan(pred, "latitude", "longitude", cluster_distance_m, 1)
     rows = []
-    for i, (cluster_id, group) in enumerate(pred.groupby("exploration_cluster", sort=True), start=0):
+    for i, (_, group) in enumerate(pred.groupby("exploration_cluster", sort=True), start=0):
         best = group.sort_values("sdm_suitability", ascending=False).iloc[0]
         site_id = start_site_id + i
         rows.append({
             "site_id": site_id,
             "candidate_type": "SDM-high / occurrence-low exploration site",
-            "cluster_id": int(cluster_id),
-            "latitude": float(best[lat_col]),
-            "longitude": float(best[lon_col]),
+            "cluster_id": int(best["exploration_cluster"]),
+            "latitude": float(best["latitude"]),
+            "longitude": float(best["longitude"]),
             "n_occurrences": 0,
             "species_summary": "",
             "year_min": None,
@@ -747,8 +750,8 @@ def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: O
             "representative_media_url": "",
             "representative_locality": "",
             "candidate_method": "SDM exploration grid maximum",
-            "selection_reason": f"Selected from prediction/background grid because ensemble SDM suitability is high ({float(best['sdm_suitability']):.3f}) and no known occurrence/candidate exists within {int(min_distance_known_m)} m.",
-            "bias_warning": "New exploration candidate: high SDM suitability but no nearby occurrence evidence. Important for model validation and discovery, but field confirmation risk is higher.",
+            "selection_reason": f"Selected because ensemble SDM suitability is high ({float(best['sdm_suitability']):.3f}) and no known occurrence/candidate exists within {int(min_distance_known_m)} m.",
+            "bias_warning": "New exploration candidate: high SDM suitability but no nearby occurrence evidence. Important for validation/discovery, but field confirmation risk is higher.",
             "priority_score": round(float(best["sdm_suitability"]), 3),
             "sdm_suitability": round(float(best["sdm_suitability"]), 3),
             "distance_to_nearest_known_m": float(best["distance_to_nearest_known_m"]),
@@ -757,16 +760,9 @@ def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: O
     for col in columns:
         if col not in out.columns:
             out[col] = np.nan
+    if progress is not None:
+        progress.progress(min(1.0, start + span))
     return out
-
-
-def make_field_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
-    cols = ["site_id", "candidate_type", "priority_rank", "route_order", "latitude", "longitude", "priority_score", "sdm_suitability", "visited", "survey_date", "observer", "access_success", "target_species_found", "abundance_count", "abundance_class", "flowering_status", "population_area_m2", "habitat_note", "photo_file", "comments"]
-    base = sites.copy()
-    for col in cols:
-        if col not in base.columns:
-            base[col] = ""
-    return base[cols]
 
 
 def image_html(url: str, width: int = 220) -> str:
@@ -828,7 +824,7 @@ def fit_bounds_or_default(df: pd.DataFrame) -> tuple[list[list[float]], tuple[fl
 def build_map(occurrences: pd.DataFrame, sites: pd.DataFrame, buffer_radius_m: float, show_occurrences: bool, show_buffers: bool, show_clusters: bool, show_candidate_sites: bool, show_routes: bool, show_distance_labels: bool) -> folium.Map:
     bounds, center, zoom = fit_bounds_or_default(occurrences)
     fmap = Map(location=center, zoom_start=zoom, tiles="OpenStreetMap", control_scale=True)
-    cluster_colors = ["red", "orange", "green", "purple", "cadetblue", "darkred", "darkgreen", "darkblue", "pink", "gray"]
+    colors = ["red", "orange", "green", "purple", "cadetblue", "darkred", "darkgreen", "darkblue", "pink", "gray"]
     if show_buffers:
         group = FeatureGroup(name="Buffers", show=True)
         for _, row in occurrences.iterrows():
@@ -845,23 +841,19 @@ def build_map(occurrences: pd.DataFrame, sites: pd.DataFrame, buffer_radius_m: f
         group = FeatureGroup(name="Occurrence clusters", show=True)
         for _, row in occurrences.iterrows():
             label = int(row["cluster_id"])
-            color = "black" if label < 0 else cluster_colors[label % len(cluster_colors)]
+            color = "black" if label < 0 else colors[label % len(colors)]
             folium.CircleMarker(location=(row["_latitude"], row["_longitude"]), radius=6, color=color, fill=True, fill_color=color, fill_opacity=0.45, weight=2, popup=f"Cluster: {label}").add_to(group)
         group.add_to(fmap)
     if show_routes and len(sites) >= 2:
         group = FeatureGroup(name="Routes", show=True)
-        route_coords = list(zip(sites["latitude"], sites["longitude"]))
-        folium.PolyLine(route_coords, color="red", weight=3, opacity=0.8).add_to(group)
+        folium.PolyLine(list(zip(sites["latitude"], sites["longitude"])), color="red", weight=3, opacity=0.8).add_to(group)
         group.add_to(fmap)
     if show_distance_labels and len(sites) >= 2:
         group = FeatureGroup(name="Straight-line distance labels", show=True)
         route_coords = list(zip(sites["latitude"], sites["longitude"]))
         for i in range(len(route_coords) - 1):
-            a = route_coords[i]
-            b = route_coords[i + 1]
-            dist_km = geodesic(a, b).km
-            mid = midpoint(a, b)
-            folium.Marker(location=mid, icon=folium.DivIcon(html=f"<div style='font-size:12px;font-weight:700;background:white;border:1px solid #999;border-radius:4px;padding:2px 5px;white-space:nowrap;'>{dist_km:.1f} km</div>")).add_to(group)
+            a, b = route_coords[i], route_coords[i + 1]
+            folium.Marker(location=midpoint(a, b), icon=folium.DivIcon(html=f"<div style='font-size:12px;font-weight:700;background:white;border:1px solid #999;border-radius:4px;padding:2px 5px;white-space:nowrap;'>{geodesic(a, b).km:.1f} km</div>")).add_to(group)
         group.add_to(fmap)
     if show_candidate_sites:
         group = FeatureGroup(name="Candidate survey sites", show=True)
@@ -892,7 +884,6 @@ def load_input_controls() -> None:
             if st.session_state.source_key != file_key:
                 st.session_state.raw_df = read_uploaded_csv(uploaded)
                 st.session_state.source_message = f"Loaded coordinate CSV: {uploaded.name} ({len(st.session_state.raw_df):,} raw rows)."
-                st.session_state.source_kind = "upload"
                 st.session_state.source_key = file_key
         return
     scientific_name = st.sidebar.text_input("Scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_scientific_name")
@@ -915,83 +906,74 @@ def load_input_controls() -> None:
             match, df = fetch_gbif_occurrences_cached(scientific_name.strip(), int(max_records), country_code.strip().upper(), year_from, year_to)
         st.session_state.raw_df = df.copy()
         st.session_state.source_message = f"GBIF match: {match.matched_name or match.input_name} / usageKey={match.usage_key} / confidence={match.confidence}. Fetched {len(df):,} raw occurrence records."
-        st.session_state.source_kind = "gbif"
         st.session_state.source_key = f"gbif::{scientific_name.strip()}::{country_code.strip().upper()}::{int(max_records)}::{year_from}::{year_to}"
 
 
 def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame) -> tuple[pd.DataFrame, Optional[dict[str, Any]], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     st.subheader("Environment variables and ensemble SDM")
-    st.caption("Default mode: use loaded GBIF/occurrence records directly as presence data, generate background points, and extract selected WorldClim 30 arc-sec variables from the web.")
-    with st.expander("Suggested environmental variables", expanded=False):
-        st.write(SUGGESTED_ENV_VARS)
-        st.markdown("Default: elevation, slope, roughness, bio19. You can also select bio1–bio19 and upload additional prepared environmental tables if web raster download is slow.")
+    st.caption("Loaded occurrences are used directly as presences. Background points and exploration grid are generated automatically.")
 
-    use_web_env = st.checkbox("Use web WorldClim 30 arc-sec layers", value=True)
-    selected_web_vars = st.multiselect("Web environmental variables", SUGGESTED_ENV_VARS, default=DEFAULT_WEB_VARS)
-    n_background = st.number_input("Number of background points", min_value=100, max_value=20000, value=min(5000, max(500, len(occ) * 3)), step=100)
-    bbox_expansion = st.number_input("Background bounding-box expansion in degrees", min_value=0.0, max_value=5.0, value=0.2, step=0.1)
-    pred_n = st.number_input("Prediction/exploration grid random points", min_value=100, max_value=50000, value=5000, step=500)
+    with st.expander("SDM settings", expanded=True):
+        resolution = st.selectbox("WorldClim raster resolution", RESOLUTIONS, index=0, help="30s is finest but slowest. 2.5m is the default balance for app use.")
+        selected_web_vars = st.multiselect("Environmental variables", ENV_VARS, default=DEFAULT_VARS)
+        algorithms = st.multiselect("Ensemble algorithms", ALGORITHMS, default=["Logistic regression", "Random forest", "ExtraTrees"])
+        vif_threshold = st.number_input("VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0, help="Default = 10. Variables are removed stepwise until all remaining VIF values are below this threshold.")
+        use_vif = st.checkbox("Apply VIF stepwise filtering", value=True)
+        n_background = st.number_input("Number of background points", min_value=100, max_value=20000, value=min(5000, max(500, len(occ) * 3)), step=100)
+        pred_n = st.number_input("Prediction/exploration grid random points", min_value=100, max_value=50000, value=3000, step=500)
+        bbox_expansion = st.number_input("Background/grid bounding-box expansion in degrees", min_value=0.0, max_value=5.0, value=0.2, step=0.1)
+        test_size = st.slider("Test split proportion", min_value=0.1, max_value=0.5, value=0.25, step=0.05)
 
-    env_train = None
-    pred_grid = None
-    if use_web_env:
-        if st.button("Build web-environment training table from loaded occurrences", type="primary"):
-            if not selected_web_vars:
-                st.warning("Select at least one environmental variable.")
-            else:
-                with st.spinner("Generating background points and extracting web environmental values. This may take several minutes the first time."):
-                    pb = build_presence_background_from_occurrences(occ, int(n_background), float(bbox_expansion))
-                    env_train = extract_web_environment(pb, selected_web_vars, "latitude", "longitude")
-                    pred_grid = generate_background_points(occ, int(pred_n), float(bbox_expansion)).drop(columns=["presence"], errors="ignore")
-                    pred_grid = extract_web_environment(pred_grid, selected_web_vars, "latitude", "longitude")
-                    st.session_state.sdm_train_table = env_train
-                    st.session_state.prediction_grid = pred_grid
-        env_train = st.session_state.get("sdm_train_table")
-        pred_grid = st.session_state.get("prediction_grid")
-    else:
-        c1, c2 = st.columns(2)
-        with c1:
-            sdm_file = st.file_uploader("Upload SDM training table CSV", type=["csv"], key="sdm_training_csv")
-        with c2:
-            pred_file = st.file_uploader("Upload prediction grid CSV optional", type=["csv"], key="prediction_grid_csv")
-        env_train = read_uploaded_csv(sdm_file) if sdm_file is not None else None
-        pred_grid = read_uploaded_csv(pred_file) if pred_file is not None else None
-
-    if env_train is None:
-        st.info("Build web-environment training table or upload an SDM training CSV to run VIF and ensemble SDM.")
+    if not selected_web_vars:
+        st.warning("Select at least one environmental variable.")
+        return occurrence_candidates.copy(), None, None, None
+    if not algorithms:
+        st.warning("Select at least one SDM algorithm.")
         return occurrence_candidates.copy(), None, None, None
 
-    env_train = env_train.replace([np.inf, -np.inf], np.nan).dropna(subset=["presence"]).copy()
-    presence_col = detect_presence_column(env_train) or "presence"
-    available_vars = numeric_columns(env_train, exclude=[presence_col, "latitude", "longitude"])
-    default_vars = [v for v in DEFAULT_MODEL_VARS if v in available_vars] or available_vars[: min(8, len(available_vars))]
-    selected_vars = st.multiselect("Select variables for SDM", available_vars, default=default_vars)
-    if not selected_vars:
-        st.warning("Select at least one model variable.")
-        return occurrence_candidates.copy(), None, env_train, None
+    progress = st.progress(0.0)
+    status = st.empty()
 
-    use_vif = st.checkbox("Apply VIF filtering", value=True)
-    vif_threshold = st.number_input("VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
-    if use_vif and len(selected_vars) > 1:
-        kept_vars, vif_table = vif_step(env_train, selected_vars, threshold=float(vif_threshold))
-    else:
-        kept_vars = selected_vars
-        vif_table = compute_vif_table(env_train, selected_vars) if len(selected_vars) > 1 else pd.DataFrame({"variable": selected_vars, "vif": [1.0] * len(selected_vars), "status": ["kept"] * len(selected_vars)})
-    st.write("Variables after VIF filtering:", kept_vars)
-    st.dataframe(vif_table, width="stretch", hide_index=True)
+    if st.button("Build environment table and run ensemble SDM", type="primary"):
+        try:
+            status.write("Step 1/7: generating presence/background table...")
+            progress.progress(0.05)
+            pb = build_presence_background_from_occurrences(occ, int(n_background), float(bbox_expansion))
+            status.write("Step 2/7: downloading/extracting raster values for training data...")
+            env_train = extract_web_environment(pb, selected_web_vars, "latitude", "longitude", resolution, status=status, progress=progress, start=0.10, span=0.30)
+            status.write("Step 3/7: generating exploration grid...")
+            progress.progress(0.42)
+            pred_grid = generate_background_points(occ, int(pred_n), float(bbox_expansion)).drop(columns=["presence"], errors="ignore")
+            status.write("Step 4/7: extracting raster values for exploration grid...")
+            pred_grid = extract_web_environment(pred_grid, selected_web_vars, "latitude", "longitude", resolution, status=status, progress=progress, start=0.45, span=0.20)
+            status.write(f"Step 5/7: running VIF stepwise filtering; threshold = {vif_threshold}...")
+            if use_vif and len(selected_web_vars) > 1:
+                kept_vars, vif_table = vif_step(env_train, selected_web_vars, threshold=float(vif_threshold), status=status, progress=progress, start=0.67, span=0.08)
+            else:
+                kept_vars = selected_web_vars
+                vif_table = compute_vif_table(env_train, selected_web_vars) if len(selected_web_vars) > 1 else pd.DataFrame({"variable": selected_web_vars, "vif": [1.0], "status": ["kept"]})
+            status.write("Step 6/7: fitting selected ensemble SDM algorithms...")
+            sdm_result = fit_ensemble_sdm(env_train, kept_vars, "presence", algorithms, float(test_size), status=status, progress=progress, start=0.76, span=0.16)
+            st.session_state.sdm_train_table = env_train
+            st.session_state.prediction_grid = pred_grid
+            st.session_state.sdm_result = sdm_result
+            st.session_state.vif_table = vif_table
+            status.write("Step 7/7: SDM complete.")
+            progress.progress(1.0)
+        except Exception as exc:
+            status.write("SDM failed.")
+            st.error(f"SDM failed: {exc}")
 
-    algorithms = st.multiselect("Select SDM algorithms for ensemble", ["Logistic regression", "Random forest", "ExtraTrees", "Gradient boosting"], default=["Logistic regression", "Random forest", "ExtraTrees"])
-    test_size = st.slider("Test split proportion", min_value=0.1, max_value=0.5, value=0.25, step=0.05)
-    if st.button("Run ensemble SDM"):
-        if not algorithms:
-            st.warning("Select at least one algorithm.")
-        else:
-            with st.spinner("Fitting ensemble SDM..."):
-                st.session_state.sdm_result = fit_ensemble_sdm(env_train, kept_vars, presence_col, algorithms, float(test_size))
-                st.session_state.vif_table = vif_table
-
+    env_train = st.session_state.get("sdm_train_table")
+    pred_grid = st.session_state.get("prediction_grid")
     sdm_result = st.session_state.get("sdm_result")
-    if not sdm_result:
+    vif_table = st.session_state.get("vif_table")
+
+    if vif_table is not None:
+        st.write("VIF table")
+        st.dataframe(vif_table, width="stretch", hide_index=True)
+    if sdm_result is None:
+        st.info("Run the SDM to re-rank occurrence-supported sites and generate SDM-high / occurrence-low exploration sites.")
         return occurrence_candidates.copy(), None, env_train, vif_table
 
     st.success("Ensemble SDM is available.")
@@ -999,24 +981,33 @@ def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame
 
     candidates_env = occurrence_candidates.copy()
     try:
-        candidates_env = extract_web_environment(candidates_env.rename(columns={"latitude": "_tmp_lat", "longitude": "_tmp_lon"}), sdm_result["variables"], "_tmp_lat", "_tmp_lon").rename(columns={"_tmp_lat": "latitude", "_tmp_lon": "longitude"})
+        status.write("Extracting environment for candidate sites...")
+        tmp = candidates_env.rename(columns={"latitude": "lat_tmp", "longitude": "lon_tmp"})
+        tmp = extract_web_environment(tmp, sdm_result["variables"], "lat_tmp", "lon_tmp", resolution, status=status, progress=progress, start=0.0, span=0.2)
+        candidates_env = tmp.rename(columns={"lat_tmp": "latitude", "lon_tmp": "longitude"})
     except Exception as exc:
-        st.warning(f"Could not extract web environment for candidate sites: {exc}")
+        st.warning(f"Could not extract web environment for occurrence-supported candidate sites: {exc}")
+
     candidates_env = predict_ensemble_suitability(candidates_env, sdm_result)
     candidates_env = update_priority_with_sdm(candidates_env)
 
     st.markdown("### SDM-high / occurrence-low exploration candidates")
-    min_suitability = st.number_input("Minimum suitability", min_value=0.0, max_value=1.0, value=0.60, step=0.05)
-    quantile_cutoff = st.number_input("Prediction-grid suitability quantile", min_value=0.0, max_value=0.99, value=0.90, step=0.01)
-    min_dist_known = st.number_input("Minimum distance from known records/sites (m)", min_value=0, max_value=200_000, value=3000, step=500)
-    max_new = st.number_input("Max new exploration candidates", min_value=1, max_value=200, value=20, step=1)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        min_suitability = st.number_input("Minimum suitability", min_value=0.0, max_value=1.0, value=0.60, step=0.05)
+    with c2:
+        quantile_cutoff = st.number_input("Grid suitability quantile", min_value=0.0, max_value=0.99, value=0.90, step=0.01)
+    with c3:
+        min_dist_known = st.number_input("Minimum distance from known records/sites (m)", min_value=0, max_value=200_000, value=3000, step=500)
+    with c4:
+        max_new = st.number_input("Max new exploration candidates", min_value=1, max_value=200, value=20, step=1)
     cluster_m = st.number_input("Exploration clustering distance (m)", min_value=100, max_value=200_000, value=3000, step=500)
 
     exploration = pd.DataFrame()
     if pred_grid is not None:
-        exploration = make_sdm_exploration_candidates(pred_grid, sdm_result, occ, candidates_env, float(min_suitability), float(quantile_cutoff), float(min_dist_known), float(cluster_m), int(max_new), int(candidates_env["site_id"].max()) + 1 if not candidates_env.empty else 1)
+        exploration = make_sdm_exploration_candidates(pred_grid, sdm_result, occ, candidates_env, float(min_suitability), float(quantile_cutoff), float(min_dist_known), float(cluster_m), int(max_new), int(candidates_env["site_id"].max()) + 1 if not candidates_env.empty else 1, status=status, progress=progress, start=0.88, span=0.10)
     if exploration.empty:
-        st.info("No new exploration candidates were generated with the current SDM/threshold settings.")
+        st.info("No new exploration candidates were generated with current thresholds.")
     else:
         st.success(f"Generated {len(exploration)} SDM-high / occurrence-low exploration candidates.")
         st.dataframe(exploration.sort_values("sdm_suitability", ascending=False), width="stretch", hide_index=True)
@@ -1063,12 +1054,7 @@ def main() -> None:
     raw_df = st.session_state.raw_df
     if raw_df is None:
         st.info(st.session_state.source_message)
-        st.markdown("""
-        Start by searching GBIF by scientific name, or upload any coordinate CSV.
-        The app can then use the loaded occurrence points directly as SDM presences,
-        generate background points, extract web environmental layers, and suggest both
-        occurrence-supported sites and SDM-high / occurrence-low exploration sites.
-        """)
+        st.markdown("Start by searching GBIF by scientific name, or upload any coordinate CSV. Then run the SDM module to generate occurrence-supported and SDM-high / occurrence-low candidates.")
         return
 
     st.success(st.session_state.source_message)
