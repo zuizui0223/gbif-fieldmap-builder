@@ -1,8 +1,10 @@
 streamlit
 pandas
+numpy
 folium
 streamlit-folium
 scikit-learn
 shapely
 geopy
 requests
+rasterio
