@@ -1,29 +1,17 @@
 """
 GBIF FieldMap Builder
 
-Interactive field-survey planning app.
+Interactive field survey planning app from GBIF or coordinate CSV data.
 
-Workflow:
-1. Load occurrences from GBIF scientific-name search or any coordinate CSV.
-2. Build occurrence-supported candidate survey ranges with thinning, DBSCAN, and medoid/centroid selection.
-3. Build a lightweight ensemble SDM directly from loaded occurrences:
-   - occurrences are used as presence points,
-   - background and exploration points are generated on land only,
-   - raster values are extracted by reading the required raster window once,
-   - WorldClim resolution is user-selectable: 10m, 5m, 2.5m, 30s,
-   - environmental variables and algorithms start empty,
-   - VIF threshold is user-editable, default 10.
-4. Suggest occurrence-supported survey ranges and SDM-high / occurrence-low exploration ranges.
-5. Export map, candidate CSV, validation template, SDM metrics, VIF table, and SDM training table.
-
-Island SDM note:
-For islands and coastal systems, SDM candidates are exploratory. Land-only masking prevents ocean
-background/exploration points, but predictions still depend strongly on background extent, occurrence bias,
-small land area, and environmental extrapolation. Use field validation data to evaluate hit rate and abundance.
-
-MaxEnt note:
-This app intentionally does not run Java MaxEnt/maxent.jar. For strict MaxEnt analyses,
-export the SDM training table and run ENMeval/maxnet or Java MaxEnt externally.
+Main design:
+- Candidate survey areas are shown as ranges/circles, not exact stars.
+- Background and prediction points are land-only.
+- Candidate range centers can be filtered so the whole survey radius stays on land.
+- Raster extraction uses fast raster-window sampling instead of point-by-point disk reads.
+- SDM evaluation supports random k-fold, block, checkerboard1, checkerboard2,
+  jackknife, and user-defined fold columns.
+- AUC is treated as a diagnostic metric; suspiciously high AUC is flagged.
+- Java MaxEnt is not run inside this app. Export SDM training table for ENMeval/maxnet.
 """
 
 from __future__ import annotations
@@ -54,7 +42,7 @@ from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, R
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from streamlit_folium import st_folium
@@ -81,6 +69,7 @@ BIO_VARS = [f"bio{i}" for i in range(1, 20)]
 ENV_VARS = ["elevation", "slope", "roughness"] + BIO_VARS
 RESOLUTIONS = ["10m", "5m", "2.5m", "30s"]
 ALGORITHMS = ["Logistic regression", "Random forest", "ExtraTrees", "Gradient boosting"]
+PARTITION_METHODS = ["random k-fold", "block", "checkerboard1", "checkerboard2", "jackknife", "user-defined fold column"]
 
 
 @dataclass(frozen=True)
@@ -166,8 +155,6 @@ def first_url(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""
     text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return ""
     match = re.search(r"https?://[^\s,;|]+", text)
     return match.group(0) if match else ""
 
@@ -294,11 +281,28 @@ def is_land(lon: float, lat: float, land_geom=None) -> bool:
         return False
 
 
-def filter_to_land(df: pd.DataFrame, lat_col: str = "latitude", lon_col: str = "longitude") -> pd.DataFrame:
+def point_at_distance(lat: float, lon: float, meters: float, bearing: float) -> tuple[float, float]:
+    p = geodesic(meters=float(meters)).destination((float(lat), float(lon)), bearing)
+    return float(p.latitude), float(p.longitude)
+
+
+def range_fits_land(lat: float, lon: float, radius_m: float, land_geom=None) -> bool:
+    if not is_land(lon, lat, land_geom):
+        return False
+    if radius_m <= 0:
+        return True
+    for bearing in [0, 45, 90, 135, 180, 225, 270, 315]:
+        plat, plon = point_at_distance(lat, lon, radius_m, bearing)
+        if not is_land(plon, plat, land_geom):
+            return False
+    return True
+
+
+def filter_to_land(df: pd.DataFrame, lat_col: str = "latitude", lon_col: str = "longitude", range_radius_m: float = 0) -> pd.DataFrame:
     if df.empty:
         return df.copy()
     land = load_land_geometry()
-    mask = [is_land(row[lon_col], row[lat_col], land) for _, row in df.iterrows()]
+    mask = [range_fits_land(row[lat_col], row[lon_col], range_radius_m, land) for _, row in df.iterrows()]
     return df.loc[mask].reset_index(drop=True)
 
 
@@ -555,9 +559,7 @@ def sample_raster_values_fast(points: pd.DataFrame, raster_path: str, lat_col: s
             if derived is None:
                 values[i] = arr[rr, cc]
             else:
-                r_start, r_end = max(0, rr - 1), min(arr.shape[0], rr + 2)
-                c_start, c_end = max(0, cc - 1), min(arr.shape[1], cc + 2)
-                sub = arr[r_start:r_end, c_start:c_end]
+                sub = arr[max(0, rr - 1):min(arr.shape[0], rr + 2), max(0, cc - 1):min(arr.shape[1], cc + 2)]
                 if np.all(np.isnan(sub)):
                     continue
                 if derived == "roughness":
@@ -590,7 +592,7 @@ def extract_web_environment(points: pd.DataFrame, variables: list[str], lat_col:
     return out
 
 
-def generate_land_points(occ: pd.DataFrame, n_points: int, expansion_deg: float, random_state: int = 42, status=None) -> pd.DataFrame:
+def generate_land_points(occ: pd.DataFrame, n_points: int, expansion_deg: float, random_state: int = 42, status=None, range_radius_m: float = 0) -> pd.DataFrame:
     rng = np.random.default_rng(random_state)
     min_lat, max_lat = occ["_latitude"].min() - expansion_deg, occ["_latitude"].max() + expansion_deg
     min_lon, max_lon = occ["_longitude"].min() - expansion_deg, occ["_longitude"].max() + expansion_deg
@@ -599,31 +601,28 @@ def generate_land_points(occ: pd.DataFrame, n_points: int, expansion_deg: float,
     land = load_land_geometry()
     rows = []
     attempts = 0
-    max_attempts = max(int(n_points) * 500, 50_000)
+    max_attempts = max(int(n_points) * 800, 50_000)
     batch_size = max(1000, int(n_points) * 5)
     while len(rows) < int(n_points) and attempts < max_attempts:
         lats = rng.uniform(min_lat, max_lat, batch_size)
         lons = rng.uniform(min_lon, max_lon, batch_size)
         for lat, lon in zip(lats, lons):
             attempts += 1
-            if is_land(lon, lat, land):
+            if range_fits_land(lat, lon, range_radius_m, land):
                 rows.append({"latitude": float(lat), "longitude": float(lon)})
                 if len(rows) >= int(n_points):
                     break
         if status is not None:
             status.write(f"Generating land-only random points: {len(rows):,}/{int(n_points):,}")
     if len(rows) < int(n_points):
-        raise RuntimeError(
-            f"Could only generate {len(rows)} land points out of {int(n_points)}. "
-            "For small islands, reduce background/grid points or increase bounding-box expansion slightly."
-        )
+        raise RuntimeError(f"Could only generate {len(rows)} land points out of {int(n_points)}. For small islands, reduce point count, reduce survey radius, or increase bounding-box expansion slightly.")
     return pd.DataFrame(rows)
 
 
 def build_presence_background_from_occurrences(occ: pd.DataFrame, n_background: int, expansion_deg: float, status=None) -> pd.DataFrame:
     pres = occ[["_latitude", "_longitude"]].rename(columns={"_latitude": "latitude", "_longitude": "longitude"}).copy()
     pres["presence"] = 1
-    bg = generate_land_points(occ, n_background, expansion_deg, random_state=42, status=status)
+    bg = generate_land_points(occ, n_background, expansion_deg, random_state=42, status=status, range_radius_m=0)
     bg["presence"] = 0
     return pd.concat([pres, bg], ignore_index=True)
 
@@ -635,14 +634,21 @@ def compute_vif_table(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
     for var in variables:
         others = [v for v in variables if v != var]
         if not others:
-            rows.append({"variable": var, "vif": 1.0})
+            rows.append({"variable": var, "vif": 1.0, "vif_warning": ""})
             continue
         try:
             r2 = LinearRegression().fit(X[others].values, X[var].values).score(X[others].values, X[var].values)
             vif = 1.0 / max(1e-12, 1.0 - r2)
         except Exception:
             vif = np.inf
-        rows.append({"variable": var, "vif": round(float(vif), 3) if np.isfinite(vif) else np.inf})
+        warning = ""
+        if not np.isfinite(vif) or vif >= 1e6:
+            warning = "unstable / near-perfect collinearity"
+        elif vif >= 100:
+            warning = "very high collinearity"
+        elif vif >= 10:
+            warning = "high collinearity"
+        rows.append({"variable": var, "vif": round(float(vif), 3) if np.isfinite(vif) else np.inf, "vif_warning": warning})
     return pd.DataFrame(rows).sort_values("vif", ascending=False).reset_index(drop=True)
 
 
@@ -658,12 +664,13 @@ def vif_step(df: pd.DataFrame, variables: list[str], threshold: float = 10.0, st
             progress.progress(min(1.0, start + span * min(iter_n, 10) / 10))
         table = compute_vif_table(df, kept)
         top = table.iloc[0]
-        if float(top["vif"]) <= threshold:
+        top_vif = float(top["vif"])
+        if np.isfinite(top_vif) and top_vif <= threshold:
             break
         removed = str(top["variable"])
-        removed_rows.append({"variable": removed, "vif": top["vif"], "status": "removed"})
+        removed_rows.append({"variable": removed, "vif": top["vif"], "vif_warning": top.get("vif_warning", ""), "status": "removed"})
         kept.remove(removed)
-    final_table = compute_vif_table(df, kept) if kept else pd.DataFrame(columns=["variable", "vif"])
+    final_table = compute_vif_table(df, kept) if kept else pd.DataFrame(columns=["variable", "vif", "vif_warning"])
     final_table["status"] = "kept"
     if removed_rows:
         final_table = pd.concat([final_table, pd.DataFrame(removed_rows)], ignore_index=True)
@@ -682,34 +689,114 @@ def make_model(name: str, random_state: int = 42):
     raise ValueError(f"Unknown algorithm: {name}")
 
 
-def fit_ensemble_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str], test_size: float, status=None, progress=None, start: float = 0.0, span: float = 0.2) -> dict[str, Any]:
+def auc_warning(auc: float, method: str) -> str:
+    if not np.isfinite(auc):
+        return "not available"
+    if auc >= 0.98:
+        return "suspiciously high; likely easy background or leakage"
+    if auc >= 0.95:
+        return "very high; inspect spatial partition and background"
+    if method == "random k-fold" and auc >= 0.90:
+        return "random split may be optimistic"
+    return ""
+
+
+def make_spatial_folds(data: pd.DataFrame, method: str, k: int, checkerboard_deg: float, user_fold_col: Optional[str]) -> pd.Series:
+    y = data["presence"].astype(int)
+    n = len(data)
+    if method == "random k-fold":
+        k_eff = max(2, min(k, int(y.value_counts().min()) if y.nunique() == 2 else k))
+        folds = pd.Series(index=data.index, dtype=int)
+        splitter = StratifiedKFold(n_splits=k_eff, shuffle=True, random_state=42)
+        for fold_id, (_, test_idx) in enumerate(splitter.split(data, y), start=1):
+            folds.iloc[test_idx] = fold_id
+        return folds.astype(int)
+    if method == "block":
+        lat_med = data["latitude"].median()
+        lon_med = data["longitude"].median()
+        return ((data["latitude"] >= lat_med).astype(int) * 2 + (data["longitude"] >= lon_med).astype(int) + 1).astype(int)
+    if method in {"checkerboard1", "checkerboard2"}:
+        cell = float(checkerboard_deg) * (2.0 if method == "checkerboard2" else 1.0)
+        cell = max(cell, 1e-6)
+        ix = np.floor((data["longitude"] - data["longitude"].min()) / cell).astype(int)
+        iy = np.floor((data["latitude"] - data["latitude"].min()) / cell).astype(int)
+        if method == "checkerboard1":
+            return ((ix + iy) % 2 + 1).astype(int)
+        return ((ix % 2) * 2 + (iy % 2) + 1).astype(int)
+    if method == "jackknife":
+        pres = data[data["presence"].astype(int) == 1].copy()
+        if pres.empty:
+            return pd.Series(np.ones(n, dtype=int), index=data.index)
+        # Cluster presences first to avoid thousands of folds from dense GBIF data.
+        eps_m = 2000.0
+        pres["jk_group"] = haversine_dbscan(pres, "latitude", "longitude", eps_m, 1).values + 1
+        pres_coords = pres[["latitude", "longitude", "jk_group"]].reset_index(drop=True)
+        folds = []
+        for _, row in data.iterrows():
+            if int(row["presence"]) == 1:
+                match = pres[(pres["latitude"] == row["latitude"]) & (pres["longitude"] == row["longitude"])]
+                folds.append(int(match["jk_group"].iloc[0]) if not match.empty else 1)
+            else:
+                coord = (float(row["latitude"]), float(row["longitude"]))
+                d = pres_coords.apply(lambda r: geodesic(coord, (float(r["latitude"]), float(r["longitude"]))).m, axis=1)
+                folds.append(int(pres_coords.loc[d.idxmin(), "jk_group"]))
+        return pd.Series(folds, index=data.index).astype(int)
+    if method == "user-defined fold column" and user_fold_col and user_fold_col in data.columns:
+        return pd.factorize(data[user_fold_col].astype(str))[0] + 1
+    return pd.Series(np.ones(n, dtype=int), index=data.index)
+
+
+def fit_ensemble_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str], partition_method: str, k_folds: int, checkerboard_deg: float, user_fold_col: Optional[str], status=None, progress=None, start: float = 0.0, span: float = 0.2) -> dict[str, Any]:
     data = train_df.copy()
     y = pd.to_numeric(data["presence"], errors="coerce")
     mask = y.isin([0, 1])
     data = data.loc[mask].copy()
-    y = y.loc[mask].astype(int)
-    if y.nunique() < 2:
-        raise ValueError("SDM training data must contain both presence=1 and background/absence=0 rows.")
-    X = data[variables].apply(pd.to_numeric, errors="coerce")
-    stratify = y if y.value_counts().min() >= 2 else None
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=stratify)
+    data["presence"] = y.loc[mask].astype(int)
+    if data["presence"].nunique() < 2:
+        raise ValueError("SDM training data must contain both presence=1 and background=0 rows.")
+    folds = make_spatial_folds(data, partition_method, k_folds, checkerboard_deg, user_fold_col)
+    data["cv_fold"] = folds.values
+    X_all = data[variables].apply(pd.to_numeric, errors="coerce")
+    y_all = data["presence"].astype(int)
     models = {}
     metrics = []
     total = max(len(algorithms), 1)
-    for i, alg in enumerate(algorithms, start=1):
+    unique_folds = sorted([f for f in data["cv_fold"].dropna().unique()])
+    valid_fold_count = 0
+    for alg_i, alg in enumerate(algorithms, start=1):
         if status is not None:
-            status.write(f"Fitting {alg} [{i}/{total}]...")
+            status.write(f"Evaluating {alg} with {partition_method}...")
+        fold_aucs = []
+        for fold in unique_folds:
+            test_mask = data["cv_fold"].eq(fold)
+            train_mask = ~test_mask
+            if test_mask.sum() < 2 or train_mask.sum() < 2:
+                continue
+            if data.loc[test_mask, "presence"].nunique() < 2 or data.loc[train_mask, "presence"].nunique() < 2:
+                continue
+            model = make_model(alg)
+            model.fit(X_all.loc[train_mask], y_all.loc[train_mask])
+            prob = model.predict_proba(X_all.loc[test_mask])[:, 1]
+            auc = roc_auc_score(y_all.loc[test_mask], prob)
+            fold_aucs.append(float(auc))
+            metrics.append({"algorithm": alg, "partition_method": partition_method, "fold": int(fold), "auc": round(float(auc), 3), "warning": auc_warning(float(auc), partition_method)})
+        valid_fold_count = max(valid_fold_count, len(fold_aucs))
+        mean_auc = float(np.mean(fold_aucs)) if fold_aucs else np.nan
+        metrics.append({"algorithm": alg, "partition_method": partition_method, "fold": "mean", "auc": round(mean_auc, 3) if np.isfinite(mean_auc) else np.nan, "warning": auc_warning(mean_auc, partition_method) if np.isfinite(mean_auc) else "no valid folds"})
+        final_model = make_model(alg)
+        final_model.fit(X_all, y_all)
+        models[alg] = final_model
         if progress is not None:
-            progress.progress(min(1.0, start + span * (i - 1) / total))
-        model = make_model(alg)
-        model.fit(X_train, y_train)
-        prob = model.predict_proba(X_test)[:, 1]
-        auc = roc_auc_score(y_test, prob) if y_test.nunique() == 2 else np.nan
-        models[alg] = model
-        metrics.append({"algorithm": alg, "test_auc": round(float(auc), 3) if np.isfinite(auc) else np.nan})
-    if progress is not None:
-        progress.progress(min(1.0, start + span))
-    return {"models": models, "metrics": pd.DataFrame(metrics), "variables": variables}
+            progress.progress(min(1.0, start + span * alg_i / total))
+    if valid_fold_count < 2:
+        # Fallback random holdout only as diagnostic.
+        X_train, X_test, y_train, y_test = train_test_split(X_all, y_all, test_size=0.25, random_state=42, stratify=y_all)
+        for alg in algorithms:
+            model = make_model(alg)
+            model.fit(X_train, y_train)
+            auc = roc_auc_score(y_test, model.predict_proba(X_test)[:, 1])
+            metrics.append({"algorithm": alg, "partition_method": "fallback random holdout", "fold": "diagnostic", "auc": round(float(auc), 3), "warning": auc_warning(float(auc), "random k-fold")})
+    return {"models": models, "metrics": pd.DataFrame(metrics), "variables": variables, "partition_method": partition_method, "training_table": data}
 
 
 def predict_ensemble_suitability(table: pd.DataFrame, sdm_result: Optional[dict[str, Any]]) -> pd.DataFrame:
@@ -747,13 +834,13 @@ def min_distance_to_points(coord: tuple[float, float], point_df: pd.DataFrame, l
     return min(geodesic(coord, (float(r[lat_col]), float(r[lon_col]))).m for _, r in point_df.iterrows())
 
 
-def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: Optional[dict[str, Any]], known_occ: pd.DataFrame, occurrence_candidates: pd.DataFrame, min_suitability: float, quantile_cutoff: float, min_distance_known_m: float, cluster_distance_m: float, max_candidates: int, start_site_id: int, status=None, progress=None) -> pd.DataFrame:
+def make_sdm_exploration_candidates(prediction_grid: pd.DataFrame, sdm_result: Optional[dict[str, Any]], known_occ: pd.DataFrame, occurrence_candidates: pd.DataFrame, min_suitability: float, quantile_cutoff: float, min_distance_known_m: float, cluster_distance_m: float, max_candidates: int, start_site_id: int, survey_range_radius_m: float, status=None, progress=None) -> pd.DataFrame:
     columns = list(occurrence_candidates.columns)
     if not sdm_result or prediction_grid is None or prediction_grid.empty:
         return pd.DataFrame(columns=columns)
     if status is not None:
         status.write("Predicting SDM suitability across land-only exploration grid...")
-    pred = filter_to_land(prediction_grid.copy(), "latitude", "longitude")
+    pred = filter_to_land(prediction_grid.copy(), "latitude", "longitude", range_radius_m=survey_range_radius_m)
     pred = predict_ensemble_suitability(pred, sdm_result).dropna(subset=["sdm_suitability"]).copy()
     if pred.empty:
         return pd.DataFrame(columns=columns)
@@ -845,10 +932,34 @@ def fit_bounds_or_default(df: pd.DataFrame) -> tuple[list[list[float]], tuple[fl
     return [[min_lat, min_lon], [max_lat, max_lon]], ((min_lat + max_lat) / 2, (min_lon + max_lon) / 2), 8
 
 
-def build_map(occurrences: pd.DataFrame, sites: pd.DataFrame, buffer_radius_m: float, survey_range_radius_m: float, show_occurrences: bool, show_buffers: bool, show_clusters: bool, show_occurrence_candidate_sites: bool, show_sdm_candidate_sites: bool, show_routes: bool, show_distance_labels: bool) -> folium.Map:
+def suitability_color(value: float) -> str:
+    if pd.isna(value):
+        return "#cccccc"
+    v = max(0.0, min(1.0, float(value)))
+    if v < 0.2:
+        return "#2c7bb6"
+    if v < 0.4:
+        return "#abd9e9"
+    if v < 0.6:
+        return "#ffffbf"
+    if v < 0.8:
+        return "#fdae61"
+    return "#d7191c"
+
+
+def build_map(occurrences: pd.DataFrame, sites: pd.DataFrame, prediction_grid: Optional[pd.DataFrame], buffer_radius_m: float, survey_range_radius_m: float, show_occurrences: bool, show_buffers: bool, show_clusters: bool, show_occurrence_candidate_sites: bool, show_sdm_candidate_sites: bool, show_routes: bool, show_distance_labels: bool, show_prediction_layer: bool) -> folium.Map:
     bounds, center, zoom = fit_bounds_or_default(occurrences)
     fmap = Map(location=center, zoom_start=zoom, tiles="OpenStreetMap", control_scale=True)
     colors = ["red", "orange", "green", "purple", "cadetblue", "darkred", "darkgreen", "darkblue", "pink", "gray"]
+    if show_prediction_layer and prediction_grid is not None and "sdm_suitability" in prediction_grid.columns and not prediction_grid.empty:
+        group = FeatureGroup(name="SDM suitability prediction", show=True)
+        # Decimate if huge to keep browser usable.
+        pg = prediction_grid.dropna(subset=["sdm_suitability"]).copy()
+        if len(pg) > 5000:
+            pg = pg.sample(5000, random_state=42)
+        for _, row in pg.iterrows():
+            folium.CircleMarker(location=(row["latitude"], row["longitude"]), radius=3, color=suitability_color(row["sdm_suitability"]), fill=True, fill_color=suitability_color(row["sdm_suitability"]), fill_opacity=0.55, weight=0, popup=f"SDM suitability: {row['sdm_suitability']:.3f}").add_to(group)
+        group.add_to(fmap)
     if show_buffers:
         group = FeatureGroup(name="Occurrence buffers", show=True)
         for _, row in occurrences.iterrows():
@@ -937,35 +1048,38 @@ def load_input_controls() -> None:
         st.session_state.source_key = f"gbif::{scientific_name.strip()}::{country_code.strip().upper()}::{int(max_records)}::{year_from}::{year_to}"
 
 
-def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame) -> tuple[pd.DataFrame, Optional[dict[str, Any]], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame, raw_columns: list[str], survey_range_radius_m: float) -> tuple[pd.DataFrame, Optional[dict[str, Any]], Optional[pd.DataFrame], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     st.subheader("Environment variables and ensemble SDM")
-    st.caption("Loaded occurrences are used as presences. Background and exploration points are land-only. On islands, treat SDM-high ranges as exploratory targets, not confirmed populations.")
+    st.caption("Loaded occurrences are presences. Background/exploration points are land-only. AUC is diagnostic and depends on partition design.")
     with st.expander("Island/coastal SDM limitations", expanded=False):
-        st.markdown(
-            """
-            - Land-only masking prevents ocean background points, but it does not remove all island-SDM uncertainty.
-            - Small island area can make background sampling unstable; start with fewer background/grid points.
-            - GBIF points often follow roads, ports, towns, and famous trails, so high suitability may partly reflect observation bias.
-            - The exported field-validation template should be used to estimate actual hit rate and abundance after surveys.
-            - For paper-level MaxEnt/ENMeval analysis, export the SDM training table and rerun the final model externally.
-            """
-        )
+        st.markdown("""
+        - Land-only masking prevents ocean background points, but it does not solve all island-SDM problems.
+        - Small island area can make background sampling and AUC unstable.
+        - GBIF points often follow roads, ports, towns, and trails.
+        - Random split AUC can be overly optimistic; prefer block, checkerboard, or jackknife diagnostics.
+        - Treat SDM-high ranges as exploration targets. Use field validation to estimate hit rate and abundance.
+        """)
     with st.expander("SDM settings", expanded=True):
-        resolution = st.selectbox("WorldClim raster resolution", RESOLUTIONS, index=0, help="10m is fastest and safest for app exploration. Use finer layers only after the workflow is stable.")
+        resolution = st.selectbox("WorldClim raster resolution", RESOLUTIONS, index=0)
         selected_web_vars = st.multiselect("Environmental variables", ENV_VARS, default=[])
         algorithms = st.multiselect("Ensemble algorithms", ALGORITHMS, default=[])
+        partition_method = st.selectbox("Spatial partition method for AUC", PARTITION_METHODS, index=1)
+        k_folds = st.number_input("k for random k-fold", min_value=2, max_value=20, value=5, step=1)
+        checkerboard_deg = st.number_input("Checkerboard cell size (degrees)", min_value=0.001, max_value=5.0, value=0.05, step=0.01, format="%.3f")
+        user_fold_col = None
+        if partition_method == "user-defined fold column":
+            user_fold_col = st.selectbox("Fold column", options=[""] + raw_columns, index=0) or None
         vif_threshold = st.number_input("VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
         use_vif = st.checkbox("Apply VIF stepwise filtering", value=True)
         n_background = st.number_input("Number of land-only background points", min_value=100, max_value=20000, value=500, step=100)
         pred_n = st.number_input("Land-only prediction/exploration grid random points", min_value=100, max_value=50000, value=1000, step=500)
         bbox_expansion = st.number_input("Background/grid bounding-box expansion in degrees", min_value=0.0, max_value=5.0, value=0.10, step=0.05)
-        test_size = st.slider("Test split proportion", min_value=0.1, max_value=0.5, value=0.25, step=0.05)
     if not selected_web_vars:
-        st.info("Select environmental variables before running SDM. Suggested first island trial: elevation and bio19. Add slope/roughness later.")
-        return occurrence_candidates.copy(), None, st.session_state.get("sdm_train_table"), st.session_state.get("vif_table")
+        st.info("Select environmental variables before running SDM. First island trial: elevation and bio19. Add slope/roughness later.")
+        return occurrence_candidates.copy(), None, st.session_state.get("sdm_train_table"), st.session_state.get("vif_table"), st.session_state.get("prediction_grid")
     if not algorithms:
         st.info("Select at least one SDM algorithm before running SDM.")
-        return occurrence_candidates.copy(), None, st.session_state.get("sdm_train_table"), st.session_state.get("vif_table")
+        return occurrence_candidates.copy(), None, st.session_state.get("sdm_train_table"), st.session_state.get("vif_table"), st.session_state.get("prediction_grid")
     progress = st.progress(0.0)
     status = st.empty()
     if st.button("Build environment table and run ensemble SDM", type="primary"):
@@ -977,7 +1091,7 @@ def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame
             env_train = extract_web_environment(pb, selected_web_vars, "latitude", "longitude", resolution, status=status, progress=progress, start=0.10, span=0.30)
             status.write("Step 3/7: generating land-only exploration grid...")
             progress.progress(0.42)
-            pred_grid = generate_land_points(occ, int(pred_n), float(bbox_expansion), random_state=123, status=status)
+            pred_grid = generate_land_points(occ, int(pred_n), float(bbox_expansion), random_state=123, status=status, range_radius_m=float(survey_range_radius_m))
             status.write("Step 4/7: extracting raster values for exploration grid...")
             pred_grid = extract_web_environment(pred_grid, selected_web_vars, "latitude", "longitude", resolution, status=status, progress=progress, start=0.45, span=0.20)
             status.write(f"Step 5/7: running VIF stepwise filtering; threshold = {vif_threshold}...")
@@ -985,10 +1099,11 @@ def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame
                 kept_vars, vif_table = vif_step(env_train, selected_web_vars, threshold=float(vif_threshold), status=status, progress=progress, start=0.67, span=0.08)
             else:
                 kept_vars = selected_web_vars
-                vif_table = compute_vif_table(env_train, selected_web_vars) if len(selected_web_vars) > 1 else pd.DataFrame({"variable": selected_web_vars, "vif": [1.0], "status": ["kept"]})
-            status.write("Step 6/7: fitting selected ensemble SDM algorithms...")
-            sdm_result = fit_ensemble_sdm(env_train, kept_vars, algorithms, float(test_size), status=status, progress=progress, start=0.76, span=0.16)
-            st.session_state.sdm_train_table = env_train
+                vif_table = compute_vif_table(env_train, selected_web_vars) if len(selected_web_vars) > 1 else pd.DataFrame({"variable": selected_web_vars, "vif": [1.0], "vif_warning": [""], "status": ["kept"]})
+            status.write("Step 6/7: fitting selected ensemble SDM algorithms and spatial partition diagnostics...")
+            sdm_result = fit_ensemble_sdm(env_train, kept_vars, algorithms, partition_method, int(k_folds), float(checkerboard_deg), user_fold_col, status=status, progress=progress, start=0.76, span=0.16)
+            pred_grid = predict_ensemble_suitability(pred_grid, sdm_result)
+            st.session_state.sdm_train_table = sdm_result.get("training_table", env_train)
             st.session_state.prediction_grid = pred_grid
             st.session_state.sdm_result = sdm_result
             st.session_state.vif_table = vif_table
@@ -1005,8 +1120,9 @@ def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame
         st.write("VIF table")
         st.dataframe(vif_table, width="stretch", hide_index=True)
     if sdm_result is None:
-        return occurrence_candidates.copy(), None, env_train, vif_table
+        return occurrence_candidates.copy(), None, env_train, vif_table, pred_grid
     st.success("Ensemble SDM is available.")
+    st.write("AUC diagnostics")
     st.dataframe(sdm_result["metrics"], width="stretch", hide_index=True)
     candidates_env = occurrence_candidates.copy()
     try:
@@ -1031,14 +1147,14 @@ def environment_sdm_panel(occ: pd.DataFrame, occurrence_candidates: pd.DataFrame
     cluster_m = st.number_input("Exploration clustering distance (m)", min_value=100, max_value=200_000, value=3000, step=500)
     exploration = pd.DataFrame()
     if pred_grid is not None:
-        exploration = make_sdm_exploration_candidates(pred_grid, sdm_result, occ, candidates_env, float(min_suitability), float(quantile_cutoff), float(min_dist_known), float(cluster_m), int(max_new), int(candidates_env["site_id"].max()) + 1 if not candidates_env.empty else 1, status=status, progress=progress)
+        exploration = make_sdm_exploration_candidates(pred_grid, sdm_result, occ, candidates_env, float(min_suitability), float(quantile_cutoff), float(min_dist_known), float(cluster_m), int(max_new), int(candidates_env["site_id"].max()) + 1 if not candidates_env.empty else 1, float(survey_range_radius_m), status=status, progress=progress)
     if exploration.empty:
         st.info("No new exploration ranges were generated with current thresholds.")
     else:
         st.success(f"Generated {len(exploration)} SDM-high / occurrence-low exploration survey ranges.")
         st.dataframe(exploration.sort_values("sdm_suitability", ascending=False), width="stretch", hide_index=True)
         candidates_env = pd.concat([candidates_env, exploration], ignore_index=True, sort=False)
-    return candidates_env, sdm_result, env_train, vif_table
+    return candidates_env, sdm_result, env_train, vif_table, pred_grid
 
 
 def make_field_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
@@ -1054,7 +1170,7 @@ def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="🗺️", layout="wide")
     init_session_state()
     st.title("🗺️ GBIF FieldMap Builder")
-    st.caption("Survey planning from GBIF/coordinate occurrences, land-only SDM sampling, fast raster extraction, and survey-range outputs.")
+    st.caption("Survey planning from GBIF/coordinate occurrences, land-only SDM sampling, spatial partition diagnostics, prediction map layer, and survey-range outputs.")
     st.sidebar.header("Data source")
     load_input_controls()
     st.sidebar.divider()
@@ -1069,6 +1185,7 @@ def main() -> None:
     priority_top_n = st.sidebar.number_input("Show top N priority ranges", min_value=1, max_value=100, value=10, step=1)
     st.sidebar.divider()
     st.sidebar.subheader("Layers")
+    show_prediction_layer = st.sidebar.checkbox("SDM suitability prediction", value=True)
     show_occurrences = st.sidebar.checkbox("Occurrences", value=True)
     show_buffers = st.sidebar.checkbox("Occurrence buffers", value=False)
     show_clusters = st.sidebar.checkbox("Occurrence clusters", value=False)
@@ -1079,7 +1196,7 @@ def main() -> None:
     raw_df = st.session_state.raw_df
     if raw_df is None:
         st.info(st.session_state.source_message)
-        st.markdown("Start by searching GBIF by scientific name, or upload any coordinate CSV. Then run the SDM module to generate occurrence-supported and SDM-high / occurrence-low survey ranges.")
+        st.markdown("Start by searching GBIF by scientific name, or upload any coordinate CSV. Then run SDM to generate occurrence-supported and SDM-high / occurrence-low survey ranges.")
         return
     st.success(st.session_state.source_message)
     try:
@@ -1096,7 +1213,8 @@ def main() -> None:
     occurrence_candidates = make_candidate_sites(occ, candidate_method, float(thinning_m))
     occurrence_candidates = add_priority_rank(occurrence_candidates)
     occurrence_candidates = add_navigation_columns(order_sites(occurrence_candidates, route_order_mode))
-    all_candidates, sdm_result, env_train, vif_table = environment_sdm_panel(occ, occurrence_candidates)
+    all_candidates, sdm_result, env_train, vif_table, pred_grid = environment_sdm_panel(occ, occurrence_candidates, list(raw_df.columns), float(survey_range_radius_m))
+    all_candidates = filter_to_land(all_candidates, "latitude", "longitude", float(survey_range_radius_m)) if not all_candidates.empty else all_candidates
     all_candidates = add_priority_rank(all_candidates)
     all_candidates = add_navigation_columns(order_sites(all_candidates, route_order_mode))
     route_url = make_google_maps_route_url(all_candidates, travelmode="driving")
@@ -1119,7 +1237,7 @@ def main() -> None:
             st.link_button("Open public-transit route in Google Maps", transit_route_url, width="stretch")
     with st.expander("Detected input columns", expanded=False):
         st.write(detected.__dict__)
-    fmap = build_map(occ, all_candidates, float(buffer_radius_m), float(survey_range_radius_m), show_occurrences, show_buffers, show_clusters, show_occurrence_candidate_sites, show_sdm_candidate_sites, show_routes, show_distance_labels)
+    fmap = build_map(occ, all_candidates, pred_grid, float(buffer_radius_m), float(survey_range_radius_m), show_occurrences, show_buffers, show_clusters, show_occurrence_candidate_sites, show_sdm_candidate_sites, show_routes, show_distance_labels, show_prediction_layer)
     st_folium(fmap, width=None, height=720, returned_objects=[])
     st.subheader("Priority survey ranges")
     priority_cols = ["priority_rank", "site_id", "candidate_type", "route_order", "priority_score", "sdm_suitability", "distance_to_nearest_known_m", "n_occurrences", "latitude", "longitude", "bias_warning", "selection_reason"]
@@ -1133,10 +1251,11 @@ def main() -> None:
     html_bytes = fmap.get_root().render().encode("utf-8")
     candidates_csv = all_candidates.to_csv(index=False).encode("utf-8-sig")
     validation_csv = validation_template.to_csv(index=False).encode("utf-8-sig")
-    sdm_metrics_csv = sdm_result["metrics"].to_csv(index=False).encode("utf-8-sig") if sdm_result else b"algorithm,test_auc\n"
-    vif_csv = vif_table.to_csv(index=False).encode("utf-8-sig") if vif_table is not None else b"variable,vif,status\n"
+    sdm_metrics_csv = sdm_result["metrics"].to_csv(index=False).encode("utf-8-sig") if sdm_result else b"algorithm,partition_method,fold,auc,warning\n"
+    vif_csv = vif_table.to_csv(index=False).encode("utf-8-sig") if vif_table is not None else b"variable,vif,vif_warning,status\n"
     train_csv = env_train.to_csv(index=False).encode("utf-8-sig") if env_train is not None else b""
-    dl1, dl2, dl3, dl4, dl5, dl6 = st.columns(6)
+    pred_csv = pred_grid.to_csv(index=False).encode("utf-8-sig") if pred_grid is not None else b""
+    dl1, dl2, dl3, dl4, dl5, dl6, dl7 = st.columns(7)
     with dl1:
         st.download_button("Download HTML map", html_bytes, "fieldmap.html", "text/html", width="stretch")
     with dl2:
@@ -1149,6 +1268,8 @@ def main() -> None:
         st.download_button("Download VIF table", vif_csv, "vif_table.csv", "text/csv", width="stretch")
     with dl6:
         st.download_button("Download SDM training table", train_csv, "sdm_training_table.csv", "text/csv", width="stretch")
+    with dl7:
+        st.download_button("Download prediction grid", pred_csv, "sdm_prediction_grid.csv", "text/csv", width="stretch")
 
 
 if __name__ == "__main__":
