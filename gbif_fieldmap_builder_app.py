@@ -5,6 +5,16 @@ Bias-aware Streamlit app for field-survey planning from either:
 1) any coordinate CSV with latitude/longitude columns, or
 2) direct scientific-name searches via the GBIF API.
 
+Core workflow:
+- occurrence input
+- spatial thinning
+- DBSCAN clustering
+- medoid/centroid candidate-site selection
+- optional environment table upload
+- VIF-based variable filtering
+- ensemble SDM with selectable algorithms
+- field-validation template export
+
 The app stores loaded occurrence data in st.session_state, so changing map layers
 or sampling settings does not force another CSV upload or GBIF search.
 """
@@ -18,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import folium
+import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
@@ -26,6 +37,13 @@ from folium.plugins import MarkerCluster
 from geopy.distance import geodesic
 from shapely.geometry import MultiPoint, Point
 from sklearn.cluster import DBSCAN
+from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier, RandomForestClassifier
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from streamlit_folium import st_folium
 
 
@@ -42,6 +60,15 @@ SPECIES_CANDIDATES = ["species", "scientificname", "scientific_name", "scientifi
 MEDIA_CANDIDATES = ["mediaurl", "media_url", "imageurl", "image_url", "identifier", "associatedmedia", "associated_media", "photo", "image", "写真", "画像"]
 GBIF_ID_CANDIDATES = ["gbifid", "gbif_id", "key", "occurrenceid", "occurrence_id"]
 LOCALITY_CANDIDATES = ["locality", "municipality", "county", "stateprovince", "location", "place", "site", "場所", "地点"]
+PRESENCE_CANDIDATES = ["presence", "pa", "occurrence", "target_species_found", "found", "label"]
+SITE_ID_CANDIDATES = ["site_id", "site", "id", "candidate_id"]
+
+SUGGESTED_ENV_VARS = [
+    "elevation", "slope", "roughness",
+    "bio1", "bio2", "bio3", "bio4", "bio5", "bio6", "bio7", "bio8", "bio9", "bio10",
+    "bio11", "bio12", "bio13", "bio14", "bio15", "bio16", "bio17", "bio18", "bio19",
+]
+DEFAULT_ENV_VARS = ["elevation", "slope", "roughness", "bio1", "bio4", "bio12", "bio15", "bio19"]
 
 
 @dataclass(frozen=True)
@@ -72,6 +99,7 @@ def init_session_state() -> None:
         "source_message": "No occurrence data loaded yet.",
         "source_kind": None,
         "source_key": None,
+        "sdm_result": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -83,6 +111,7 @@ def clear_loaded_data() -> None:
     st.session_state.source_message = "No occurrence data loaded yet."
     st.session_state.source_kind = None
     st.session_state.source_key = None
+    st.session_state.sdm_result = None
 
 
 def normalize_name(name: str) -> str:
@@ -91,18 +120,15 @@ def normalize_name(name: str) -> str:
 
 def detect_column(columns: list[str], candidates: list[str]) -> Optional[str]:
     normalized = {normalize_name(col): col for col in columns}
-
     for cand in candidates:
         key = normalize_name(cand)
         if key in normalized:
             return normalized[key]
-
     for cand in candidates:
         key = normalize_name(cand)
         for norm_col, original in normalized.items():
             if key and key in norm_col:
                 return original
-
     return None
 
 
@@ -207,13 +233,7 @@ def gbif_records_to_dataframe(records: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def fetch_gbif_occurrences_cached(
-    scientific_name: str,
-    max_records: int,
-    country_code: str,
-    year_from: Optional[int],
-    year_to: Optional[int],
-) -> tuple[GBIFTaxonMatch, pd.DataFrame]:
+def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, country_code: str, year_from: Optional[int], year_to: Optional[int]) -> tuple[GBIFTaxonMatch, pd.DataFrame]:
     match = match_gbif_taxon(scientific_name)
     if match.usage_key is None:
         raise ValueError(f"GBIF could not match this scientific name: {scientific_name}")
@@ -249,7 +269,6 @@ def fetch_gbif_occurrences_cached(
         offset += len(batch)
         if payload.get("endOfRecords") is True:
             break
-
     return match, gbif_records_to_dataframe(records)
 
 
@@ -356,7 +375,6 @@ def make_candidate_sites(df: pd.DataFrame, method: str, thinning_m: float) -> pd
             if n <= 2 else
             "Moderate occurrence support. Check road/trail access and habitat manually."
         )
-
         sites.append({
             "site_id": site_id,
             "cluster_id": int(cluster_id),
@@ -374,7 +392,6 @@ def make_candidate_sites(df: pd.DataFrame, method: str, thinning_m: float) -> pd
             "bias_warning": warning,
             "priority_score": priority,
         })
-
     return pd.DataFrame(sites, columns=columns)
 
 
@@ -433,16 +450,6 @@ def make_google_maps_point_url(latitude: float, longitude: float) -> str:
     return f"https://www.google.com/maps/search/?api=1&query={latitude:.6f}%2C{longitude:.6f}"
 
 
-def make_google_maps_transit_url(origin: tuple[float, float], destination: tuple[float, float]) -> str:
-    params = {
-        "api": "1",
-        "origin": f"{origin[0]:.6f},{origin[1]:.6f}",
-        "destination": f"{destination[0]:.6f},{destination[1]:.6f}",
-        "travelmode": "transit",
-    }
-    return "https://www.google.com/maps/dir/?" + urllib.parse.urlencode(params, safe=",")
-
-
 def make_google_maps_route_url(sites: pd.DataFrame, travelmode: str = "driving", max_waypoints: int = 8) -> str:
     if sites.empty:
         return ""
@@ -483,56 +490,202 @@ def add_navigation_columns(sites: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def build_public_transit_legs(sites: pd.DataFrame) -> pd.DataFrame:
-    if sites.empty or len(sites) < 2:
-        return pd.DataFrame(columns=["leg", "from_site", "to_site", "google_maps_transit_url", "fare_yen", "notes"])
-    ordered = sites.sort_values("route_order").reset_index(drop=True)
+def numeric_columns(df: pd.DataFrame, exclude: Optional[list[str]] = None) -> list[str]:
+    exclude_norm = {normalize_name(x) for x in (exclude or [])}
+    cols = []
+    for col in df.columns:
+        if normalize_name(col) in exclude_norm:
+            continue
+        s = pd.to_numeric(df[col], errors="coerce")
+        if s.notna().sum() >= max(5, int(len(df) * 0.2)):
+            cols.append(col)
+    return cols
+
+
+def detect_presence_column(df: pd.DataFrame) -> Optional[str]:
+    return detect_column(list(df.columns), PRESENCE_CANDIDATES)
+
+
+def detect_site_id_column(df: pd.DataFrame) -> Optional[str]:
+    return detect_column(list(df.columns), SITE_ID_CANDIDATES)
+
+
+def prepare_env_table(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for col in out.columns:
+        converted = pd.to_numeric(out[col], errors="coerce")
+        if converted.notna().sum() >= max(5, int(len(out) * 0.2)):
+            out[col] = converted
+    return out
+
+
+def merge_candidate_environment(candidates: pd.DataFrame, env_df: Optional[pd.DataFrame], max_nearest_m: float = 1000) -> pd.DataFrame:
+    if env_df is None or env_df.empty or candidates.empty:
+        return candidates.copy()
+    env = prepare_env_table(env_df)
+    out = candidates.copy()
+    site_col = detect_site_id_column(env)
+    if site_col and "site_id" in out.columns:
+        env2 = env.rename(columns={site_col: "site_id"})
+        return out.merge(env2, on="site_id", how="left", suffixes=("", "_env"))
+    lat_col = detect_column(list(env.columns), LAT_CANDIDATES)
+    lon_col = detect_column(list(env.columns), LON_CANDIDATES)
+    if not lat_col or not lon_col:
+        return out
+    env = env.dropna(subset=[lat_col, lon_col]).copy()
+    env[lat_col] = pd.to_numeric(env[lat_col], errors="coerce")
+    env[lon_col] = pd.to_numeric(env[lon_col], errors="coerce")
     rows = []
-    for i in range(len(ordered) - 1):
-        a = ordered.loc[i]
-        b = ordered.loc[i + 1]
-        origin = (float(a["latitude"]), float(a["longitude"]))
-        dest = (float(b["latitude"]), float(b["longitude"]))
-        rows.append({
-            "leg": i + 1,
-            "from_site": int(a["site_id"]),
-            "to_site": int(b["site_id"]),
-            "google_maps_transit_url": make_google_maps_transit_url(origin, dest),
-            "fare_yen": 0,
-            "notes": "Enter actual train/bus/ferry fare checked manually.",
-        })
-    return pd.DataFrame(rows)
+    env_coords = list(zip(env[lat_col], env[lon_col]))
+    for _, cand in out.iterrows():
+        c = (float(cand["latitude"]), float(cand["longitude"]))
+        if not env_coords:
+            rows.append(pd.Series(dtype=object))
+            continue
+        dists = [geodesic(c, (float(lat), float(lon))).m for lat, lon in env_coords]
+        idx = int(np.argmin(dists))
+        if dists[idx] <= max_nearest_m:
+            rows.append(env.iloc[idx].drop(labels=[lat_col, lon_col], errors="ignore"))
+        else:
+            rows.append(pd.Series(dtype=object))
+    env_matched = pd.DataFrame(rows).reset_index(drop=True)
+    return pd.concat([out.reset_index(drop=True), env_matched.reset_index(drop=True)], axis=1)
 
 
-def transit_cost_summary(
-    legs: pd.DataFrame,
-    origin_roundtrip_yen: float,
-    lodging_per_night: float,
-    nights: int,
-    per_diem: float,
-    days: int,
-    misc: float,
-) -> dict[str, float]:
-    fares = pd.to_numeric(legs.get("fare_yen", pd.Series(dtype=float)), errors="coerce").fillna(0).sum() if legs is not None and not legs.empty else 0
-    lodging = lodging_per_night * nights
-    daily = per_diem * days
-    total = fares + origin_roundtrip_yen + lodging + daily + misc
-    return {
-        "inter_site_public_transport_yen": round(float(fares)),
-        "origin_roundtrip_yen": round(float(origin_roundtrip_yen)),
-        "lodging_yen": round(float(lodging)),
-        "per_diem_yen": round(float(daily)),
-        "misc_yen": round(float(misc)),
-        "estimated_total_yen": round(float(total)),
-    }
+def compute_vif_table(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
+    rows = []
+    X = df[variables].apply(pd.to_numeric, errors="coerce")
+    X = X.replace([np.inf, -np.inf], np.nan)
+    X = pd.DataFrame(SimpleImputer(strategy="median").fit_transform(X), columns=variables)
+    for var in variables:
+        others = [v for v in variables if v != var]
+        if not others:
+            rows.append({"variable": var, "vif": 1.0})
+            continue
+        y = X[var].values
+        X_other = X[others].values
+        try:
+            r2 = LinearRegression().fit(X_other, y).score(X_other, y)
+            vif = 1.0 / max(1e-12, 1.0 - r2)
+        except Exception:
+            vif = np.inf
+        rows.append({"variable": var, "vif": round(float(vif), 3) if np.isfinite(vif) else np.inf})
+    return pd.DataFrame(rows).sort_values("vif", ascending=False).reset_index(drop=True)
 
 
-def fit_bounds_or_default(df: pd.DataFrame) -> tuple[list[list[float]], tuple[float, float], int]:
-    if df.empty:
-        return [[35.0, 135.0], [36.0, 136.0]], (35.5, 135.5), 6
-    min_lat, max_lat = df["_latitude"].min(), df["_latitude"].max()
-    min_lon, max_lon = df["_longitude"].min(), df["_longitude"].max()
-    return [[min_lat, min_lon], [max_lat, max_lon]], ((min_lat + max_lat) / 2, (min_lon + max_lon) / 2), 8
+def vif_step(df: pd.DataFrame, variables: list[str], threshold: float = 10.0) -> tuple[list[str], pd.DataFrame]:
+    kept = list(dict.fromkeys(variables))
+    history = []
+    while len(kept) > 1:
+        table = compute_vif_table(df, kept)
+        top = table.iloc[0]
+        for _, row in table.iterrows():
+            history.append({"step": len(history) + 1, "variable": row["variable"], "vif": row["vif"], "status": "checked"})
+        if float(top["vif"]) <= threshold:
+            break
+        removed = str(top["variable"])
+        history.append({"step": len(history) + 1, "variable": removed, "vif": top["vif"], "status": "removed"})
+        kept.remove(removed)
+    final_table = compute_vif_table(df, kept) if kept else pd.DataFrame(columns=["variable", "vif"])
+    final_table["status"] = "kept"
+    if history:
+        removed = pd.DataFrame(history)
+        removed = removed[removed["status"].eq("removed")][["variable", "vif", "status"]]
+        final_table = pd.concat([final_table, removed], ignore_index=True)
+    return kept, final_table
+
+
+def make_model(name: str, random_state: int = 42):
+    if name == "Logistic regression":
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+            ("model", LogisticRegression(max_iter=1000, class_weight="balanced", random_state=random_state)),
+        ])
+    if name == "Random forest":
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("model", RandomForestClassifier(n_estimators=300, random_state=random_state, class_weight="balanced_subsample")),
+        ])
+    if name == "ExtraTrees":
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("model", ExtraTreesClassifier(n_estimators=300, random_state=random_state, class_weight="balanced")),
+        ])
+    if name == "Gradient boosting":
+        return Pipeline([
+            ("imputer", SimpleImputer(strategy="median")),
+            ("model", GradientBoostingClassifier(random_state=random_state)),
+        ])
+    raise ValueError(f"Unknown algorithm: {name}")
+
+
+def fit_ensemble_sdm(train_df: pd.DataFrame, variables: list[str], presence_col: str, algorithms: list[str], test_size: float = 0.25, random_state: int = 42) -> dict[str, Any]:
+    data = train_df.copy()
+    y = pd.to_numeric(data[presence_col], errors="coerce")
+    mask = y.isin([0, 1])
+    data = data.loc[mask].copy()
+    y = y.loc[mask].astype(int)
+    if y.nunique() < 2:
+        raise ValueError("SDM training data must contain both presence=1 and absence/background=0 rows.")
+    X = data[variables].apply(pd.to_numeric, errors="coerce")
+    stratify = y if y.value_counts().min() >= 2 else None
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=stratify)
+    models = {}
+    metrics = []
+    for alg in algorithms:
+        model = make_model(alg, random_state=random_state)
+        model.fit(X_train, y_train)
+        prob = model.predict_proba(X_test)[:, 1]
+        auc = roc_auc_score(y_test, prob) if y_test.nunique() == 2 else np.nan
+        models[alg] = model
+        metrics.append({"algorithm": alg, "test_auc": round(float(auc), 3) if np.isfinite(auc) else np.nan})
+    return {"models": models, "metrics": pd.DataFrame(metrics), "variables": variables, "presence_col": presence_col}
+
+
+def predict_ensemble_suitability(sites: pd.DataFrame, sdm_result: Optional[dict[str, Any]]) -> pd.DataFrame:
+    out = sites.copy()
+    if not sdm_result or out.empty:
+        out["sdm_suitability"] = np.nan
+        return out
+    variables = sdm_result["variables"]
+    missing = [v for v in variables if v not in out.columns]
+    if missing:
+        out["sdm_suitability"] = np.nan
+        out["sdm_note"] = f"Missing candidate environmental variables: {', '.join(missing)}"
+        return out
+    X = out[variables].apply(pd.to_numeric, errors="coerce")
+    preds = []
+    for _, model in sdm_result["models"].items():
+        preds.append(model.predict_proba(X)[:, 1])
+    out["sdm_suitability"] = np.mean(np.vstack(preds), axis=0).round(3) if preds else np.nan
+    out["sdm_note"] = "Ensemble mean suitability from selected algorithms."
+    return out
+
+
+def update_priority_with_sdm(sites: pd.DataFrame) -> pd.DataFrame:
+    out = sites.copy()
+    if "sdm_suitability" not in out.columns or out["sdm_suitability"].isna().all():
+        return out
+    base = pd.to_numeric(out["priority_score"], errors="coerce").fillna(0.5)
+    sdm = pd.to_numeric(out["sdm_suitability"], errors="coerce").fillna(base)
+    out["priority_score_pre_sdm"] = base
+    out["priority_score"] = (0.65 * base + 0.35 * sdm).clip(0, 1).round(3)
+    return out
+
+
+def make_field_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
+    cols = [
+        "site_id", "priority_rank", "route_order", "latitude", "longitude", "priority_score", "sdm_suitability",
+        "visited", "survey_date", "observer", "access_success", "target_species_found",
+        "abundance_count", "abundance_class", "flowering_status", "population_area_m2",
+        "habitat_note", "photo_file", "comments",
+    ]
+    base = sites.copy()
+    for col in cols:
+        if col not in base.columns:
+            base[col] = ""
+    return base[cols]
 
 
 def image_html(url: str, width: int = 220) -> str:
@@ -564,13 +717,14 @@ def popup_html_site(row: pd.Series) -> str:
     years = ""
     if pd.notna(row.get("year_min")) and pd.notna(row.get("year_max")):
         years = f"<br>Years: {int(row['year_min'])}–{int(row['year_max'])}"
+    sdm_line = f"<br>SDM suitability: {row.get('sdm_suitability', '')}" if "sdm_suitability" in row.index else ""
     return f"""
     <b>Candidate site {int(row['site_id'])}</b><br>
     Priority rank: {row.get('priority_rank', '')}<br>
     Route order: {int(row.get('route_order', row['site_id']))}<br>
     Cluster: {int(row['cluster_id'])}<br>
     Method: {row.get('candidate_method', '')}<br>
-    Priority score: {row.get('priority_score', '')}<br>
+    Priority score: {row.get('priority_score', '')}{sdm_line}<br>
     Occurrences: {int(row['n_occurrences'])}<br>
     Latitude: {row['latitude']:.6f}<br>
     Longitude: {row['longitude']:.6f}<br>
@@ -586,17 +740,15 @@ def midpoint(a: tuple[float, float], b: tuple[float, float]) -> tuple[float, flo
     return ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
 
 
-def build_map(
-    occurrences: pd.DataFrame,
-    sites: pd.DataFrame,
-    buffer_radius_m: float,
-    show_occurrences: bool,
-    show_buffers: bool,
-    show_clusters: bool,
-    show_candidate_sites: bool,
-    show_routes: bool,
-    show_distance_labels: bool,
-) -> folium.Map:
+def fit_bounds_or_default(df: pd.DataFrame) -> tuple[list[list[float]], tuple[float, float], int]:
+    if df.empty:
+        return [[35.0, 135.0], [36.0, 136.0]], (35.5, 135.5), 6
+    min_lat, max_lat = df["_latitude"].min(), df["_latitude"].max()
+    min_lon, max_lon = df["_longitude"].min(), df["_longitude"].max()
+    return [[min_lat, min_lon], [max_lat, max_lon]], ((min_lat + max_lat) / 2, (min_lon + max_lon) / 2), 8
+
+
+def build_map(occurrences: pd.DataFrame, sites: pd.DataFrame, buffer_radius_m: float, show_occurrences: bool, show_buffers: bool, show_clusters: bool, show_candidate_sites: bool, show_routes: bool, show_distance_labels: bool) -> folium.Map:
     bounds, center, zoom = fit_bounds_or_default(occurrences)
     fmap = Map(location=center, zoom_start=zoom, tiles="OpenStreetMap", control_scale=True)
     cluster_colors = ["red", "orange", "green", "purple", "cadetblue", "darkred", "darkgreen", "darkblue", "pink", "gray"]
@@ -604,31 +756,14 @@ def build_map(
     if show_buffers:
         group = FeatureGroup(name="Buffers", show=True)
         for _, row in occurrences.iterrows():
-            folium.Circle(
-                location=(row["_latitude"], row["_longitude"]),
-                radius=float(buffer_radius_m),
-                color="#7aa6ff",
-                weight=1,
-                fill=True,
-                fill_opacity=0.08,
-                opacity=0.35,
-            ).add_to(group)
+            folium.Circle(location=(row["_latitude"], row["_longitude"]), radius=float(buffer_radius_m), color="#7aa6ff", weight=1, fill=True, fill_opacity=0.08, opacity=0.35).add_to(group)
         group.add_to(fmap)
 
     if show_occurrences:
         group = FeatureGroup(name="Occurrences", show=True)
         marker_cluster = MarkerCluster(name="Occurrence marker cluster")
         for _, row in occurrences.iterrows():
-            folium.CircleMarker(
-                location=(row["_latitude"], row["_longitude"]),
-                radius=4,
-                color="#1f77b4",
-                fill=True,
-                fill_color="#1f77b4",
-                fill_opacity=0.75,
-                weight=1,
-                popup=folium.Popup(popup_html_occurrence(row), max_width=330),
-            ).add_to(marker_cluster)
+            folium.CircleMarker(location=(row["_latitude"], row["_longitude"]), radius=4, color="#1f77b4", fill=True, fill_color="#1f77b4", fill_opacity=0.75, weight=1, popup=folium.Popup(popup_html_occurrence(row), max_width=330)).add_to(marker_cluster)
         marker_cluster.add_to(group)
         group.add_to(fmap)
 
@@ -637,16 +772,7 @@ def build_map(
         for _, row in occurrences.iterrows():
             label = int(row["cluster_id"])
             color = "black" if label < 0 else cluster_colors[label % len(cluster_colors)]
-            folium.CircleMarker(
-                location=(row["_latitude"], row["_longitude"]),
-                radius=6,
-                color=color,
-                fill=True,
-                fill_color=color,
-                fill_opacity=0.45,
-                weight=2,
-                popup=f"Cluster: {label}",
-            ).add_to(group)
+            folium.CircleMarker(location=(row["_latitude"], row["_longitude"]), radius=6, color=color, fill=True, fill_color=color, fill_opacity=0.45, weight=2, popup=f"Cluster: {label}").add_to(group)
         group.add_to(fmap)
 
     if show_routes and len(sites) >= 2:
@@ -663,40 +789,15 @@ def build_map(
             b = route_coords[i + 1]
             dist_km = geodesic(a, b).km
             mid = midpoint(a, b)
-            folium.Marker(
-                location=mid,
-                icon=folium.DivIcon(
-                    html=(
-                        "<div style='font-size:12px;font-weight:700;background:white;"
-                        "border:1px solid #999;border-radius:4px;padding:2px 5px;white-space:nowrap;'>"
-                        f"{dist_km:.1f} km</div>"
-                    )
-                ),
-            ).add_to(group)
+            folium.Marker(location=mid, icon=folium.DivIcon(html=f"<div style='font-size:12px;font-weight:700;background:white;border:1px solid #999;border-radius:4px;padding:2px 5px;white-space:nowrap;'>{dist_km:.1f} km</div>")).add_to(group)
         group.add_to(fmap)
 
     if show_candidate_sites:
         group = FeatureGroup(name="Candidate survey sites", show=True)
         for _, row in sites.iterrows():
             order = int(row.get("route_order", row["site_id"]))
-            folium.Marker(
-                location=(row["latitude"], row["longitude"]),
-                popup=folium.Popup(popup_html_site(row), max_width=380),
-                tooltip=f"Site {int(row['site_id'])} / Priority {row.get('priority_rank', '')}",
-                icon=folium.DivIcon(
-                    html="<div style='font-size:22px;line-height:22px;color:red;text-shadow:0 0 2px white,0 0 4px white;'>★</div>"
-                ),
-            ).add_to(group)
-            folium.Marker(
-                location=(row["latitude"], row["longitude"]),
-                icon=folium.DivIcon(
-                    html=(
-                        "<div style='font-size:11px;font-weight:700;background:white;"
-                        "border:1px solid #c00;border-radius:10px;padding:1px 5px;margin-left:14px;'>"
-                        f"{order}</div>"
-                    )
-                ),
-            ).add_to(group)
+            folium.Marker(location=(row["latitude"], row["longitude"]), popup=folium.Popup(popup_html_site(row), max_width=390), tooltip=f"Site {int(row['site_id'])} / Priority {row.get('priority_rank', '')}", icon=folium.DivIcon(html="<div style='font-size:22px;line-height:22px;color:red;text-shadow:0 0 2px white,0 0 4px white;'>★</div>")).add_to(group)
+            folium.Marker(location=(row["latitude"], row["longitude"]), icon=folium.DivIcon(html=f"<div style='font-size:11px;font-weight:700;background:white;border:1px solid #c00;border-radius:10px;padding:1px 5px;margin-left:14px;'>{order}</div>")).add_to(group)
         group.add_to(fmap)
 
     LayerControl(collapsed=True).add_to(fmap)
@@ -717,17 +818,10 @@ def read_uploaded_csv(uploaded: Any) -> pd.DataFrame:
 
 def load_input_controls() -> None:
     mode = st.sidebar.radio("Input source", ["Upload coordinate CSV", "Search GBIF by scientific name"], index=0, key="input_source_mode")
-
     if st.sidebar.button("Clear loaded data"):
         clear_loaded_data()
-
     if mode == "Upload coordinate CSV":
-        uploaded = st.sidebar.file_uploader(
-            "Upload CSV with latitude/longitude columns",
-            type=["csv"],
-            key="csv_upload",
-            help="GBIF format is not required. Any CSV is OK if it has coordinate columns such as latitude/longitude, lat/lon, lat/lng, decimalLatitude/decimalLongitude, or 緯度/経度. Species/date/photo columns are optional.",
-        )
+        uploaded = st.sidebar.file_uploader("Upload CSV with latitude/longitude columns", type=["csv"], key="csv_upload", help="GBIF format is not required. Any CSV is OK if it has coordinate columns. Species/date/photo columns are optional.")
         if uploaded is not None:
             file_key = f"upload::{uploaded.name}::{uploaded.size}"
             if st.session_state.source_key != file_key:
@@ -736,12 +830,10 @@ def load_input_controls() -> None:
                 st.session_state.source_kind = "upload"
                 st.session_state.source_key = file_key
         return
-
     scientific_name = st.sidebar.text_input("Scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_scientific_name")
     country_code = st.sidebar.text_input("Country code filter optional", value="JP", max_chars=2, key="gbif_country")
     max_records = st.sidebar.number_input("Maximum GBIF records", min_value=100, max_value=100_000, value=5000, step=500, key="gbif_max_records")
     use_year_filter = st.sidebar.checkbox("Filter by year", value=False, key="gbif_use_year")
-
     year_from = None
     year_to = None
     if use_year_filter:
@@ -750,8 +842,6 @@ def load_input_controls() -> None:
             year_from = int(st.number_input("From", min_value=1600, max_value=2100, value=2000, step=1, key="gbif_year_from"))
         with c2:
             year_to = int(st.number_input("To", min_value=1600, max_value=2100, value=2026, step=1, key="gbif_year_to"))
-
-    request_key = f"gbif::{scientific_name.strip()}::{country_code.strip().upper()}::{int(max_records)}::{year_from}::{year_to}"
     if st.sidebar.button("Fetch occurrences from GBIF", type="primary"):
         if not scientific_name.strip():
             st.warning("Scientific name is empty.")
@@ -759,24 +849,91 @@ def load_input_controls() -> None:
         with st.spinner("Fetching GBIF occurrences..."):
             match, df = fetch_gbif_occurrences_cached(scientific_name.strip(), int(max_records), country_code.strip().upper(), year_from, year_to)
         st.session_state.raw_df = df.copy()
-        st.session_state.source_message = (
-            f"GBIF match: {match.matched_name or match.input_name} / usageKey={match.usage_key} "
-            f"/ confidence={match.confidence}. Fetched {len(df):,} raw occurrence records."
-        )
+        st.session_state.source_message = f"GBIF match: {match.matched_name or match.input_name} / usageKey={match.usage_key} / confidence={match.confidence}. Fetched {len(df):,} raw occurrence records."
         st.session_state.source_kind = "gbif"
-        st.session_state.source_key = request_key
+        st.session_state.source_key = f"gbif::{scientific_name.strip()}::{country_code.strip().upper()}::{int(max_records)}::{year_from}::{year_to}"
+
+
+def environment_sdm_panel(candidates: pd.DataFrame) -> tuple[pd.DataFrame, Optional[dict[str, Any]], Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    st.subheader("Environment variables and ensemble SDM")
+    st.caption("Use 30 arc-sec raster-derived values prepared outside the app, or any additional environmental table. Recommended variables include elevation, slope, roughness, and bio1–bio19.")
+    with st.expander("Suggested 30 arc-sec variables", expanded=False):
+        st.write(SUGGESTED_ENV_VARS)
+        st.markdown("Expected SDM training CSV: one row per presence/background point, a `presence` column with 1/0, and environmental variable columns such as `elevation`, `slope`, `roughness`, `bio1` ... `bio19`.")
+        st.markdown("Candidate environment CSV can be joined by `site_id`, or nearest latitude/longitude within the selected matching distance.")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        sdm_file = st.file_uploader("Upload SDM training table CSV", type=["csv"], key="sdm_training_csv")
+    with c2:
+        cand_env_file = st.file_uploader("Upload candidate/site environment CSV optional", type=["csv"], key="candidate_env_csv")
+
+    env_train = read_uploaded_csv(sdm_file) if sdm_file is not None else None
+    cand_env = read_uploaded_csv(cand_env_file) if cand_env_file is not None else None
+    max_match_m = st.number_input("Nearest coordinate match distance for candidate env table (m)", min_value=10, max_value=100_000, value=1000, step=100)
+    candidates_env = merge_candidate_environment(candidates, cand_env, max_nearest_m=float(max_match_m)) if cand_env is not None else candidates.copy()
+
+    if env_train is None:
+        st.info("Upload an SDM training table to run VIF and ensemble SDM. Candidate selection still works without SDM.")
+        return candidates_env, None, None, None
+
+    env_train = prepare_env_table(env_train)
+    presence_col = detect_presence_column(env_train)
+    if presence_col is None:
+        st.warning("Could not detect a presence column. Add a column named presence, pa, found, or label with 1/0.")
+        return candidates_env, None, env_train, None
+
+    excluded = [presence_col] + LAT_CANDIDATES + LON_CANDIDATES + SITE_ID_CANDIDATES
+    available_vars = numeric_columns(env_train, exclude=excluded)
+    if not available_vars:
+        st.warning("No numeric environmental variables were detected in the SDM training table.")
+        return candidates_env, None, env_train, None
+
+    default_vars = [v for v in DEFAULT_ENV_VARS if v in available_vars]
+    if not default_vars:
+        default_vars = available_vars[: min(8, len(available_vars))]
+    selected_vars = st.multiselect("Select environmental variables for SDM", options=available_vars, default=default_vars)
+    if not selected_vars:
+        st.warning("Select at least one environmental variable.")
+        return candidates_env, None, env_train, None
+
+    use_vif = st.checkbox("Apply VIF filtering", value=True)
+    vif_threshold = st.number_input("VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
+    if use_vif and len(selected_vars) > 1:
+        kept_vars, vif_table = vif_step(env_train, selected_vars, threshold=float(vif_threshold))
+    else:
+        kept_vars = selected_vars
+        vif_table = compute_vif_table(env_train, selected_vars) if len(selected_vars) > 1 else pd.DataFrame({"variable": selected_vars, "vif": [1.0] * len(selected_vars), "status": ["kept"] * len(selected_vars)})
+    st.write("Variables after VIF filtering:", kept_vars)
+    st.dataframe(vif_table, width="stretch", hide_index=True)
+
+    algorithms = st.multiselect("Select SDM algorithms for ensemble", ["Logistic regression", "Random forest", "ExtraTrees", "Gradient boosting"], default=["Logistic regression", "Random forest", "ExtraTrees"])
+    test_size = st.slider("Test split proportion", min_value=0.1, max_value=0.5, value=0.25, step=0.05)
+    if st.button("Run ensemble SDM", type="primary"):
+        if not algorithms:
+            st.warning("Select at least one algorithm.")
+        else:
+            with st.spinner("Fitting ensemble SDM..."):
+                st.session_state.sdm_result = fit_ensemble_sdm(env_train, kept_vars, presence_col, algorithms, float(test_size))
+    sdm_result = st.session_state.sdm_result
+    if sdm_result:
+        st.success("Ensemble SDM is available for candidate suitability prediction.")
+        st.dataframe(sdm_result["metrics"], width="stretch", hide_index=True)
+        candidates_env = predict_ensemble_suitability(candidates_env, sdm_result)
+        candidates_env = update_priority_with_sdm(candidates_env)
+    else:
+        candidates_env = predict_ensemble_suitability(candidates_env, None)
+    return candidates_env, sdm_result, env_train, vif_table
 
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="🗺️", layout="wide")
     init_session_state()
-
     st.title("🗺️ GBIF FieldMap Builder")
-    st.caption("Bias-aware field survey planning from any coordinate CSV or direct GBIF scientific-name search.")
+    st.caption("Bias-aware field survey planning from coordinate data, environmental variables, ensemble SDM, and field validation.")
 
     st.sidebar.header("Data source")
     load_input_controls()
-
     st.sidebar.divider()
     st.sidebar.subheader("Sampling design")
     thinning_m = st.sidebar.number_input("Spatial thinning distance before clustering (m)", min_value=0, max_value=50_000, value=1000, step=500)
@@ -784,13 +941,8 @@ def main() -> None:
     buffer_radius_m = st.sidebar.number_input("Buffer radius around occurrences (m)", 0, 100_000, 500, 100)
     dbscan_threshold_m = st.sidebar.number_input("DBSCAN cluster distance threshold (m)", 1, 500_000, 2000, 500)
     min_samples = st.sidebar.number_input("Minimum occurrences per cluster", 1, 50, 1, 1)
-    route_order_mode = st.sidebar.selectbox(
-        "Candidate site order",
-        ["Cluster ID", "Priority score", "Nearest-neighbor route", "North → South", "South → North", "West → East", "East → West"],
-        index=2,
-    )
+    route_order_mode = st.sidebar.selectbox("Candidate site order", ["Cluster ID", "Priority score", "Nearest-neighbor route", "North → South", "South → North", "West → East", "East → West"], index=2)
     priority_top_n = st.sidebar.number_input("Show top N priority candidates", min_value=1, max_value=100, value=10, step=1)
-
     st.sidebar.divider()
     st.sidebar.subheader("Layers")
     show_occurrences = st.sidebar.checkbox("Occurrences", value=True)
@@ -803,28 +955,22 @@ def main() -> None:
     raw_df = st.session_state.raw_df
     if raw_df is None:
         st.info(st.session_state.source_message)
-        st.markdown(
-            """
-            **Two ways to start:**
-            1. Upload any CSV with latitude/longitude columns. GBIF format is not required.
-            2. Enter a scientific name and fetch occurrences directly from GBIF.
+        st.markdown("""
+        **Two ways to start:**
+        1. Upload any CSV with latitude/longitude columns. GBIF format is not required.
+        2. Enter a scientific name and fetch occurrences directly from GBIF.
 
-            Optional columns such as species/scientificName, eventDate/year, locality, gbifID, and image/media URL will be detected automatically when present.
-
-            Once loaded, the data stay in the app session. Changing layers or sampling settings will not force another upload or GBIF search.
-            """
-        )
+        Optional columns such as species/scientificName, eventDate/year, locality, gbifID, and image/media URL will be detected automatically.
+        """)
         return
 
     st.success(st.session_state.source_message)
-
     try:
         detected = detect_columns(raw_df)
         occ_raw = clean_occurrences(raw_df, detected)
     except Exception as exc:
         st.error(str(exc))
         return
-
     if occ_raw.empty:
         st.error("No valid coordinate records were found after cleaning.")
         return
@@ -838,10 +984,14 @@ def main() -> None:
 
     candidate_sites = make_candidate_sites(occ, candidate_method, float(thinning_m))
     candidate_sites = add_priority_rank(candidate_sites)
-    ordered_sites = add_navigation_columns(order_sites(candidate_sites, route_order_mode))
+    ordered_sites_base = add_navigation_columns(order_sites(candidate_sites, route_order_mode))
+
+    ordered_sites, sdm_result, env_train, vif_table = environment_sdm_panel(ordered_sites_base)
+    ordered_sites = add_priority_rank(ordered_sites)
+    ordered_sites = add_navigation_columns(order_sites(ordered_sites, route_order_mode))
+
     route_url = make_google_maps_route_url(ordered_sites, travelmode="driving")
     transit_route_url = make_google_maps_route_url(ordered_sites, travelmode="transit")
-
     clustered_mask = occ["cluster_id"] >= 0
     total_clusters = int(occ.loc[clustered_mask, "cluster_id"].nunique()) if clustered_mask.any() else 0
     noise_points = int((occ["cluster_id"] < 0).sum())
@@ -859,20 +1009,16 @@ def main() -> None:
             st.link_button("Open driving route in Google Maps", route_url, width="stretch")
         with c2:
             st.link_button("Open public-transit route in Google Maps", transit_route_url, width="stretch")
-        st.caption("Transit fares are not automatically estimated. Use the public-transit links to check actual train/bus/ferry fares and enter them below.")
 
-    with st.expander("Detected columns", expanded=False):
+    with st.expander("Detected input columns", expanded=False):
         st.write(detected.__dict__)
 
     fmap = build_map(occ, ordered_sites, float(buffer_radius_m), show_occurrences, show_buffers, show_clusters, show_candidate_sites, show_routes, show_distance_labels)
     st_folium(fmap, width=None, height=720, returned_objects=[])
 
     st.subheader("Priority candidate sites")
-    priority_cols = [
-        "priority_rank", "site_id", "route_order", "priority_score", "n_occurrences",
-        "latitude", "longitude", "year_min", "year_max",
-        "bias_warning", "selection_reason", "representative_media_url",
-    ]
+    priority_cols = ["priority_rank", "site_id", "route_order", "priority_score", "sdm_suitability", "n_occurrences", "latitude", "longitude", "year_min", "year_max", "bias_warning", "selection_reason", "representative_media_url"]
+    priority_cols = [c for c in priority_cols if c in ordered_sites.columns]
     priority_sites = ordered_sites.sort_values(["priority_rank"]).head(int(priority_top_n)) if not ordered_sites.empty else ordered_sites
     if priority_sites.empty:
         st.warning("No priority candidates were generated. Try changing DBSCAN settings.")
@@ -883,53 +1029,26 @@ def main() -> None:
     if ordered_sites.empty:
         st.warning("No candidate sites were generated. Try changing DBSCAN settings.")
     else:
-        display_cols = [
-            "route_order", "priority_rank", "site_id", "cluster_id", "latitude", "longitude",
-            "n_occurrences", "priority_score", "next_site_straight_km", "species_summary",
-            "year_min", "year_max", "candidate_method", "bias_warning", "selection_reason",
-            "representative_gbif_id", "representative_media_url", "google_maps_point_url",
-        ]
-        st.dataframe(ordered_sites[display_cols], width="stretch", hide_index=True)
+        st.dataframe(ordered_sites, width="stretch", hide_index=True)
 
-    st.subheader("Public transit fare calculator")
-    transit_legs = build_public_transit_legs(ordered_sites)
-    if transit_legs.empty:
-        st.info("At least two candidate sites are needed for public-transit leg calculation.")
-        edited_legs = transit_legs
-    else:
-        st.caption("Open each Google Maps transit URL, check the actual train/bus/ferry fare, and enter it in `fare_yen`. This avoids unreliable rough fare estimation.")
-        edited_legs = st.data_editor(transit_legs, width="stretch", hide_index=True, num_rows="fixed")
-
-    with st.expander("Additional trip costs", expanded=True):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            origin_roundtrip_yen = st.number_input("Origin → survey area round trip fare (yen)", min_value=0, value=0, step=1000)
-            lodging_per_night = st.number_input("Lodging per night (yen)", min_value=0, value=8000, step=1000)
-        with c2:
-            nights = st.number_input("Nights", min_value=0, value=0, step=1)
-            per_diem = st.number_input("Per diem / food per day (yen)", min_value=0, value=2000, step=500)
-        with c3:
-            days = st.number_input("Days", min_value=0, value=1, step=1)
-            misc = st.number_input("Miscellaneous / local taxi / supplies (yen)", min_value=0, value=0, step=1000)
-
-    cost = transit_cost_summary(edited_legs, origin_roundtrip_yen, lodging_per_night, int(nights), per_diem, int(days), misc)
-    st.metric("Estimated public-transport-based total", f"¥{cost['estimated_total_yen']:,}")
-    st.json(cost)
-
+    validation_template = make_field_validation_template(ordered_sites)
     html_bytes = fmap.get_root().render().encode("utf-8")
     candidates_csv = ordered_sites.to_csv(index=False).encode("utf-8-sig")
-    transit_csv = edited_legs.to_csv(index=False).encode("utf-8-sig") if edited_legs is not None else b""
-    cost_csv = pd.DataFrame([cost]).to_csv(index=False).encode("utf-8-sig")
+    validation_csv = validation_template.to_csv(index=False).encode("utf-8-sig")
+    sdm_metrics_csv = sdm_result["metrics"].to_csv(index=False).encode("utf-8-sig") if sdm_result else b"algorithm,test_auc\n"
+    vif_csv = vif_table.to_csv(index=False).encode("utf-8-sig") if vif_table is not None else b"variable,vif,status\n"
 
-    dl1, dl2, dl3, dl4 = st.columns(4)
+    dl1, dl2, dl3, dl4, dl5 = st.columns(5)
     with dl1:
         st.download_button("Download HTML map", html_bytes, "fieldmap.html", "text/html", width="stretch")
     with dl2:
         st.download_button("Download candidate CSV", candidates_csv, "candidate_survey_sites.csv", "text/csv", width="stretch")
     with dl3:
-        st.download_button("Download transit legs CSV", transit_csv, "public_transit_legs.csv", "text/csv", width="stretch")
+        st.download_button("Download validation template", validation_csv, "field_validation_template.csv", "text/csv", width="stretch")
     with dl4:
-        st.download_button("Download cost summary CSV", cost_csv, "travel_cost_summary.csv", "text/csv", width="stretch")
+        st.download_button("Download SDM metrics", sdm_metrics_csv, "sdm_metrics.csv", "text/csv", width="stretch")
+    with dl5:
+        st.download_button("Download VIF table", vif_csv, "vif_table.csv", "text/csv", width="stretch")
 
 
 if __name__ == "__main__":
