@@ -20,127 +20,104 @@ jobs:
       - name: Patch Streamlit app
         run: |
           python - <<'PY'
+          import re
           from pathlib import Path
 
-          path = Path("gbif_fieldmap_builder_app.py")
-          s = path.read_text(encoding="utf-8")
-
+          path = Path('gbif_fieldmap_builder_app.py')
+          s = path.read_text(encoding='utf-8')
           s = s.replace('"manual_excluded_row_ids": [],', '"restore_excluded_row_ids": [],')
           s = s.replace('st.session_state.manual_excluded_row_ids = []', 'st.session_state.restore_excluded_row_ids = []')
-          s = s.replace(
-              'st.caption("Blue = included, red = excluded. Click a blue occurrence point to exclude it. Use the row-ID box below to restore/delete manually.")',
-              'st.caption("Blue = included, red = excluded. Click an occurrence point to toggle it. Use the row-ID box below only to recover excluded records.")',
-          )
-          s = s.replace(
-              '                    st.session_state.manual_excluded_row_ids = [x for x in sorted(st.session_state.excluded_row_ids) if x in set(occ_raw["_row_id"].astype(int))]\n',
-              '                    st.session_state.restore_excluded_row_ids = []\n',
-          )
+          s = s.replace('st.caption("Blue = included, red = excluded. Click a blue occurrence point to exclude it. Use the row-ID box below to restore/delete manually.")', 'st.caption("Blue = included, red = excluded. Click an occurrence point to toggle it. Use the row-ID box below only to recover excluded records.")')
+          s = s.replace('                    st.session_state.manual_excluded_row_ids = [x for x in sorted(st.session_state.excluded_row_ids) if x in set(occ_raw["_row_id"].astype(int))]\n', '                    st.session_state.restore_excluded_row_ids = []\n')
 
-          old_manual = '''        options = occ_raw["_row_id"].astype(int).tolist()
-          if "manual_excluded_row_ids" not in st.session_state:
-              st.session_state.manual_excluded_row_ids = [x for x in sorted(st.session_state.excluded_row_ids) if x in options]
-          manual_ids = st.multiselect("Excluded row IDs", options=options, key="manual_excluded_row_ids")
-          new_ids = set(map(int, manual_ids))
-          if new_ids != set(st.session_state.excluded_row_ids):
-              st.session_state.excluded_row_ids = new_ids
-              reset_model_outputs()
-  '''
-          new_manual = '''        excluded_options = [x for x in sorted(set(st.session_state.excluded_row_ids)) if x in set(occ_raw["_row_id"].astype(int))]
-          if any(x not in excluded_options for x in st.session_state.get("restore_excluded_row_ids", [])):
-              st.session_state.restore_excluded_row_ids = []
-          recover_ids = st.multiselect("Excluded row IDs", options=excluded_options, default=[], key="restore_excluded_row_ids")
-          if recover_ids and st.button("Recover selected excluded rows"):
-              st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) - set(map(int, recover_ids))
-              st.session_state.restore_excluded_row_ids = []
-              reset_model_outputs()
-              st.rerun()
-  '''
-          if old_manual in s:
-              s = s.replace(old_manual, new_manual, 1)
-
-          old_filter = '''    occ_checked = coordinate_exclusion_panel(occ_raw)
-      active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
-      occ_checked = occ_raw[~occ_raw["_row_id"].astype(int).isin(active_excluded_ids)].copy().reset_index(drop=True)
-      if occ_checked.empty:
-          st.error("All occurrence records were excluded. Clear excluded coordinates.")
-          return
-  
-      occ = spatial_thin(occ_checked, float(thinning_m))
-      occ["cluster_id"] = haversine_dbscan(occ, "_latitude", "_longitude", float(cluster_m), int(min_samples))
-  '''
-          new_filter = '''    occ_checked = coordinate_exclusion_panel(occ_raw)
-      active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
-      occ_checked = occ_raw[~occ_raw["_row_id"].astype(int).isin(active_excluded_ids)].copy().reset_index(drop=True)
-      leaked_checked_ids = sorted(set(occ_checked["_row_id"].astype(int)).intersection(active_excluded_ids))
-      if leaked_checked_ids:
-          st.error(f"Excluded rows leaked into the included occurrence set: {leaked_checked_ids[:20]}. SDM was stopped.")
-          return
-      if occ_checked.empty:
-          st.error("All occurrence records were excluded. Clear excluded coordinates.")
-          return
-  
-      occ = spatial_thin(occ_checked, float(thinning_m))
-      leaked_occ_ids = sorted(set(occ["_row_id"].astype(int)).intersection(active_excluded_ids))
-      if leaked_occ_ids:
-          st.error(f"Excluded rows leaked into the thinned SDM occurrence set: {leaked_occ_ids[:20]}. SDM was stopped.")
-          return
-      occ["cluster_id"] = haversine_dbscan(occ, "_latitude", "_longitude", float(cluster_m), int(min_samples))
-  '''
-          if old_filter in s:
-              s = s.replace(old_filter, new_filter, 1)
-
-          old_extent_anchor = '''    occurrence_candidates = add_priority_rank(occurrence_candidates)
-      occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")
-  
-      st.subheader("SDM settings")
-  '''
-          new_extent_anchor = '''    occurrence_candidates = add_priority_rank(occurrence_candidates)
-      occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")
-  
-      st.subheader("SDM prediction extent")
-      st.caption("Choose the prediction area before building SDM. The extent is calculated from included blue points only; red excluded points are ignored.")
-      area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode")
-      c1, c2 = st.columns(2)
-      buffer_km = c1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
-      rectangle_margin_km = c2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
-      extent_geom = prediction_area_geometry(occ, area_mode, float(buffer_km), float(rectangle_margin_km))
-      if extent_geom is not None:
-          minx, miny, maxx, maxy = extent_geom.bounds
-          st.caption(f"Current SDM input: {len(occ):,} blue included records after thinning; {len(active_excluded_ids):,} red excluded records. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")
-  
-      st.subheader("SDM settings")
-  '''
-          if old_extent_anchor in s:
-              s = s.replace(old_extent_anchor, new_extent_anchor, 1)
-
-          s = s.replace(
-              '''        area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.")
-          buffer_km = st.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0)
-          rectangle_margin_km = st.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0)
-  ''',
+          manual_pattern = re.compile(r'        options = occ_raw\["_row_id"\]\.astype\(int\)\.tolist\(\)\n        if "manual_excluded_row_ids" not in st\.session_state:\n            st\.session_state\.manual_excluded_row_ids = \[x for x in sorted\(st\.session_state\.excluded_row_ids\) if x in options\]\n        manual_ids = st\.multiselect\("Excluded row IDs", options=options, key="manual_excluded_row_ids"\)\n        new_ids = set\(map\(int, manual_ids\)\)\n        if new_ids != set\(st\.session_state\.excluded_row_ids\):\n            st\.session_state\.excluded_row_ids = new_ids\n            reset_model_outputs\(\)\n')
+          manual_replacement = '\n'.join([
+              '        excluded_options = [x for x in sorted(set(st.session_state.excluded_row_ids)) if x in set(occ_raw["_row_id"].astype(int))]',
+              '        if any(x not in excluded_options for x in st.session_state.get("restore_excluded_row_ids", [])):',
+              '            st.session_state.restore_excluded_row_ids = []',
+              '        recover_ids = st.multiselect("Excluded row IDs", options=excluded_options, default=[], key="restore_excluded_row_ids")',
+              '        if recover_ids and st.button("Recover selected excluded rows"):',
+              '            st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) - set(map(int, recover_ids))',
+              '            st.session_state.restore_excluded_row_ids = []',
+              '            reset_model_outputs()',
+              '            st.rerun()',
               '',
-          )
+          ])
+          s, n_manual = manual_pattern.subn(manual_replacement, s, count=1)
 
-          old_train = '''                status.write("Extracting environmental variables for training data...")
-                  train = extract_environment(pb, variables, "latitude", "longitude", resolution, status)
-                  progress.progress(0.35)
-  '''
-          new_train = '''                status.write("Extracting environmental variables for training data...")
-                  train = extract_environment(pb, variables, "latitude", "longitude", resolution, status)
-                  if "occurrence_row_id" in train.columns:
-                      train_presence_ids = set(pd.to_numeric(train.loc[train["presence"].eq(1), "occurrence_row_id"], errors="coerce").dropna().astype(int))
-                      leaked_train_ids = sorted(train_presence_ids.intersection(active_excluded_ids))
-                      if leaked_train_ids:
-                          raise RuntimeError(f"Excluded rows reached the SDM training table: {leaked_train_ids[:20]}")
-                  progress.progress(0.35)
-  '''
-          if old_train in s:
-              s = s.replace(old_train, new_train, 1)
+          filter_pattern = re.compile(r'    occ_checked = coordinate_exclusion_panel\(occ_raw\)\n    active_excluded_ids = set\(map\(int, st\.session_state\.excluded_row_ids\)\)\n    occ_checked = occ_raw\[~occ_raw\["_row_id"\]\.astype\(int\)\.isin\(active_excluded_ids\)\]\.copy\(\)\.reset_index\(drop=True\)\n    if occ_checked\.empty:\n        st\.error\("All occurrence records were excluded\. Clear excluded coordinates\."\)\n        return\n\n    occ = spatial_thin\(occ_checked, float\(thinning_m\)\)\n    occ\["cluster_id"\] = haversine_dbscan\(occ, "_latitude", "_longitude", float\(cluster_m\), int\(min_samples\)\)\n')
+          filter_replacement = '\n'.join([
+              '    occ_checked = coordinate_exclusion_panel(occ_raw)',
+              '    active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))',
+              '    occ_checked = occ_raw[~occ_raw["_row_id"].astype(int).isin(active_excluded_ids)].copy().reset_index(drop=True)',
+              '    leaked_checked_ids = sorted(set(occ_checked["_row_id"].astype(int)).intersection(active_excluded_ids))',
+              '    if leaked_checked_ids:',
+              '        st.error(f"Excluded rows leaked into the included occurrence set: {leaked_checked_ids[:20]}. SDM was stopped.")',
+              '        return',
+              '    if occ_checked.empty:',
+              '        st.error("All occurrence records were excluded. Clear excluded coordinates.")',
+              '        return',
+              '',
+              '    occ = spatial_thin(occ_checked, float(thinning_m))',
+              '    leaked_occ_ids = sorted(set(occ["_row_id"].astype(int)).intersection(active_excluded_ids))',
+              '    if leaked_occ_ids:',
+              '        st.error(f"Excluded rows leaked into the thinned SDM occurrence set: {leaked_occ_ids[:20]}. SDM was stopped.")',
+              '        return',
+              '    occ["cluster_id"] = haversine_dbscan(occ, "_latitude", "_longitude", float(cluster_m), int(min_samples))',
+              '',
+          ])
+          s, n_filter = filter_pattern.subn(filter_replacement, s, count=1)
 
-          if "SDM prediction extent" not in s or "Excluded rows reached the SDM training table" not in s:
-              raise SystemExit("Required SDM exclusion/extent patch was not applied")
+          extent_anchor = '    occurrence_candidates = add_priority_rank(occurrence_candidates)\n    occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")\n\n    st.subheader("SDM settings")\n'
+          extent_block = '\n'.join([
+              '    occurrence_candidates = add_priority_rank(occurrence_candidates)',
+              '    occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")',
+              '',
+              '    st.subheader("SDM prediction extent")',
+              '    st.caption("Choose the prediction area before building SDM. The extent is calculated from included blue points only; red excluded points are ignored.")',
+              '    area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode")',
+              '    c1, c2 = st.columns(2)',
+              '    buffer_km = c1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")',
+              '    rectangle_margin_km = c2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")',
+              '    extent_geom = prediction_area_geometry(occ, area_mode, float(buffer_km), float(rectangle_margin_km))',
+              '    if extent_geom is not None:',
+              '        minx, miny, maxx, maxy = extent_geom.bounds',
+              '        st.caption(f"Current SDM input: {len(occ):,} blue included records after thinning; {len(active_excluded_ids):,} red excluded records. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")',
+              '',
+              '    st.subheader("SDM settings")',
+              '',
+          ])
+          if extent_anchor in s:
+              s = s.replace(extent_anchor, extent_block, 1)
 
-          path.write_text(s, encoding="utf-8")
+          old_extent_controls = '\n'.join([
+              '        area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.")',
+              '        buffer_km = st.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0)',
+              '        rectangle_margin_km = st.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0)',
+              '',
+          ])
+          s = s.replace(old_extent_controls, '')
+
+          train_anchor = '                status.write("Extracting environmental variables for training data...")\n                train = extract_environment(pb, variables, "latitude", "longitude", resolution, status)\n                progress.progress(0.35)\n'
+          train_block = '\n'.join([
+              '                status.write("Extracting environmental variables for training data...")',
+              '                train = extract_environment(pb, variables, "latitude", "longitude", resolution, status)',
+              '                if "occurrence_row_id" in train.columns:',
+              '                    train_presence_ids = set(pd.to_numeric(train.loc[train["presence"].eq(1), "occurrence_row_id"], errors="coerce").dropna().astype(int))',
+              '                    leaked_train_ids = sorted(train_presence_ids.intersection(active_excluded_ids))',
+              '                    if leaked_train_ids:',
+              '                        raise RuntimeError(f"Excluded rows reached the SDM training table: {leaked_train_ids[:20]}")',
+              '                progress.progress(0.35)',
+              '',
+          ])
+          if train_anchor in s:
+              s = s.replace(train_anchor, train_block, 1)
+
+          required = ['restore_excluded_row_ids', 'SDM prediction extent', 'Excluded rows leaked into the included occurrence set', 'Excluded rows reached the SDM training table']
+          missing = [x for x in required if x not in s]
+          if missing:
+              raise SystemExit(f'Missing required patch markers: {missing}')
+          path.write_text(s, encoding='utf-8')
           PY
           python -m py_compile gbif_fieldmap_builder_app.py
       - name: Commit patch and remove workflow
