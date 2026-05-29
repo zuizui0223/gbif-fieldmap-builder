@@ -1,16 +1,16 @@
 """
 GBIF FieldMap Builder
 
-Field-survey planning app from GBIF records or coordinate CSV data.
+Streamlit app for field-survey planning from GBIF records or a coordinate CSV.
 
-Key features
-- GBIF fetch uses pagination: GBIF returns up to 300 records per request, but the app keeps fetching pages until the selected cap or GBIF endOfRecords.
-- Map-click coordinate exclusion: click an occurrence point to remove it from SDM/range/route planning.
+Features:
+- GBIF page-by-page download. GBIF returns max 300 records per request; the app repeats requests until the selected cap or endOfRecords.
+- Map-click coordinate exclusion. Click an occurrence point to exclude it from clustering, SDM, prediction area, and route planning.
 - Candidate survey ranges from occurrence clusters.
-- Optional ensemble SDM with VIF filtering and spatial partition diagnostics.
-- Prediction areas are land-only: buffer, convex hull, bounding box.
-- Raster-style SDM predict map with Folium ImageOverlay.
-- Day-by-day sampling route plan and downloads.
+- Optional ensemble SDM with VIF stepwise filtering and spatial partition diagnostics.
+- Land-only prediction areas: buffer, convex hull, bounding box.
+- Raster-like SDM predict map shown with Folium ImageOverlay.
+- Day-by-day route planning and downloads.
 """
 
 from __future__ import annotations
@@ -68,7 +68,12 @@ LOCALITY_CANDIDATES = ["locality", "municipality", "county", "stateprovince", "l
 TOPOGRAPHY_VARS = ["elevation", "slope", "roughness"]
 CLIMATE_VARS = [f"bio{i}" for i in range(1, 20)]
 RESOLUTIONS = ["10m", "5m", "2.5m", "30s"]
-RESOLUTION_NOTE = {"10m": "10 arc-minutes, about 18 km", "5m": "5 arc-minutes, about 9 km", "2.5m": "2.5 arc-minutes, about 4.5 km", "30s": "30 arc-seconds, about 1 km"}
+RESOLUTION_NOTE = {
+    "10m": "10 arc-minutes, about 18 km",
+    "5m": "5 arc-minutes, about 9 km",
+    "2.5m": "2.5 arc-minutes, about 4.5 km",
+    "30s": "30 arc-seconds, about 1 km",
+}
 ALGORITHMS = ["Logistic regression", "Random forest", "ExtraTrees", "Gradient boosting"]
 AREA_MODES = ["buffer", "convex hull", "bounding box"]
 PARTITION_METHODS = ["random holdout", "random k-fold", "block", "checkerboard1", "checkerboard2", "jackknife"]
@@ -129,6 +134,11 @@ def clear_loaded_data() -> None:
     st.session_state.excluded_row_ids = set()
     st.session_state.last_exclude_click_signature = ""
     st.session_state.source_message = "No occurrence data loaded yet."
+
+
+def reset_model_outputs() -> None:
+    for key in ["sdm_result", "sdm_train_table", "prediction_table", "prediction_overlay", "vif_table"]:
+        st.session_state[key] = None
 
 
 def first_url(value: Any) -> str:
@@ -211,23 +221,17 @@ def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, countr
     elif year_to is not None:
         params_base["year"] = f",{int(year_to)}"
 
-    first_params = dict(params_base)
-    first_params.update({"limit": 0, "offset": 0})
-    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params=first_params, timeout=60)
+    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=60)
     first.raise_for_status()
     total_count = int(first.json().get("count", 0))
-
+    target = min(int(max_records), total_count if total_count > 0 else int(max_records))
     records: list[dict[str, Any]] = []
     offset = 0
-    page_limit = 300
-    target = min(int(max_records), total_count if total_count > 0 else int(max_records))
     while len(records) < target:
-        params = dict(params_base)
-        params["offset"] = offset
-        params["limit"] = min(page_limit, target - len(records))
-        r = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params=params, timeout=60)
-        r.raise_for_status()
-        page = r.json()
+        limit = min(300, target - len(records))
+        response = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=60)
+        response.raise_for_status()
+        page = response.json()
         batch = page.get("results", [])
         if not batch:
             break
@@ -300,19 +304,6 @@ def filter_to_land(df: pd.DataFrame, lat_col: str = "latitude", lon_col: str = "
     return df.loc[mask].reset_index(drop=True)
 
 
-def add_outlier_scores(occ: pd.DataFrame) -> pd.DataFrame:
-    out = occ.copy()
-    if len(out) <= 1:
-        out["nearest_neighbor_km"] = np.nan
-        out["distance_from_centroid_km"] = np.nan
-        return out
-    coords = list(zip(out["_latitude"].astype(float), out["_longitude"].astype(float)))
-    out["nearest_neighbor_km"] = [min(geodesic(coord, other).km for j, other in enumerate(coords) if i != j) for i, coord in enumerate(coords)]
-    cen = (float(out["_latitude"].mean()), float(out["_longitude"].mean()))
-    out["distance_from_centroid_km"] = [geodesic(cen, coord).km for coord in coords]
-    return out
-
-
 def image_html(url: str, width: int = 220) -> str:
     url = first_url(url)
     if not url:
@@ -320,12 +311,12 @@ def image_html(url: str, width: int = 220) -> str:
     return f"<br><img src='{url}' style='max-width:{width}px; max-height:180px; border-radius:6px; margin-top:6px;'>"
 
 
-def make_exclusion_review_map(scored: pd.DataFrame, excluded_ids: set[int]) -> folium.Map:
-    center = (float(scored["_latitude"].mean()), float(scored["_longitude"].mean())) if not scored.empty else (35.5, 135.5)
+def make_exclusion_review_map(occ_raw: pd.DataFrame, excluded_ids: set[int]) -> folium.Map:
+    center = (float(occ_raw["_latitude"].mean()), float(occ_raw["_longitude"].mean())) if not occ_raw.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
     fg_in = FeatureGroup(name="included occurrences", show=True)
     fg_ex = FeatureGroup(name="excluded occurrences", show=True)
-    for _, row in scored.iterrows():
+    for _, row in occ_raw.iterrows():
         rid = int(row["_row_id"])
         excluded = rid in excluded_ids
         color = "#d62728" if excluded else "#1f77b4"
@@ -333,7 +324,6 @@ def make_exclusion_review_map(scored: pd.DataFrame, excluded_ids: set[int]) -> f
         <b>{'Excluded' if excluded else 'Included'} occurrence</b><br>
         row_id: {rid}<br>
         lat/lon: {row['_latitude']:.6f}, {row['_longitude']:.6f}<br>
-        nearest neighbor: {row.get('nearest_neighbor_km', np.nan):.1f} km<br>
         locality: {row.get('_locality','')}<br>
         GBIF: {row.get('_gbif_id','')}
         {image_html(row.get('_media_url',''))}
@@ -353,63 +343,57 @@ def make_exclusion_review_map(scored: pd.DataFrame, excluded_ids: set[int]) -> f
     fg_ex.add_to(fmap)
     LayerControl(collapsed=True).add_to(fmap)
     try:
-        fmap.fit_bounds([[scored["_latitude"].min(), scored["_longitude"].min()], [scored["_latitude"].max(), scored["_longitude"].max()]], padding=(30, 30))
+        fmap.fit_bounds([[occ_raw["_latitude"].min(), occ_raw["_longitude"].min()], [occ_raw["_latitude"].max(), occ_raw["_longitude"].max()]], padding=(30, 30))
     except Exception:
         pass
     return fmap
 
 
-def nearest_row_id_from_click(scored: pd.DataFrame, click: dict[str, Any], max_distance_km: float) -> tuple[Optional[int], float]:
-    if not click or "lat" not in click or "lng" not in click or scored.empty:
-        return None, np.nan
+def nearest_row_id_from_click(occ_raw: pd.DataFrame, click: dict[str, Any]) -> Optional[int]:
+    if not click or "lat" not in click or "lng" not in click or occ_raw.empty:
+        return None
     coord = (float(click["lat"]), float(click["lng"]))
-    dists = scored.apply(lambda r: geodesic(coord, (float(r["_latitude"]), float(r["_longitude"]))).km, axis=1)
-    idx = int(dists.idxmin())
-    dist = float(dists.loc[idx])
-    if dist <= float(max_distance_km):
-        return int(scored.loc[idx, "_row_id"]), dist
-    return None, dist
+    dists = occ_raw.apply(lambda r: geodesic(coord, (float(r["_latitude"]), float(r["_longitude"]))).km, axis=1)
+    return int(occ_raw.loc[int(dists.idxmin()), "_row_id"])
 
 
-def outlier_review_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
+def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
     st.subheader("Coordinate quality check")
     with st.expander("Click occurrence points on the map to exclude them", expanded=True):
-        st.caption("Blue = included, red = excluded. Click a point to exclude it from clustering, SDM, prediction area, and route planning.")
-        c1, c2, c3 = st.columns(3)
-        nn_threshold = c1.number_input("Auto-suggest isolated records over (km)", min_value=1.0, max_value=2000.0, value=80.0, step=10.0)
-        click_tolerance_km = c2.number_input("Click tolerance (km)", min_value=0.1, max_value=50.0, value=5.0, step=0.5)
-        show_table_n = c3.number_input("Show top isolated records", min_value=5, max_value=200, value=20, step=5)
-        scored = add_outlier_scores(occ_raw)
-        auto_ids = set(scored.loc[pd.to_numeric(scored["nearest_neighbor_km"], errors="coerce") >= float(nn_threshold), "_row_id"].astype(int).tolist())
+        st.caption("Blue = included, red = excluded. Click a blue occurrence point to exclude it. Use the row-ID box below to restore/delete manually.")
         b1, b2 = st.columns(2)
-        if b1.button("Add auto-suggested isolated records to exclusion list"):
-            st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) | auto_ids
-            st.rerun()
-        if b2.button("Clear all excluded coordinates"):
+        if b1.button("Clear excluded coordinates"):
             st.session_state.excluded_row_ids = set()
             st.session_state.last_exclude_click_signature = ""
+            reset_model_outputs()
             st.rerun()
-        click_data = st_folium(make_exclusion_review_map(scored, set(st.session_state.excluded_row_ids)), width=None, height=520, returned_objects=["last_object_clicked"], key="exclusion_review_map")
+        if b2.button("Reset SDM after coordinate edits"):
+            reset_model_outputs()
+            st.rerun()
+        click_data = st_folium(make_exclusion_review_map(occ_raw, set(st.session_state.excluded_row_ids)), width=None, height=520, returned_objects=["last_object_clicked"], key="coordinate_exclusion_map")
         clicked = (click_data or {}).get("last_object_clicked")
         if clicked:
             sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f}"
             if sig != st.session_state.last_exclude_click_signature:
-                rid, dist = nearest_row_id_from_click(scored, clicked, float(click_tolerance_km))
+                rid = nearest_row_id_from_click(occ_raw, clicked)
                 st.session_state.last_exclude_click_signature = sig
                 if rid is not None:
-                    st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) | {int(rid)}
-                    st.success(f"Excluded row {rid}. Nearest point distance from click: {dist:.2f} km.")
+                    if rid in set(st.session_state.excluded_row_ids):
+                        st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) - {rid}
+                        st.success(f"Restored row {rid}.")
+                    else:
+                        st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) | {rid}
+                        st.success(f"Excluded row {rid}.")
+                    reset_model_outputs()
                     st.rerun()
-                else:
-                    st.warning(f"No occurrence point within {click_tolerance_km} km. Nearest point was {dist:.2f} km away.")
-        options = scored["_row_id"].astype(int).tolist()
+        options = occ_raw["_row_id"].astype(int).tolist()
         manual_ids = st.multiselect("Excluded row IDs", options=options, default=[x for x in sorted(st.session_state.excluded_row_ids) if x in options])
-        st.session_state.excluded_row_ids = set(map(int, manual_ids))
-        view_cols = ["_row_id", "_latitude", "_longitude", "nearest_neighbor_km", "distance_from_centroid_km", "_species", "_locality", "_event_date", "_gbif_id"]
-        st.write("Most isolated records")
-        st.dataframe(scored.sort_values("nearest_neighbor_km", ascending=False).head(int(show_table_n))[[c for c in view_cols if c in scored.columns]], width="stretch", hide_index=True)
-        filtered = scored[~scored["_row_id"].astype(int).isin(set(st.session_state.excluded_row_ids))].copy()
-        st.info(f"Included records: {len(filtered)} / {len(scored)}. Excluded: {len(scored) - len(filtered)}.")
+        new_ids = set(map(int, manual_ids))
+        if new_ids != set(st.session_state.excluded_row_ids):
+            st.session_state.excluded_row_ids = new_ids
+            reset_model_outputs()
+        filtered = occ_raw[~occ_raw["_row_id"].astype(int).isin(set(st.session_state.excluded_row_ids))].copy()
+        st.info(f"Included records: {len(filtered)} / {len(occ_raw)}. Excluded: {len(occ_raw) - len(filtered)}.")
     return filtered.reset_index(drop=True)
 
 
@@ -485,12 +469,19 @@ def make_candidate_sites(df: pd.DataFrame, method: str, occurrence_weight: float
     return pd.DataFrame(rows)
 
 
+def available_sort_cols(df: pd.DataFrame, desired: list[str]) -> list[str]:
+    return [c for c in desired if c in df.columns]
+
+
 def add_priority_rank(sites: pd.DataFrame) -> pd.DataFrame:
     out = sites.copy()
     if out.empty:
         out["priority_rank"] = []
         return out
-    sort_cols = [c for c in ["priority_score", "sdm_suitability", "occurrence_support_score"] if c in out.columns]
+    sort_cols = available_sort_cols(out, ["priority_score", "sdm_suitability", "occurrence_support_score"])
+    if not sort_cols:
+        out["priority_rank"] = range(1, len(out) + 1)
+        return out
     rank = out.sort_values(sort_cols, ascending=False, na_position="last").reset_index(drop=True)
     rank["priority_rank"] = range(1, len(rank) + 1)
     return out.drop(columns=["priority_rank"], errors="ignore").merge(rank[["site_id", "priority_rank"]], on="site_id", how="left")
@@ -539,9 +530,11 @@ def order_sites(sites: pd.DataFrame, mode: str) -> pd.DataFrame:
     if mode in ["Nearest-neighbor route", "nearest from west"]:
         ordered = nearest_neighbor_order(work, int(work["longitude"].idxmin()))
     elif mode in ["Priority score", "priority only"]:
-        ordered = work.sort_values(["priority_score", "sdm_suitability", "occurrence_support_score"], ascending=False, na_position="last")
+        sort_cols = available_sort_cols(work, ["priority_score", "sdm_suitability", "occurrence_support_score"])
+        ordered = work.sort_values(sort_cols, ascending=False, na_position="last") if sort_cols else work
     elif mode == "priority then nearest":
-        ranked = work.sort_values(["priority_score", "sdm_suitability", "occurrence_support_score"], ascending=False, na_position="last").reset_index(drop=True)
+        sort_cols = available_sort_cols(work, ["priority_score", "sdm_suitability", "occurrence_support_score"])
+        ranked = work.sort_values(sort_cols, ascending=False, na_position="last").reset_index(drop=True) if sort_cols else work.reset_index(drop=True)
         ordered = nearest_neighbor_order(ranked, 0)
     elif mode in ["North → South", "north to south"]:
         ordered = work.sort_values(["latitude", "longitude"], ascending=[False, True])
@@ -552,7 +545,7 @@ def order_sites(sites: pd.DataFrame, mode: str) -> pd.DataFrame:
     elif mode in ["East → West", "east to west"]:
         ordered = work.sort_values(["longitude", "latitude"], ascending=[False, False])
     else:
-        ordered = work.sort_values(["candidate_type", "cluster_id", "site_id"])
+        ordered = work.sort_values([c for c in ["candidate_type", "cluster_id", "site_id"] if c in work.columns])
     ordered = ordered.reset_index(drop=True)
     ordered["route_order"] = range(1, len(ordered) + 1)
     ordered["google_maps_point_url"] = ordered.apply(lambda r: make_google_maps_point_url(float(r["latitude"]), float(r["longitude"])), axis=1)
@@ -1003,11 +996,11 @@ def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str
 
 
 def load_input_controls() -> None:
-    mode = st.sidebar.radio("Input source", ["Upload coordinate CSV", "Search GBIF by scientific name"], index=1)
+    mode = st.sidebar.radio("Input source", ["Upload coordinate CSV", "Search GBIF by scientific name"], index=1, key="input_source_selector")
     if st.sidebar.button("Clear loaded data"):
         clear_loaded_data()
     if mode == "Upload coordinate CSV":
-        uploaded = st.sidebar.file_uploader("Upload CSV with latitude/longitude columns", type=["csv"])
+        uploaded = st.sidebar.file_uploader("Upload CSV with latitude/longitude columns", type=["csv"], key="coordinate_csv_uploader")
         if uploaded is not None:
             key = f"upload::{uploaded.name}::{uploaded.size}"
             if st.session_state.source_key != key:
@@ -1015,9 +1008,11 @@ def load_input_controls() -> None:
                 st.session_state.source_key = key
                 st.session_state.source_message = f"Loaded coordinate CSV: {uploaded.name} ({len(st.session_state.raw_df):,} raw rows)."
                 st.session_state.excluded_row_ids = set()
+                reset_model_outputs()
         return
-    name = st.sidebar.text_input("Scientific name", value="", placeholder="e.g. Campanula punctata")
-    country = st.sidebar.text_input("Country code optional", value="JP", max_chars=2)
+    st.sidebar.markdown("Scientific name")
+    name = st.sidebar.text_input("Scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_scientific_name_no_autofill", label_visibility="collapsed")
+    country = st.sidebar.text_input("Country code optional", value="JP", max_chars=2, key="gbif_country_code_filter")
     max_records = st.sidebar.number_input("Maximum GBIF records to fetch", 100, 200_000, 10_000, 1000, help="GBIF returns at most 300 records per request. The app fetches repeated pages until this cap or GBIF endOfRecords.")
     use_year = st.sidebar.checkbox("Filter by year", value=False)
     year_from = year_to = None
@@ -1035,6 +1030,7 @@ def load_input_controls() -> None:
         st.session_state.source_key = f"gbif::{name}::{country}::{max_records}::{year_from}::{year_to}"
         st.session_state.source_message = msg
         st.session_state.excluded_row_ids = set()
+        reset_model_outputs()
 
 
 def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
@@ -1048,7 +1044,8 @@ def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
         max_dist = c3.number_input("Max straight-line distance per day (km)", 0.0, 500.0, 40.0, 5.0)
         max_total = c4.number_input("Max total sites", 1, 500, min(30, max(1, len(sites))))
         method = st.selectbox("Route ordering method", ROUTE_ORDER_METHODS, index=0)
-    work = sites.sort_values(["priority_score", "sdm_suitability", "occurrence_support_score"], ascending=False, na_position="last").head(int(max_total))
+    sort_cols = available_sort_cols(sites, ["priority_score", "sdm_suitability", "occurrence_support_score"])
+    work = sites.sort_values(sort_cols, ascending=False, na_position="last").head(int(max_total)) if sort_cols else sites.head(int(max_total))
     ordered = order_sites(work, method)
     plan = split_route_into_days(ordered, int(days), int(max_sites), float(max_dist))
     if plan.empty:
@@ -1108,9 +1105,9 @@ def main() -> None:
         st.error("No valid coordinate records found.")
         return
 
-    occ_checked = outlier_review_panel(occ_raw)
+    occ_checked = coordinate_exclusion_panel(occ_raw)
     if occ_checked.empty:
-        st.error("All occurrence records were excluded. Clear excluded coordinates or relax the filter.")
+        st.error("All occurrence records were excluded. Clear excluded coordinates.")
         return
 
     occ = spatial_thin(occ_checked, float(thinning_m))
