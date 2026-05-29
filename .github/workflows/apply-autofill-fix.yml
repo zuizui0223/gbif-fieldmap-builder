@@ -20,20 +20,11 @@ jobs:
           from pathlib import Path
           p = Path('gbif_fieldmap_builder_app.py')
           text = p.read_text(encoding='utf-8')
-          old = '''    st.sidebar.markdown("Scientific name")
-    name = st.sidebar.text_input("Scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_scientific_name_no_autofill", label_visibility="collapsed")
-    country = st.sidebar.text_input("Country code optional", value="JP", max_chars=2, key="gbif_country_code_filter")
-'''
-          new = '''    name = st.sidebar.text_input("Taxon scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_taxon_scientific_name_input")
-    country_options = ["", "JP", "US", "GB", "CN", "KR", "TW", "DE", "FR", "IT", "ES", "AU", "NZ", "CA", "BR", "IN", "ID", "TH", "VN"]
-    selected_country = st.sidebar.selectbox("Country code filter optional", country_options, index=1, key="gbif_country_code_filter_select")
-    custom_country = st.sidebar.text_input("Custom country code optional", value="", max_chars=2, key="gbif_country_code_filter_custom", help="Two-letter ISO country code. Overrides the dropdown when set.")
-    country = custom_country.strip().upper() or selected_country
-'''
+          old = '    st.sidebar.markdown("Scientific name")\n    name = st.sidebar.text_input("Scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_scientific_name_no_autofill", label_visibility="collapsed")\n    country = st.sidebar.text_input("Country code optional", value="JP", max_chars=2, key="gbif_country_code_filter")\n'
+          new = '    name = st.sidebar.text_input("Taxon scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_taxon_scientific_name_input")\n    country_options = ["", "JP", "US", "GB", "CN", "KR", "TW", "DE", "FR", "IT", "ES", "AU", "NZ", "CA", "BR", "IN", "ID", "TH", "VN"]\n    selected_country = st.sidebar.selectbox("Country code filter optional", country_options, index=1, key="gbif_country_code_filter_select")\n    custom_country = st.sidebar.text_input("Custom country code optional", value="", max_chars=2, key="gbif_country_code_filter_custom", help="Two-letter ISO country code. Overrides the dropdown when set.")\n    country = custom_country.strip().upper() or selected_country\n'
           if old not in text:
               raise SystemExit('target block not found')
-          text = text.replace(old, new)
-          p.write_text(text, encoding='utf-8')
+          p.write_text(text.replace(old, new), encoding='utf-8')
           Path('.github/workflows/apply-autofill-fix.yml').unlink(missing_ok=True)
           PY
       - name: Validate
@@ -45,4 +36,3 @@ jobs:
           git add gbif_fieldmap_builder_app.py .github/workflows/apply-autofill-fix.yml
           git commit -m "Fix scientific name autofill mixup" || exit 0
           git push
-# trigger
