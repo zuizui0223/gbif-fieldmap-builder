@@ -33,59 +33,24 @@ jobs:
           if 'st.sidebar.caption(f"Build: {APP_BUILD_ID}")' not in s:
               s = s.replace('    st.sidebar.header("Data source")\n', '    st.sidebar.caption(f"Build: {APP_BUILD_ID}")\n    st.sidebar.header("Data source")\n', 1)
 
-          new_map = '''def make_sdm_extent_preview_map(occ: pd.DataFrame, extent_geom, area_mode: str) -> folium.Map:
-              center_df = occ
-              center = (float(center_df["_latitude"].mean()), float(center_df["_longitude"].mean())) if not center_df.empty else (35.5, 135.5)
-              fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
-              if extent_geom is not None and not extent_geom.is_empty:
-                  folium.GeoJson(
-                      extent_geom.__geo_interface__,
-                      name=f"SDM extent: {area_mode}",
-                      style_function=lambda _: {
-                          "color": "#e66101",
-                          "weight": 3,
-                          "fillColor": "#fdb863",
-                          "fillOpacity": 0.22,
-                      },
-                      tooltip=f"SDM prediction extent: {area_mode}",
-                  ).add_to(fmap)
-              fg_used = FeatureGroup(name="blue SDM input points", show=True)
-              for _, row in occ.iterrows():
-                  rid = int(row["_row_id"])
-                  folium.CircleMarker(
-                      (row["_latitude"], row["_longitude"]),
-                      radius=5,
-                      color="#1f77b4",
-                      fill=True,
-                      fill_color="#1f77b4",
-                      fill_opacity=0.85,
-                      weight=2,
-                      tooltip=f"SDM input | row {rid}",
-                  ).add_to(fg_used)
-              fg_used.add_to(fmap)
-              LayerControl(collapsed=True).add_to(fmap)
-              try:
-                  if extent_geom is not None and not extent_geom.is_empty:
-                      minx, miny, maxx, maxy = extent_geom.bounds
-                      fmap.fit_bounds([[miny, minx], [maxy, maxx]], padding=(30, 30))
-                  elif not center_df.empty:
-                      fmap.fit_bounds([[center_df["_latitude"].min(), center_df["_longitude"].min()], [center_df["_latitude"].max(), center_df["_longitude"].max()]], padding=(30, 30))
-              except Exception:
-                  pass
-              return fmap
-
-
-          '''
-          new_map = '\n'.join(line[10:] if line.startswith('          ') else line for line in new_map.splitlines()) + '\n'
-          s, n_map = re.subn(r'def make_sdm_extent_preview_map\(.*?\n\ndef representative_medoid\(', new_map + 'def representative_medoid(', s, count=1, flags=re.S)
-          if n_map != 1:
-              raise SystemExit('make_sdm_extent_preview_map replacement failed')
+          s = s.replace(
+              'def make_sdm_extent_preview_map(occ_raw: pd.DataFrame, occ: pd.DataFrame, excluded_ids: set[int], extent_geom, area_mode: str) -> folium.Map:',
+              'def make_sdm_extent_preview_map(occ: pd.DataFrame, extent_geom, area_mode: str) -> folium.Map:',
+          )
+          s = s.replace('    center_df = occ if not occ.empty else occ_raw\n', '    center_df = occ\n')
+          s = re.sub(
+              r'    fg_ex = FeatureGroup\(name="red excluded points", show=True\)\n    excluded = occ_raw\[occ_raw\["_row_id"\]\.astype\(int\)\.isin\(excluded_ids\)\]\n    for _, row in excluded\.iterrows\(\):\n        rid = int\(row\["_row_id"\]\)\n        folium\.CircleMarker\(\n            \(row\["_latitude"\], row\["_longitude"\]\),\n            radius=8,\n            color="#d62728",\n            fill=True,\n            fill_color="#d62728",\n            fill_opacity=0\.88,\n            weight=2,\n            tooltip=f"excluded from SDM \| row \{rid\}",\n        \)\.add_to\(fg_ex\)\n',
+              '',
+              s,
+              count=1,
+          )
+          s = s.replace('    fg_ex.add_to(fmap)\n', '')
+          s = s.replace('make_sdm_extent_preview_map(occ_raw, occ, active_excluded_ids, extent_geom, area_mode)', 'make_sdm_extent_preview_map(occ, extent_geom, area_mode)')
 
           s = s.replace('Choose the prediction area before building SDM. The extent is calculated from included blue points only; red excluded points are ignored.', 'Choose the prediction area before building SDM. Only blue included points are used below; excluded rows are removed from the analysis view and hard-masked from prediction.')
           s = s.replace('Red-point cutout radius (km)', 'Hard exclusion radius (km)')
           s = s.replace('value=1.0, step=0.5, key="sdm_exclusion_cutout_km", help="Red excluded records are physically cut out of the prediction extent by this radius."', 'value=10.0, step=1.0, key="sdm_exclusion_cutout_km", help="Excluded records are removed from training and their surrounding area is physically cut out of the prediction extent."')
-          s = re.sub(r'Current SDM input: \{len\(occ\):,\} blue included records after thinning; \{len\(active_excluded_ids\):,\} red excluded records\.', 'Current SDM input: {len(occ):,} blue included records after thinning; {len(active_excluded_ids):,} excluded records removed and hard-masked.', s)
-          s = s.replace('make_sdm_extent_preview_map(occ_raw, occ, active_excluded_ids, extent_geom, area_mode)', 'make_sdm_extent_preview_map(occ, extent_geom, area_mode)')
+          s = s.replace('blue included records after thinning; {len(active_excluded_ids):,} red excluded records.', 'blue included records after thinning; {len(active_excluded_ids):,} excluded records removed and hard-masked.')
 
           forbidden = ['red excluded points', 'Red-point cutout radius', 'make_sdm_extent_preview_map(occ_raw']
           present = [x for x in forbidden if x in s]
