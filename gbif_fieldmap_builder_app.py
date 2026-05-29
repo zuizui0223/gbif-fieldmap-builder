@@ -354,7 +354,17 @@ def make_exclusion_review_map(occ_raw: pd.DataFrame, excluded_ids: set[int]) -> 
     return fmap
 
 
-def nearest_row_id_from_click(occ_raw: pd.DataFrame, click: dict[str, Any]) -> Optional[int]:
+def row_id_from_tooltip(tooltip: Any) -> Optional[int]:
+    if not tooltip:
+        return None
+    match = re.search(r"\brow\s+(\d+)\b", str(tooltip))
+    return int(match.group(1)) if match else None
+
+
+def nearest_row_id_from_click(occ_raw: pd.DataFrame, click: dict[str, Any], tooltip: Any = None) -> Optional[int]:
+    tooltip_row_id = row_id_from_tooltip(tooltip)
+    if tooltip_row_id is not None and tooltip_row_id in set(occ_raw["_row_id"].astype(int)):
+        return tooltip_row_id
     if not click or "lat" not in click or "lng" not in click or occ_raw.empty:
         return None
     coord = (float(click["lat"]), float(click["lng"]))
@@ -371,12 +381,13 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
             st.session_state.last_exclude_click_signature = ""
             reset_model_outputs()
             st.rerun()
-        click_data = st_folium(make_exclusion_review_map(occ_raw, set(st.session_state.excluded_row_ids)), width=None, height=520, returned_objects=["last_object_clicked"], key="coordinate_exclusion_map")
+        click_data = st_folium(make_exclusion_review_map(occ_raw, set(st.session_state.excluded_row_ids)), width=None, height=520, returned_objects=["last_object_clicked", "last_object_clicked_tooltip"], key="coordinate_exclusion_map")
         clicked = (click_data or {}).get("last_object_clicked")
+        clicked_tooltip = (click_data or {}).get("last_object_clicked_tooltip")
         if clicked:
-            sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f}"
+            sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f},{clicked_tooltip}"
             if sig != st.session_state.last_exclude_click_signature:
-                rid = nearest_row_id_from_click(occ_raw, clicked)
+                rid = nearest_row_id_from_click(occ_raw, clicked, clicked_tooltip)
                 st.session_state.last_exclude_click_signature = sig
                 if rid is not None:
                     if rid in set(st.session_state.excluded_row_ids):
@@ -740,11 +751,12 @@ def generate_land_points(occ: pd.DataFrame, n_points: int, area_mode: str, buffe
 
 
 def build_presence_background(occ: pd.DataFrame, n_background: int, area_mode: str, buffer_km: float, rectangle_margin_km: float, status=None) -> pd.DataFrame:
-    pres = occ[["_latitude", "_longitude"]].rename(columns={"_latitude": "latitude", "_longitude": "longitude"}).copy()
+    pres = occ[["_row_id", "_latitude", "_longitude"]].rename(columns={"_latitude": "latitude", "_longitude": "longitude", "_row_id": "occurrence_row_id"}).copy()
     pres["presence"] = 1
     bg = generate_land_points(occ, n_background, area_mode, buffer_km, rectangle_margin_km, status=status)
+    bg["occurrence_row_id"] = np.nan
     bg["presence"] = 0
-    return pd.concat([pres, bg], ignore_index=True)
+    return pd.concat([pres, bg[pres.columns]], ignore_index=True)
 
 
 def make_model(name: str):
@@ -925,8 +937,9 @@ def build_predict_map(occ: pd.DataFrame, variables: list[str], resolution: str, 
     preds = [model.predict_proba(X.loc[valid, variables])[:, 1] for model in sdm_result["models"].values()]
     pred_flat[valid] = np.mean(np.vstack(preds), axis=0)
     pred = pred_flat.reshape(out_h, out_w)
+    row_grid, col_grid = np.indices((out_h, out_w))
     overlay = {"image": rgba_from_prediction(pred), "bounds": [[south2, west2], [north2, east2]], "shape": pred.shape, "source_stride": stride, "min": round(float(np.nanmin(pred)), 4), "max": round(float(np.nanmax(pred)), 4), "mean": round(float(np.nanmean(pred)), 4), "method": "Ensemble predict_proba over environmental raster grid"}
-    pred_table = pd.DataFrame({"latitude": lat_grid.ravel()[valid], "longitude": lon_grid.ravel()[valid], "sdm_suitability": pred_flat[valid]})
+    pred_table = pd.DataFrame({"raster_row": row_grid.ravel()[valid].astype(int), "raster_col": col_grid.ravel()[valid].astype(int), "cell_index": np.flatnonzero(valid).astype(int), "x": lon_grid.ravel()[valid], "y": lat_grid.ravel()[valid], "longitude": lon_grid.ravel()[valid], "latitude": lat_grid.ravel()[valid], "sdm_suitability": pred_flat[valid]})
     return overlay, pred_table
 
 
@@ -1295,14 +1308,20 @@ def main() -> None:
     env_train = st.session_state.sdm_train_table
     vif_table = st.session_state.vif_table
 
+    if sdm_result is not None and st.session_state.sdm_occurrence_row_ids != current_sdm_occurrence_row_ids:
+        reset_model_outputs()
+        sdm_result = pred_table = overlay = env_train = vif_table = None
+        st.warning("Stored SDM did not match the currently included occurrence row IDs, so it was discarded. Rebuild SDM to use only the remaining non-excluded points.")
+
     if vif_table is not None:
         st.write("VIF table")
         st.dataframe(vif_table, width="stretch", hide_index=True)
 
     if sdm_result is not None:
         st.success("SDM predict map is available.")
+        st.caption(f"SDM training presence rows: {len(current_sdm_occurrence_row_ids)} included occurrence records; excluded row IDs are not used.")
         if overlay is not None:
-            st.caption(f"Predict map: {overlay.get('method', 'ensemble raster prediction')}; array={overlay.get('shape')} cells; stride={overlay.get('source_stride')}; suitability min/mean/max={overlay.get('min')}/{overlay.get('mean')}/{overlay.get('max')}")
+            st.caption(f"Predict map: R/terra-style raster grid prediction using {overlay.get('method', 'ensemble raster prediction')}; array={overlay.get('shape')} cells; stride={overlay.get('source_stride')}; suitability min/mean/max={overlay.get('min')}/{overlay.get('mean')}/{overlay.get('max')}")
         st.write("SDM metrics")
         st.dataframe(sdm_result["metrics"], width="stretch", hide_index=True)
         try:
