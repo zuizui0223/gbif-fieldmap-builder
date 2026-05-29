@@ -25,81 +25,92 @@ jobs:
           path = Path('gbif_fieldmap_builder_app.py')
           s = path.read_text(encoding='utf-8')
 
-          function_marker = 'def make_sdm_extent_preview_map('
-          if function_marker not in s:
+          if 'def make_sdm_extent_preview_map(' not in s:
               anchor = 'def representative_medoid(group: pd.DataFrame) -> pd.Series:\n'
-              block = r'''
-def make_sdm_extent_preview_map(occ_raw: pd.DataFrame, occ: pd.DataFrame, excluded_ids: set[int], extent_geom, area_mode: str) -> folium.Map:
-    center_df = occ if not occ.empty else occ_raw
-    center = (float(center_df["_latitude"].mean()), float(center_df["_longitude"].mean())) if not center_df.empty else (35.5, 135.5)
-    fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
-    if extent_geom is not None and not extent_geom.is_empty:
-        folium.GeoJson(
-            extent_geom.__geo_interface__,
-            name=f"SDM extent: {area_mode}",
-            style_function=lambda _: {
-                "color": "#e66101",
-                "weight": 3,
-                "fillColor": "#fdb863",
-                "fillOpacity": 0.22,
-            },
-            tooltip=f"SDM prediction extent: {area_mode}",
-        ).add_to(fmap)
-    fg_used = FeatureGroup(name="blue SDM input points", show=True)
-    for _, row in occ.iterrows():
-        rid = int(row["_row_id"])
-        folium.CircleMarker(
-            (row["_latitude"], row["_longitude"]),
-            radius=5,
-            color="#1f77b4",
-            fill=True,
-            fill_color="#1f77b4",
-            fill_opacity=0.85,
-            weight=2,
-            tooltip=f"SDM input | row {rid}",
-        ).add_to(fg_used)
-    fg_ex = FeatureGroup(name="red excluded points", show=True)
-    excluded = occ_raw[occ_raw["_row_id"].astype(int).isin(excluded_ids)]
-    for _, row in excluded.iterrows():
-        rid = int(row["_row_id"])
-        folium.CircleMarker(
-            (row["_latitude"], row["_longitude"]),
-            radius=8,
-            color="#d62728",
-            fill=True,
-            fill_color="#d62728",
-            fill_opacity=0.88,
-            weight=2,
-            tooltip=f"excluded from SDM | row {rid}",
-        ).add_to(fg_ex)
-    fg_used.add_to(fmap)
-    fg_ex.add_to(fmap)
-    LayerControl(collapsed=True).add_to(fmap)
-    try:
-        if extent_geom is not None and not extent_geom.is_empty:
-            minx, miny, maxx, maxy = extent_geom.bounds
-            fmap.fit_bounds([[miny, minx], [maxy, maxx]], padding=(30, 30))
-        elif not center_df.empty:
-            fmap.fit_bounds([[center_df["_latitude"].min(), center_df["_longitude"].min()], [center_df["_latitude"].max(), center_df["_longitude"].max()]], padding=(30, 30))
-    except Exception:
-        pass
-    return fmap
-
-
-'''
+              function_lines = [
+                  'def make_sdm_extent_preview_map(occ_raw: pd.DataFrame, occ: pd.DataFrame, excluded_ids: set[int], extent_geom, area_mode: str) -> folium.Map:',
+                  '    center_df = occ if not occ.empty else occ_raw',
+                  '    center = (float(center_df["_latitude"].mean()), float(center_df["_longitude"].mean())) if not center_df.empty else (35.5, 135.5)',
+                  '    fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)',
+                  '    if extent_geom is not None and not extent_geom.is_empty:',
+                  '        folium.GeoJson(',
+                  '            extent_geom.__geo_interface__,',
+                  '            name=f"SDM extent: {area_mode}",',
+                  '            style_function=lambda _: {',
+                  '                "color": "#e66101",',
+                  '                "weight": 3,',
+                  '                "fillColor": "#fdb863",',
+                  '                "fillOpacity": 0.22,',
+                  '            },',
+                  '            tooltip=f"SDM prediction extent: {area_mode}",',
+                  '        ).add_to(fmap)',
+                  '    fg_used = FeatureGroup(name="blue SDM input points", show=True)',
+                  '    for _, row in occ.iterrows():',
+                  '        rid = int(row["_row_id"])',
+                  '        folium.CircleMarker(',
+                  '            (row["_latitude"], row["_longitude"]),',
+                  '            radius=5,',
+                  '            color="#1f77b4",',
+                  '            fill=True,',
+                  '            fill_color="#1f77b4",',
+                  '            fill_opacity=0.85,',
+                  '            weight=2,',
+                  '            tooltip=f"SDM input | row {rid}",',
+                  '        ).add_to(fg_used)',
+                  '    fg_ex = FeatureGroup(name="red excluded points", show=True)',
+                  '    excluded = occ_raw[occ_raw["_row_id"].astype(int).isin(excluded_ids)]',
+                  '    for _, row in excluded.iterrows():',
+                  '        rid = int(row["_row_id"])',
+                  '        folium.CircleMarker(',
+                  '            (row["_latitude"], row["_longitude"]),',
+                  '            radius=8,',
+                  '            color="#d62728",',
+                  '            fill=True,',
+                  '            fill_color="#d62728",',
+                  '            fill_opacity=0.88,',
+                  '            weight=2,',
+                  '            tooltip=f"excluded from SDM | row {rid}",',
+                  '        ).add_to(fg_ex)',
+                  '    fg_used.add_to(fmap)',
+                  '    fg_ex.add_to(fmap)',
+                  '    LayerControl(collapsed=True).add_to(fmap)',
+                  '    try:',
+                  '        if extent_geom is not None and not extent_geom.is_empty:',
+                  '            minx, miny, maxx, maxy = extent_geom.bounds',
+                  '            fmap.fit_bounds([[miny, minx], [maxy, maxx]], padding=(30, 30))',
+                  '        elif not center_df.empty:',
+                  '            fmap.fit_bounds([[center_df["_latitude"].min(), center_df["_longitude"].min()], [center_df["_latitude"].max(), center_df["_longitude"].max()]], padding=(30, 30))',
+                  '    except Exception:',
+                  '        pass',
+                  '    return fmap',
+                  '',
+                  '',
+              ]
               if anchor not in s:
                   raise SystemExit('representative_medoid anchor not found')
-              s = s.replace(anchor, block + anchor, 1)
+              s = s.replace(anchor, '\n'.join(function_lines) + anchor, 1)
 
           map_marker = 'key=f"sdm_extent_preview_map_{area_mode}",'
           if map_marker not in s:
               anchor = '        st.caption(f"Current SDM input: {len(occ):,} blue included records after thinning; {len(active_excluded_ids):,} red excluded records. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")\n\n    st.subheader("SDM settings")\n'
-              block = '        st.caption(f"Current SDM input: {len(occ):,} blue included records after thinning; {len(active_excluded_ids):,} red excluded records. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")\n        st_folium(\n            make_sdm_extent_preview_map(occ_raw, occ, active_excluded_ids, extent_geom, area_mode),\n            width=None,\n            height=460,\n            returned_objects=[],\n            key=f"sdm_extent_preview_map_{area_mode}",\n        )\n\n    st.subheader("SDM settings")\n'
+              map_lines = [
+                  '        st.caption(f"Current SDM input: {len(occ):,} blue included records after thinning; {len(active_excluded_ids):,} red excluded records. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")',
+                  '        st_folium(',
+                  '            make_sdm_extent_preview_map(occ_raw, occ, active_excluded_ids, extent_geom, area_mode),',
+                  '            width=None,',
+                  '            height=460,',
+                  '            returned_objects=[],',
+                  '            key=f"sdm_extent_preview_map_{area_mode}",',
+                  '        )',
+                  '',
+                  '    st.subheader("SDM settings")',
+                  '',
+              ]
               if anchor not in s:
                   raise SystemExit('SDM extent caption anchor not found')
-              s = s.replace(anchor, block, 1)
+              s = s.replace(anchor, '\n'.join(map_lines), 1)
 
-          if 'make_sdm_extent_preview_map' not in s or map_marker not in s:
+          if 'def make_sdm_extent_preview_map(' not in s or map_marker not in s:
               raise SystemExit('SDM extent preview map patch did not apply')
           path.write_text(s, encoding='utf-8')
           PY
