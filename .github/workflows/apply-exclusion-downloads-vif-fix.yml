@@ -1,0 +1,49 @@
+name: Apply Exclusion Downloads VIF Fix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/apply-exclusion-downloads-vif-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch app
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p = Path('gbif_fieldmap_builder_app.py')
+          text = p.read_text(encoding='utf-8')
+
+          text = text.replace('        "last_exclude_click_signature": "",\n        "sdm_occurrence_row_ids": None,', '        "last_exclude_click_signature": "",\n        "manual_excluded_row_ids": [],\n        "sdm_occurrence_row_ids": None,')
+          text = text.replace('    st.session_state.last_exclude_click_signature = ""\n    st.session_state.selected_route_site_ids = []', '    st.session_state.last_exclude_click_signature = ""\n    st.session_state.manual_excluded_row_ids = []\n    st.session_state.selected_route_site_ids = []')
+          text = text.replace('''        if st.button("Clear excluded coordinates"):\n            st.session_state.excluded_row_ids = set()\n            st.session_state.last_exclude_click_signature = ""\n            reset_model_outputs()\n            st.rerun()\n''', '''        if st.button("Clear excluded coordinates"):\n            st.session_state.excluded_row_ids = set()\n            st.session_state.manual_excluded_row_ids = []\n            st.session_state.last_exclude_click_signature = ""\n            reset_model_outputs()\n            st.rerun()\n''')
+          text = text.replace('''                    reset_model_outputs()\n                    st.rerun()\n        options = occ_raw["_row_id"].astype(int).tolist()\n        manual_ids = st.multiselect("Excluded row IDs", options=options, default=[x for x in sorted(st.session_state.excluded_row_ids) if x in options])\n        new_ids = set(map(int, manual_ids))\n''', '''                    st.session_state.manual_excluded_row_ids = [x for x in sorted(st.session_state.excluded_row_ids) if x in set(occ_raw["_row_id"].astype(int))]\n                    reset_model_outputs()\n                    st.rerun()\n        options = occ_raw["_row_id"].astype(int).tolist()\n        if "manual_excluded_row_ids" not in st.session_state:\n            st.session_state.manual_excluded_row_ids = [x for x in sorted(st.session_state.excluded_row_ids) if x in options]\n        manual_ids = st.multiselect("Excluded row IDs", options=options, key="manual_excluded_row_ids")\n        new_ids = set(map(int, manual_ids))\n''')
+          text = text.replace('''                st.session_state.excluded_row_ids = set()\n                reset_model_outputs()\n''', '''                st.session_state.excluded_row_ids = set()\n                st.session_state.manual_excluded_row_ids = []\n                reset_model_outputs()\n''')
+          text = text.replace('''        st.session_state.excluded_row_ids = set()\n        reset_model_outputs()\n''', '''        st.session_state.excluded_row_ids = set()\n        st.session_state.manual_excluded_row_ids = []\n        reset_model_outputs()\n''')
+
+          text = text.replace('''    occ_checked = coordinate_exclusion_panel(occ_raw)\n    if occ_checked.empty:\n''', '''    occ_checked = coordinate_exclusion_panel(occ_raw)\n    active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))\n    occ_checked = occ_raw[~occ_raw["_row_id"].astype(int).isin(active_excluded_ids)].copy().reset_index(drop=True)\n    if occ_checked.empty:\n''')
+          text = text.replace('''        elif not algorithms:\n            st.warning("Select at least one algorithm.")\n        else:\n''', '''        elif not algorithms:\n            st.warning("Select at least one algorithm.")\n        elif set(occ["_row_id"].astype(int)).intersection(active_excluded_ids):\n            st.error("Excluded row IDs are still present in the SDM input. SDM was stopped to prevent using excluded occurrences.")\n        else:\n''')
+          text = text.replace('''        vif_threshold = st.number_input("VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0)\n        algorithms = st.multiselect''', '''        vif_threshold = st.number_input("VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0)\n        st.caption("VIF filtering is vifstep-like: repeatedly calculate VIF, remove the variable with the highest VIF above the threshold, and refit until all remaining variables pass.")\n        algorithms = st.multiselect''')
+
+          text = re.sub(r'''\n    validation_template = make_validation_template\(all_candidates\)\n    html_bytes = fmap\.get_root\(\)\.render\(\)\.encode\("utf-8"\)\n.*?\n    st\.download_button\("Download excluded coordinates", excluded_csv, "excluded_coordinates\.csv", "text/csv", width="stretch"\)''', '\n    html_bytes = fmap.get_root().render().encode("utf-8")\n\n    st.subheader("Downloads")\n    st.download_button("Download sampling HTML map", html_bytes, "fieldmap.html", "text/html", width="stretch")', text, flags=re.S)
+
+          p.write_text(text, encoding='utf-8')
+          Path('.github/workflows/apply-exclusion-downloads-vif-fix.yml').unlink(missing_ok=True)
+          PY
+      - name: Validate
+        run: python -m py_compile gbif_fieldmap_builder_app.py
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gbif_fieldmap_builder_app.py .github/workflows/apply-exclusion-downloads-vif-fix.yml
+          git commit -m "Fix exclusion sync downloads and VIF note" || exit 0
+          git push
