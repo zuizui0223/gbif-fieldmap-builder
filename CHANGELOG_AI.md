@@ -4,6 +4,25 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-02 - Claude (Anthropic) — Issue #1 follow-up: simplify map layers and remove Priority table
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Removed "Priority survey ranges" table from main UI bottom. Candidate site info still visible on the map and in the Survey site list section.
+- Removed "Daily sampling route layers" checkbox from sidebar and daily-routes drawing from build_map(). App does not crash when route_plan is empty.
+- Removed "Occurrence buffers" layer checkbox and drawing block from build_map().
+- Renamed "Survey ranges" layer to "Candidate circles" (key: candidate_circles). One unified circle layer around candidate sites using survey_range_m as radius; color green for SDM-high, red for occurrence-supported, same as before.
+- Removed "Occurrence display buffer radius" sidebar number_input (no longer needed); build_map() receives 0.0 for that param.
+- Sidebar Layers now shows only: SDM predict map, Occurrences, Candidate circles.
+
+Features preserved:
+- SDM, VIF, spatial partition, predict map features all unchanged.
+- Candidate site generation, priority scoring, occurrence exclusion all unchanged.
+- build_map() signature unchanged (occurrence_buffer_m param kept, passed as 0.0).
+
 ## 2026-06-02 - Claude (Anthropic) — Issue #1 follow-up: hide day-split, unified selected list only
 
 Changed files:

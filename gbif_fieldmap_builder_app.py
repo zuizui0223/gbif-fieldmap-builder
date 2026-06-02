@@ -1119,11 +1119,6 @@ def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str
     if layers.get("predict") and overlay is not None:
         folium.raster_layers.ImageOverlay(image=overlay["image"], bounds=overlay["bounds"], opacity=0.68, name="SDM predict map", interactive=True).add_to(fmap)
         add_sdm_predict_legend(fmap)
-    if layers.get("occ_buffers"):
-        fg = FeatureGroup(name="occurrence buffers", show=False)
-        for _, row in occ.iterrows():
-            folium.Circle((row["_latitude"], row["_longitude"]), radius=occurrence_buffer_m, color="#6699ff", fill=True, fill_opacity=0.08, weight=1).add_to(fg)
-        fg.add_to(fmap)
     if layers.get("occ"):
         fg = FeatureGroup(name="occurrences after exclusion", show=True)
         mc = MarkerCluster()
@@ -1131,24 +1126,12 @@ def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str
             html = f"Occurrence<br>{row['_latitude']:.6f}, {row['_longitude']:.6f}<br>{row.get('_species','')}<br>GBIF {row.get('_gbif_id','')}<br>{image_html(row.get('_media_url',''))}"
             folium.CircleMarker((row["_latitude"], row["_longitude"]), radius=4, color="#1f77b4", fill=True, popup=folium.Popup(html, max_width=330)).add_to(mc)
         mc.add_to(fg); fg.add_to(fmap)
-    if layers.get("candidates") and sites is not None and not sites.empty:
-        fg = FeatureGroup(name="survey ranges", show=True)
+    if layers.get("candidate_circles") and sites is not None and not sites.empty:
+        fg = FeatureGroup(name="candidate circles", show=True)
         for _, row in sites.iterrows():
             color = "#2ca02c" if str(row.get("candidate_type", "")).startswith("SDM-high") else "#d62728"
             folium.Circle((row["latitude"], row["longitude"]), radius=survey_range_m, color=color, fill=True, fill_opacity=0.14, weight=2, popup=folium.Popup(popup_html_site(row), max_width=460)).add_to(fg)
         fg.add_to(fmap)
-    if layers.get("daily_routes") and route_plan is not None and not route_plan.empty:
-        colors = ["blue", "green", "purple", "orange", "darkred", "cadetblue"]
-        for day, day_df in route_plan.groupby("survey_day"):
-            day_df = day_df.sort_values("day_route_order")
-            color = colors[(int(day) - 1) % len(colors)]
-            fg = FeatureGroup(name=f"sampling route day {int(day)}", show=True)
-            coords = list(zip(day_df["latitude"], day_df["longitude"]))
-            if len(coords) >= 2:
-                folium.PolyLine(coords, color=color, weight=4, opacity=0.75).add_to(fg)
-            for _, row in day_df.iterrows():
-                folium.CircleMarker((row["latitude"], row["longitude"]), radius=7, color=color, fill=True, popup=folium.Popup(popup_html_site(row), max_width=460)).add_to(fg)
-            fg.add_to(fmap)
     LayerControl(collapsed=True).add_to(fmap)
     try:
         fmap.fit_bounds([[occ["_latitude"].min(), occ["_longitude"].min()], [occ["_latitude"].max(), occ["_longitude"].max()]], padding=(30, 30))
@@ -1567,14 +1550,13 @@ def main() -> None:
     st.sidebar.subheader("Sampling design")
     thinning_m = st.sidebar.number_input("Spatial thinning before clustering (m)", 0, 50_000, 1000, 500)
     center_method = st.sidebar.selectbox("Candidate center method", ["Medoid", "Centroid"], index=0)
-    occurrence_buffer_m = st.sidebar.number_input("Occurrence display buffer radius (m)", 0, 100_000, 500, 100)
     survey_range_m = st.sidebar.number_input("Survey range radius around candidate centers (m)", 50, 50_000, 500, 50)
     cluster_m = st.sidebar.number_input("DBSCAN cluster distance (m)", 1, 500_000, 2000, 500)
     min_samples = st.sidebar.number_input("Minimum records per cluster", 1, 50, 1, 1)
     occurrence_weight = st.sidebar.slider("Occurrence record-count weight", 0.0, 0.60, 0.35, 0.05)
     st.sidebar.divider()
     st.sidebar.subheader("Layers")
-    layers = {"predict": st.sidebar.checkbox("SDM predict map", True), "occ": st.sidebar.checkbox("Occurrences", True), "occ_buffers": st.sidebar.checkbox("Occurrence buffers", False), "candidates": st.sidebar.checkbox("Survey ranges", True), "daily_routes": st.sidebar.checkbox("Daily sampling route layers", True)}
+    layers = {"predict": st.sidebar.checkbox("SDM predict map", True), "occ": st.sidebar.checkbox("Occurrences", True), "candidate_circles": st.sidebar.checkbox("Candidate circles", True)}
 
     if st.session_state.raw_df is None:
         st.info(st.session_state.source_message)
@@ -1761,13 +1743,8 @@ def main() -> None:
     c5.metric("Survey ranges", f"{len(all_candidates):,}")
     c6.metric("Route stops", f"{len(route_plan):,}" if route_plan is not None else "0")
 
-    fmap = build_map(occ, all_candidates, overlay, route_plan, float(occurrence_buffer_m), float(survey_range_m), layers)
+    fmap = build_map(occ, all_candidates, overlay, route_plan, 0.0, float(survey_range_m), layers)
     st_folium(fmap, width=None, height=720, returned_objects=[], key="main_map")
-
-    st.subheader("Priority survey ranges")
-    cols = ["priority_rank", "site_id", "candidate_type", "priority_score", "occurrence_support_score", "sdm_suitability", "n_occurrences", "latitude", "longitude", "bias_warning", "selection_reason"]
-    if not all_candidates.empty:
-        st.dataframe(all_candidates[[c for c in cols if c in all_candidates.columns]].sort_values("priority_rank"), width="stretch", hide_index=True)
 
     html_bytes = fmap.get_root().render().encode("utf-8")
 
