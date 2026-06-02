@@ -455,7 +455,7 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
                     st.session_state.restore_excluded_row_ids = []
                     reset_model_outputs()
                     st.rerun()
-        # ── rectangle batch selection (new) ──────────────────────────────────
+        # ── rectangle → immediate exclusion ──────────────────────────────────
         raw_drawings = (click_data or {}).get("all_drawings") or (click_data or {}).get("last_active_drawing")
         qc_features = extract_drawn_features(raw_drawings)
         if qc_features:
@@ -464,28 +464,11 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
                 st.session_state.qc_last_draw_sig = draw_sig
                 rect_ids = ids_inside_drawn_rectangles(occ_raw, "_row_id", "_latitude", "_longitude", qc_features)
                 if rect_ids:
-                    st.session_state.qc_rect_selected_ids = rect_ids
-                    st.rerun()
-        qc_rect_ids = [r for r in st.session_state.get("qc_rect_selected_ids", []) if r in set(occ_raw["_row_id"].astype(int))]
-        if qc_rect_ids:
-            st.info(f"Rectangle selection: **{len(qc_rect_ids)}** occurrence point(s).")
-            qb1, qb2, qb3 = st.columns(3)
-            if qb1.button("Exclude rectangle-selected occurrence points"):
-                st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) | set(qc_rect_ids)
-                st.session_state.qc_rect_selected_ids = []
-                st.session_state.qc_last_draw_sig = ""
-                reset_model_outputs()
-                st.rerun()
-            if qb2.button("Restore rectangle-selected occurrence points"):
-                st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) - set(qc_rect_ids)
-                st.session_state.qc_rect_selected_ids = []
-                st.session_state.qc_last_draw_sig = ""
-                reset_model_outputs()
-                st.rerun()
-            if qb3.button("Clear rectangle selection"):
-                st.session_state.qc_rect_selected_ids = []
-                st.session_state.qc_last_draw_sig = ""
-                st.rerun()
+                    new_excluded = set(st.session_state.excluded_row_ids) | set(rect_ids)
+                    if new_excluded != set(st.session_state.excluded_row_ids):
+                        st.session_state.excluded_row_ids = new_excluded
+                        reset_model_outputs()
+                        st.rerun()
         # ── recover by ID (unchanged) ────────────────────────────────────────
         excluded_options = [x for x in sorted(set(st.session_state.excluded_row_ids)) if x in set(occ_raw["_row_id"].astype(int))]
         if any(x not in excluded_options for x in st.session_state.get("restore_excluded_row_ids", [])):

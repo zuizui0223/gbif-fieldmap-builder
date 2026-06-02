@@ -4,6 +4,25 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-02 - Claude (Anthropic) — Issue #1 follow-up: simplify QC rectangle workflow
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Simplified QC rectangle workflow: drawing a rectangle now immediately excludes all occurrence points inside (no staging, no Exclude/Restore/Clear buttons).
+- Removed "Exclude rectangle-selected", "Restore rectangle-selected", and "Clear rectangle selection" buttons from coordinate_exclusion_panel.
+- Existing click-to-exclude/restore behavior is unchanged.
+- "Clear excluded coordinates" button remains as the reset/undo fallback.
+- Candidate site rectangle selection already added to staging immediately — no change needed.
+- Excluded points remain red QC points and are not used for SDM, prediction extent, candidates, or survey day lists.
+
+Features preserved:
+- All existing SDM/VIF/spatial partition/predict map features.
+- Existing point-click exclusion/restore behavior.
+- Survey day site lists, HTML/CSV downloads.
+
 ## 2026-06-02 - Claude (Anthropic) — ROUTE_QC_PATCH_NOTES: rectangle selection fixes
 
 Changed files:
