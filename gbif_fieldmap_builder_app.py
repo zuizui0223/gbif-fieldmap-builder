@@ -127,8 +127,6 @@ def init_session_state() -> None:
         "sdm_occurrence_row_ids": None,
         "selected_route_site_ids": [],
         "last_route_click_signature": "",
-        "field_survey_mode": False,
-        "field_records": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -1250,56 +1248,11 @@ def make_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
     return base[cols]
 
 
-def field_recording_panel(sites_df: pd.DataFrame) -> None:
-    st.subheader("Field recording")
-    if sites_df is None or sites_df.empty:
-        st.info("No candidate sites yet. Load data and run clustering first.")
-        return
-    for _, site in sites_df.iterrows():
-        sid = int(site["site_id"])
-        rec = st.session_state.field_records.get(sid, {})
-        label = f"Site {sid} — lat {float(site['latitude']):.5f}, lon {float(site['longitude']):.5f}"
-        with st.expander(label, expanded=False):
-            with st.form(key=f"field_form_{sid}"):
-                visited = st.checkbox("Visited", value=bool(rec.get("visited", False)))
-                survey_date = st.date_input("Survey date", value=rec.get("survey_date") or None)
-                found = st.checkbox("Target species found", value=bool(rec.get("target_species_found", False)))
-                abundance = st.number_input("Abundance count", min_value=0, value=int(rec.get("abundance_count", 0)))
-                flowering = st.number_input("Flowering individual count", min_value=0, value=int(rec.get("flowering_individual_count", 0)))
-                flowers = st.number_input("Flower count", min_value=0, value=int(rec.get("flower_count", 0)))
-                camera = st.checkbox("Camera installed", value=bool(rec.get("camera_installed", False)))
-                cam_start = st.text_input("Camera start time (HH:MM)", value=str(rec.get("camera_start_time", "")))
-                cam_end = st.text_input("Camera end time (HH:MM)", value=str(rec.get("camera_end_time", "")))
-                poll_note = st.text_area("Pollinator observation note", value=str(rec.get("pollinator_observation_note", "")))
-                habitat = st.text_area("Habitat note", value=str(rec.get("habitat_note", "")))
-                access = st.text_area("Access note", value=str(rec.get("access_note", "")))
-                comments = st.text_area("Comments", value=str(rec.get("comments", "")))
-                if st.form_submit_button("Save", use_container_width=True):
-                    st.session_state.field_records[sid] = {
-                        "site_id": sid,
-                        "visited": visited,
-                        "survey_date": str(survey_date) if survey_date else "",
-                        "target_species_found": found,
-                        "abundance_count": abundance,
-                        "flowering_individual_count": flowering,
-                        "flower_count": flowers,
-                        "camera_installed": camera,
-                        "camera_start_time": cam_start,
-                        "camera_end_time": cam_end,
-                        "pollinator_observation_note": poll_note,
-                        "habitat_note": habitat,
-                        "access_note": access,
-                        "comments": comments,
-                    }
-                    st.success(f"Site {sid} saved.")
-
-
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="🗺️", layout="wide")
     init_session_state()
     st.title("🗺️ GBIF FieldMap Builder")
     st.caption("Occurrence-based survey ranges, map-click coordinate exclusion, raster-style SDM predict maps, VIF filtering, spatial partition diagnostics, and route planning.")
-    field_mode = st.checkbox("🌿 Field survey mode", value=bool(st.session_state.get("field_survey_mode", False)), key="field_survey_mode")
 
     st.sidebar.caption(f"Build: {APP_BUILD_ID}")
     st.sidebar.header("Data source")
@@ -1331,8 +1284,7 @@ def main() -> None:
         st.error("No valid coordinate records found.")
         return
 
-    if not field_mode:
-        coordinate_exclusion_panel(occ_raw)
+    occ_checked = coordinate_exclusion_panel(occ_raw)
     active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
     occ_checked = occ_raw[~occ_raw["_row_id"].astype(int).isin(active_excluded_ids)].copy().reset_index(drop=True)
     leaked_checked_ids = sorted(set(occ_checked["_row_id"].astype(int)).intersection(active_excluded_ids))
@@ -1357,22 +1309,16 @@ def main() -> None:
     occurrence_candidates = add_priority_rank(occurrence_candidates)
     occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")
 
-    if not field_mode:
-        st.subheader("SDM prediction extent")
-        st.caption("Choose the prediction area before building SDM. Only blue included points are used below; excluded rows are removed from the analysis view and hard-masked from prediction.")
-    area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode") if not field_mode else "bounding box"
-    if not field_mode:
-        c1, c2, c3 = st.columns(3)
-        buffer_km = c1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
-        rectangle_margin_km = c2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
-        exclusion_buffer_km = c3.number_input("Hard exclusion radius (km)", min_value=0.1, max_value=100.0, value=10.0, step=1.0, key="sdm_exclusion_cutout_km", help="Excluded records are removed from training and their surrounding area is physically cut out of the prediction extent.")
-    else:
-        buffer_km = 10.0
-        rectangle_margin_km = 20.0
-        exclusion_buffer_km = 10.0
+    st.subheader("SDM prediction extent")
+    st.caption("Choose the prediction area before building SDM. Only blue included points are used below; excluded rows are removed from the analysis view and hard-masked from prediction.")
+    area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode")
+    c1, c2, c3 = st.columns(3)
+    buffer_km = c1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
+    rectangle_margin_km = c2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
+    exclusion_buffer_km = c3.number_input("Hard exclusion radius (km)", min_value=0.1, max_value=100.0, value=10.0, step=1.0, key="sdm_exclusion_cutout_km", help="Excluded records are removed from training and their surrounding area is physically cut out of the prediction extent.")
     excluded_occ = excluded_occurrences_from_ids(occ_raw, active_excluded_ids)
     extent_geom = prediction_area_geometry(occ, area_mode, float(buffer_km), float(rectangle_margin_km), excluded_occ, float(exclusion_buffer_km))
-    if not field_mode and extent_geom is not None and not extent_geom.is_empty:
+    if extent_geom is not None and not extent_geom.is_empty:
         minx, miny, maxx, maxy = extent_geom.bounds
         st.caption(f"Current SDM input: {len(occ):,} blue included records after thinning; {len(active_excluded_ids):,} excluded records removed and hard-masked. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")
         st_folium(
@@ -1383,9 +1329,8 @@ def main() -> None:
             key=f"sdm_extent_preview_map_{area_mode}",
         )
 
-    if not field_mode:
-        st.subheader("SDM settings")
-    with st.expander("Build SDM and predict map", expanded=not field_mode):
+    st.subheader("SDM settings")
+    with st.expander("Build SDM and predict map", expanded=True):
         resolution = st.selectbox("WorldClim raster resolution", RESOLUTIONS, index=2)
         st.caption(f"Selected resolution: {RESOLUTION_NOTE[resolution]}")
         st.markdown("<span style='color:#8c510a;font-weight:700'>Topography variables</span>", unsafe_allow_html=True)
@@ -1502,17 +1447,16 @@ def main() -> None:
     all_candidates = order_sites(all_candidates, "Nearest-neighbor route")
     route_plan = route_planner_panel(all_candidates)
 
-    if not field_mode:
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
-        c1.metric("Raw valid records", f"{len(occ_raw):,}")
-        c2.metric("After exclusion", f"{len(occ_checked):,}")
-        c3.metric("After thinning", f"{len(occ):,}")
-        c4.metric("Occurrence clusters", f"{int((occ['cluster_id'] >= 0).sum()):,}")
-        c5.metric("Survey ranges", f"{len(all_candidates):,}")
-        c6.metric("Route stops", f"{len(route_plan):,}" if route_plan is not None else "0")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Raw valid records", f"{len(occ_raw):,}")
+    c2.metric("After exclusion", f"{len(occ_checked):,}")
+    c3.metric("After thinning", f"{len(occ):,}")
+    c4.metric("Occurrence clusters", f"{int((occ['cluster_id'] >= 0).sum()):,}")
+    c5.metric("Survey ranges", f"{len(all_candidates):,}")
+    c6.metric("Route stops", f"{len(route_plan):,}" if route_plan is not None else "0")
 
     fmap = build_map(occ, all_candidates, overlay, route_plan, float(occurrence_buffer_m), float(survey_range_m), layers)
-    st_folium(fmap, width=None, height=600, returned_objects=[], key="main_map")
+    st_folium(fmap, width=None, height=720, returned_objects=[], key="main_map")
 
     st.subheader("Priority survey ranges")
     cols = ["priority_rank", "site_id", "candidate_type", "priority_score", "occurrence_support_score", "sdm_suitability", "n_occurrences", "latitude", "longitude", "bias_warning", "selection_reason"]
@@ -1520,11 +1464,6 @@ def main() -> None:
         st.dataframe(all_candidates[[c for c in cols if c in all_candidates.columns]].sort_values("priority_rank"), width="stretch", hide_index=True)
 
     html_bytes = fmap.get_root().render().encode("utf-8")
-
-    field_recording_panel(all_candidates)
-    if st.session_state.field_records:
-        fdf = pd.DataFrame(list(st.session_state.field_records.values()))
-        st.download_button("⬇ Download field survey records CSV", fdf.to_csv(index=False), "field_survey_records.csv", "text/csv", width="stretch")
 
     st.subheader("Downloads")
     st.download_button("Download sampling HTML map", html_bytes, "fieldmap.html", "text/html", width="stretch")
