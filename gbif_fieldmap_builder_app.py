@@ -1167,80 +1167,196 @@ def nearest_site_id_from_click(sites: pd.DataFrame, click: dict[str, Any]) -> Op
     return int(sites.loc[int(dists.idxmin()), "site_id"])
 
 
+def _make_gmaps_url_with_end(ordered: pd.DataFrame, travelmode: str, start_location: str, end_location: str) -> str:
+    """Build a Google Maps directions URL with an explicit end_location destination."""
+    if ordered.empty:
+        return ""
+    coords = [(float(r["latitude"]), float(r["longitude"])) for _, r in ordered.iterrows()]
+    origin = start_location.strip() if start_location.strip() else f"{coords[0][0]:.6f},{coords[0][1]:.6f}"
+    destination = end_location.strip()
+    waypoint_coords = coords if start_location.strip() else coords[:-1]
+    params: dict[str, Any] = {"api": "1", "origin": origin, "destination": destination, "travelmode": travelmode, "dir_action": "navigate"}
+    if travelmode != "transit":
+        wps = waypoint_coords[:8]
+        if wps:
+            params["waypoints"] = "|".join(f"{lat:.6f},{lon:.6f}" for lat, lon in wps)
+    return "https://www.google.com/maps/dir/?" + urllib.parse.urlencode(params, safe=",|")
+
+
 def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
-    st.subheader("Survey route planner")
+    st.subheader("Google Maps-based survey site planning")
+    st.warning(
+        "⚠️ **Google Maps verification is required.** "
+        "This app does not guarantee road, ferry, mountain, cliff, or restricted-access feasibility. "
+        "Always verify each candidate site in Google Maps before fieldwork."
+    )
     if sites.empty:
         return pd.DataFrame()
-    options = sites["site_id"].astype(int).tolist()
-    st.caption("Click candidate sites on the map, then generate Google Maps routes only from the selected sites.")
-    st.session_state.selected_route_site_ids = [int(x) for x in st.session_state.selected_route_site_ids if int(x) in options]
-    click_data = st_folium(make_route_selection_map(sites, st.session_state.selected_route_site_ids), width=None, height=460, returned_objects=["last_object_clicked"], key="route_selection_map")
-    clicked = (click_data or {}).get("last_object_clicked")
-    if clicked:
-        sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f}"
-        if sig != st.session_state.last_route_click_signature:
-            sid = nearest_site_id_from_click(sites, clicked)
-            st.session_state.last_route_click_signature = sig
-            if sid is not None:
-                selected = list(st.session_state.selected_route_site_ids)
-                if sid in selected:
-                    selected.remove(sid)
-                else:
-                    selected.append(sid)
-                st.session_state.selected_route_site_ids = selected
-                st.rerun()
-    manual_ids = st.multiselect("Selected survey site IDs", options=options, default=st.session_state.selected_route_site_ids)
-    st.session_state.selected_route_site_ids = [int(x) for x in manual_ids]
-    b1, b2 = st.columns(2)
+
     sort_cols = available_sort_cols(sites, ["priority_score", "sdm_suitability", "occurrence_support_score"])
     ranked_sites = sites.sort_values(sort_cols, ascending=False, na_position="last") if sort_cols else sites
-    if b1.button("Use top ranked candidates"):
-        st.session_state.selected_route_site_ids = ranked_sites["site_id"].astype(int).head(min(10, len(ranked_sites))).tolist()
-        st.rerun()
-    if b2.button("Clear selected survey sites"):
-        st.session_state.selected_route_site_ids = []
-        st.session_state.last_route_click_signature = ""
-        st.rerun()
-    selected_sites = sites[sites["site_id"].astype(int).isin(st.session_state.selected_route_site_ids)].copy()
-    if selected_sites.empty:
-        st.info("Select candidate survey sites on the map before generating a route.")
-        return pd.DataFrame()
-    with st.expander("Route planner settings", expanded=True):
-        c1, c2, c3, c4 = st.columns(4)
-        days = c1.number_input("Survey days", 1, 30, 2)
-        max_sites = c2.number_input("Max sites per day", 1, 10, min(8, max(1, len(selected_sites))))
-        max_dist = c3.number_input("Max straight-line distance per day (km)", 0.0, 500.0, 40.0, 5.0)
-        max_total = c4.number_input("Max selected sites to route", 1, 500, min(30, max(1, len(selected_sites))))
-        method_options = ["selected order"] + ROUTE_ORDER_METHODS
-        method = st.selectbox("Route ordering method", method_options, index=0)
-        travelmode = st.selectbox("Google Maps travel mode", ["driving", "walking", "bicycling", "transit"], index=0)
-        start_location = st.text_input("Optional Google Maps start location", value="", placeholder="address, station, or lat,lng")
-    if method == "selected order":
-        order_index = {sid: i for i, sid in enumerate(st.session_state.selected_route_site_ids)}
-        work = selected_sites.assign(_selected_order=selected_sites["site_id"].astype(int).map(order_index)).sort_values("_selected_order").drop(columns=["_selected_order"])
-        work = work.head(int(max_total)).reset_index(drop=True)
-        work["route_order"] = range(1, len(work) + 1)
-        work["google_maps_point_url"] = work.apply(lambda r: make_google_maps_point_url(float(r["latitude"]), float(r["longitude"])), axis=1)
-        ordered = work
+    options = sites["site_id"].astype(int).tolist()
+
+    planning_mode = st.radio(
+        "Planning mode",
+        ["A. Auto: top-ranked candidate sites", "B. Manual: select sites on map"],
+        index=0,
+        horizontal=True,
+        key="route_planning_mode",
+    )
+
+    # ── shared travel settings ──────────────────────────────────────────────
+    tc1, tc2, tc3 = st.columns(3)
+    travelmode = tc1.selectbox("Travel mode", ["driving", "walking", "bicycling", "transit"], index=0, key="route_travelmode")
+    start_location = tc2.text_input("Start location", value="", placeholder="station, address, or lat,lng", key="route_start_location")
+    end_location = tc3.text_input("End location (optional)", value="", placeholder="leave blank to end at last site", key="route_end_location")
+
+    ordered = pd.DataFrame()
+
+    if planning_mode.startswith("A."):
+        # ── Auto mode ────────────────────────────────────────────────────────
+        ac1, ac2, ac3 = st.columns(3)
+        top_n = ac1.number_input("Top N sites", min_value=1, max_value=max(1, len(sites)), value=min(10, len(sites)), step=1, key="route_top_n")
+        min_priority = ac2.number_input("Min priority score", 0.0, 1.0, 0.0, 0.05, format="%.2f", key="route_min_priority")
+        has_suit = "sdm_suitability" in sites.columns and sites["sdm_suitability"].notna().any()
+        min_suit = ac3.number_input("Min SDM suitability", 0.0, 1.0, 0.0, 0.05, format="%.2f", key="route_min_suit",
+                                    help="SDM not built yet." if not has_suit else "Filter by SDM suitability score.")
+
+        filtered = ranked_sites.copy()
+        if "priority_score" in filtered.columns:
+            filtered = filtered[pd.to_numeric(filtered["priority_score"], errors="coerce").fillna(0.0) >= float(min_priority)]
+        if has_suit:
+            filtered = filtered[pd.to_numeric(filtered["sdm_suitability"], errors="coerce").fillna(0.0) >= float(min_suit)]
+
+        selected_sites = filtered.head(int(top_n)).copy()
+        dropped_sites = filtered.iloc[int(top_n):].copy()
+
+        if selected_sites.empty:
+            st.info("No candidate sites meet the threshold criteria. Lower the minimum scores.")
+            return pd.DataFrame()
+
+        st.caption(f"Auto-selected **{len(selected_sites)}** site(s) from {len(ranked_sites)} candidates.")
+        show_cols = [c for c in ["site_id", "candidate_type", "priority_rank", "priority_score", "sdm_suitability", "occurrence_support_score", "n_occurrences", "latitude", "longitude"] if c in selected_sites.columns]
+        st.dataframe(selected_sites[show_cols], width="stretch", hide_index=True)
+
+        if not dropped_sites.empty:
+            with st.expander(f"Lower-priority sites not included in route ({len(dropped_sites)})", expanded=False):
+                st.dataframe(dropped_sites[show_cols], width="stretch", hide_index=True)
+
+        method = st.selectbox("Route ordering method", ["priority then nearest"] + ROUTE_ORDER_METHODS, index=0, key="route_method_auto")
+        ordered = order_sites(selected_sites, method)
+
     else:
-        work = selected_sites.head(int(max_total))
-        ordered = order_sites(work, method)
-    plan = split_route_into_days(ordered, int(days), int(max_sites), float(max_dist), travelmode=travelmode, start_location=start_location)
-    if plan.empty:
-        return plan
-    summary = plan.groupby("survey_day").agg(sites=("site_id", "count"), straight_distance_km=("distance_from_previous_km", "sum"), mean_priority=("priority_score", "mean")).reset_index()
-    summary["straight_distance_km"] = summary["straight_distance_km"].round(2)
-    summary["mean_priority"] = summary["mean_priority"].round(3)
-    st.dataframe(summary, width="stretch", hide_index=True)
-    for day, group in plan.groupby("survey_day"):
-        st.link_button(f"Open Day {int(day)} route in Google Maps", str(group["day_google_maps_route_url"].iloc[0]), width="stretch")
-    cols = ["survey_day", "day_route_order", "site_id", "candidate_type", "priority_score", "occurrence_support_score", "sdm_suitability", "n_occurrences", "distance_from_previous_km", "cumulative_day_distance_km", "latitude", "longitude"]
-    st.dataframe(plan[[c for c in cols if c in plan.columns]], width="stretch", hide_index=True)
-    return plan
+        # ── Manual mode ──────────────────────────────────────────────────────
+        st.caption("Click candidate sites on the map to toggle selection. 🟢 green = selected, 🔵 blue = not selected.")
+        st.session_state.selected_route_site_ids = [int(x) for x in st.session_state.selected_route_site_ids if int(x) in options]
+        click_data = st_folium(
+            make_route_selection_map(sites, st.session_state.selected_route_site_ids),
+            width=None, height=460,
+            returned_objects=["last_object_clicked"],
+            key="route_selection_map",
+        )
+        clicked = (click_data or {}).get("last_object_clicked")
+        if clicked:
+            sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f}"
+            if sig != st.session_state.last_route_click_signature:
+                sid = nearest_site_id_from_click(sites, clicked)
+                st.session_state.last_route_click_signature = sig
+                if sid is not None:
+                    selected = list(st.session_state.selected_route_site_ids)
+                    if sid in selected:
+                        selected.remove(sid)
+                    else:
+                        selected.append(sid)
+                    st.session_state.selected_route_site_ids = selected
+                    st.rerun()
+        manual_ids = st.multiselect("Selected survey site IDs", options=options, default=st.session_state.selected_route_site_ids)
+        st.session_state.selected_route_site_ids = [int(x) for x in manual_ids]
+        b1, b2 = st.columns(2)
+        if b1.button("Use top ranked candidates"):
+            st.session_state.selected_route_site_ids = ranked_sites["site_id"].astype(int).head(min(10, len(ranked_sites))).tolist()
+            st.rerun()
+        if b2.button("Clear selected survey sites"):
+            st.session_state.selected_route_site_ids = []
+            st.session_state.last_route_click_signature = ""
+            st.rerun()
+
+        selected_sites = sites[sites["site_id"].astype(int).isin(st.session_state.selected_route_site_ids)].copy()
+        if selected_sites.empty:
+            st.info("Select candidate survey sites on the map before generating a route.")
+            return pd.DataFrame()
+
+        method_options = ["selected order"] + ROUTE_ORDER_METHODS
+        method = st.selectbox("Route ordering method", method_options, index=0, key="route_method_manual")
+        if method == "selected order":
+            order_index = {sid: i for i, sid in enumerate(st.session_state.selected_route_site_ids)}
+            work = selected_sites.assign(
+                _selected_order=selected_sites["site_id"].astype(int).map(order_index)
+            ).sort_values("_selected_order").drop(columns=["_selected_order"]).reset_index(drop=True)
+            work["route_order"] = range(1, len(work) + 1)
+            work["google_maps_point_url"] = work.apply(lambda r: make_google_maps_point_url(float(r["latitude"]), float(r["longitude"])), axis=1)
+            ordered = work
+        else:
+            ordered = order_sites(selected_sites, method)
+
+    # ── Google Maps verification route button ────────────────────────────────
+    if not ordered.empty:
+        for col in ["google_maps_checked", "accessible", "access_mode", "access_note"]:
+            if col not in ordered.columns:
+                ordered[col] = ""
+        if end_location.strip():
+            gmaps_url = _make_gmaps_url_with_end(ordered, travelmode, start_location, end_location)
+        else:
+            gmaps_url = make_google_maps_route_url(ordered, travelmode=travelmode, max_waypoints=8, start_location=start_location)
+        st.link_button("🗺️ Open verification route in Google Maps", gmaps_url, use_container_width=True)
+        st.caption(
+            "This is a **Google Maps verification route** only — not an optimized or final field route. "
+            "Check road access, ferry routes, mountain and cliff access, and any restricted areas in Google Maps before fieldwork."
+        )
+
+    # ── Advanced: day splitting (preserved, collapsed) ───────────────────────
+    with st.expander("Advanced: preliminary day splitting (straight-line, reference only)", expanded=False):
+        st.caption("⚠️ Straight-line day splitting does not account for roads, ferries, mountains, cliffs, or restricted access. Use as a rough reference only.")
+        if ordered.empty:
+            st.info("No sites selected yet.")
+        else:
+            dc1, dc2, dc3, dc4 = st.columns(4)
+            days = dc1.number_input("Survey days", 1, 30, 2, key="adv_days")
+            max_sites_day = dc2.number_input("Max sites per day", 1, 10, min(8, max(1, len(ordered))), key="adv_max_sites")
+            max_dist = dc3.number_input("Max straight-line km per day", 0.0, 500.0, 40.0, 5.0, key="adv_max_dist")
+            max_total = dc4.number_input("Max sites to route", 1, 500, min(30, max(1, len(ordered))), key="adv_max_total")
+            plan = split_route_into_days(ordered.head(int(max_total)), int(days), int(max_sites_day), float(max_dist), travelmode=travelmode, start_location=start_location)
+            if not plan.empty:
+                summary = plan.groupby("survey_day").agg(
+                    sites=("site_id", "count"),
+                    straight_distance_km=("distance_from_previous_km", "sum"),
+                    mean_priority=("priority_score", "mean"),
+                ).reset_index()
+                summary["straight_distance_km"] = summary["straight_distance_km"].round(2)
+                summary["mean_priority"] = summary["mean_priority"].round(3)
+                st.dataframe(summary, width="stretch", hide_index=True)
+                for day, group in plan.groupby("survey_day"):
+                    st.link_button(f"Open Day {int(day)} route in Google Maps", str(group["day_google_maps_route_url"].iloc[0]), width="stretch")
+                day_cols = ["survey_day", "day_route_order", "site_id", "candidate_type", "priority_score", "sdm_suitability", "latitude", "longitude", "distance_from_previous_km", "cumulative_day_distance_km"]
+                st.dataframe(plan[[c for c in day_cols if c in plan.columns]], width="stretch", hide_index=True)
+                return plan
+
+    # Return ordered with survey_day=1 so the map route layer still renders
+    if not ordered.empty:
+        result = ordered.copy()
+        result["survey_day"] = 1
+        if "day_route_order" not in result.columns:
+            result["day_route_order"] = result.get("route_order", pd.Series(range(1, len(result) + 1), index=result.index))
+        result["distance_from_previous_km"] = 0.0
+        result["cumulative_day_distance_km"] = 0.0
+        if "day_google_maps_route_url" not in result.columns:
+            result["day_google_maps_route_url"] = gmaps_url if not ordered.empty else ""
+        return result
+    return pd.DataFrame()
 
 
 def make_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
-    cols = ["site_id", "candidate_type", "priority_rank", "latitude", "longitude", "priority_score", "occurrence_support_score", "sdm_suitability", "visited", "survey_date", "observer", "access_success", "target_species_found", "abundance_count", "abundance_class", "flowering_status", "habitat_note", "photo_file", "comments"]
+    cols = ["site_id", "candidate_type", "priority_rank", "latitude", "longitude", "priority_score", "occurrence_support_score", "sdm_suitability", "google_maps_checked", "accessible", "access_mode", "access_note", "visited", "survey_date", "observer", "access_success", "target_species_found", "abundance_count", "abundance_class", "flowering_status", "habitat_note", "photo_file", "comments"]
     base = sites.copy()
     for col in cols:
         if col not in base.columns:
