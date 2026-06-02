@@ -4,6 +4,28 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-02 - Claude (Anthropic) — Issue #1 follow-up: Survey site list UI simplification
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Renamed main heading from "Survey day site lists" to "Survey site list".
+- Primary output is now "Selected survey sites" — a single unified list from sl_selected_site_ids.
+- Auto / Manual / rectangle selection logic is unchanged.
+- "Selected survey sites" table shown immediately after selection with per-site 📍 Google Maps links, "Open all in Google Maps", CSV download, HTML download, and "Clear selected sites" button.
+- Day management (Add/Remove day, Copy to Day X, per-day tables and Google Maps links, day-list downloads) moved into a collapsed expander "Optional: split selected sites by survey day" — not shown unless the user opens it.
+- Day assignment now uses "Copy to Day X" (copies from selected list; selected list is not cleared).
+- Empty Day 1 / Day 2 lists are no longer visible as the main output.
+- Return value: prefers day-list rows when any day has sites; otherwise returns selected sites with survey_day=1 so the map route layer still renders.
+- Renamed "Clear staging" / "Staging selection" labels to "Clear selected sites" / "Selected site IDs".
+
+Features preserved:
+- All selection logic (auto, manual map click, rectangle Draw) unchanged.
+- Day list state (survey_day_lists) preserved and still functional inside the expander.
+- All SDM/VIF/spatial partition/predict map features unchanged.
+
 ## 2026-06-02 - Claude (Anthropic) — Fix StreamlitAPIException in coordinate_exclusion_panel
 
 Changed files:

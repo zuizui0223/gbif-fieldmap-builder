@@ -1387,7 +1387,7 @@ def _make_gmaps_url_with_end(ordered: pd.DataFrame, travelmode: str, start_locat
 
 
 def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
-    st.subheader("Survey day site lists")
+    st.subheader("Survey site list")
     st.caption(
         "⚠️ Google Maps verification is required. "
         "This app does not guarantee road, ferry, mountain, cliff, or restricted-access feasibility."
@@ -1401,7 +1401,7 @@ def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
     has_suit = "sdm_suitability" in sites.columns and sites["sdm_suitability"].notna().any()
     has_sdm_high = "candidate_type" in sites.columns and sites["candidate_type"].str.startswith("SDM-high").any()
 
-    # ── Initialise / prune day-list state ────────────────────────────────────
+    # ── Initialise / prune state ─────────────────────────────────────────────
     if not isinstance(st.session_state.get("survey_day_lists"), dict):
         st.session_state.survey_day_lists = {1: [], 2: []}
     valid_ids = set(options)
@@ -1411,7 +1411,7 @@ def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
 
     travelmode = st.selectbox("Travel mode for Google Maps links", ["driving", "walking", "bicycling", "transit"], index=0, key="sl_travelmode")
 
-    # ── Selection area ───────────────────────────────────────────────────────
+    # ── Selection area (auto / manual+rectangle — unchanged logic) ───────────
     st.markdown("#### Select candidate sites")
     sel_mode = st.radio("Selection mode", ["Auto: top-ranked", "Manual: map & rectangle"], horizontal=True, key="sl_sel_mode")
 
@@ -1441,25 +1441,23 @@ def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
 
         show_cols = [c for c in ["site_id", "priority_rank", "priority_score", "sdm_suitability", "candidate_type"] if c in filtered.columns]
         if auto_ids:
-            st.caption(f"{len(auto_ids)} site(s) will be added to staging.")
             st.dataframe(filtered.head(int(top_n))[show_cols], width="stretch", hide_index=True)
         if not filtered.iloc[int(top_n):].empty:
             with st.expander(f"Lower-priority sites not included ({len(filtered) - int(top_n)})", expanded=False):
                 st.dataframe(filtered.iloc[int(top_n):][show_cols], width="stretch", hide_index=True)
-        if st.button("➕ Use these as staging selection", key="sl_auto_apply") and auto_ids:
+        if st.button("Use these as selected sites", key="sl_auto_apply") and auto_ids:
             st.session_state.sl_selected_site_ids = auto_ids
             st.rerun()
 
     else:
-        # Manual: map click + rectangle Draw
-        st.caption("Click sites to toggle. Draw a rectangle to batch-select. 🟢 = in staging, 🔵 = not selected.")
+        # Manual: map click + rectangle Draw (logic unchanged)
+        st.caption("Click sites to toggle. Draw a rectangle to add all sites inside to the selection. 🟢 = selected, 🔵 = not selected.")
         click_data = st_folium(
             make_route_selection_map(sites, st.session_state.sl_selected_site_ids, add_draw=True),
             width=None, height=480,
             returned_objects=["last_object_clicked", "all_drawings", "last_active_drawing"],
             key="sl_manual_map",
         )
-        # Click toggle (unchanged)
         clicked = (click_data or {}).get("last_object_clicked")
         if clicked:
             sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f}"
@@ -1474,7 +1472,6 @@ def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
                         sel.append(sid)
                     st.session_state.sl_selected_site_ids = sel
                     st.rerun()
-        # Rectangle selection — handles both dict and list formats from streamlit-folium
         raw_sl_drawings = (click_data or {}).get("all_drawings") or (click_data or {}).get("last_active_drawing")
         sl_features = extract_drawn_features(raw_sl_drawings)
         if sl_features:
@@ -1486,92 +1483,136 @@ def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
                     existing = set(st.session_state.sl_selected_site_ids)
                     st.session_state.sl_selected_site_ids = list(existing | set(rect_ids))
                     st.rerun()
-        manual_ids = st.multiselect("Staging selection (site IDs)", options=options, default=st.session_state.sl_selected_site_ids, key="sl_manual_ids")
+        manual_ids = st.multiselect("Selected site IDs", options=options, default=st.session_state.sl_selected_site_ids, key="sl_manual_ids")
         st.session_state.sl_selected_site_ids = [int(x) for x in manual_ids]
         b1, b2 = st.columns(2)
         if b1.button("Use top ranked", key="sl_top_btn"):
             st.session_state.sl_selected_site_ids = ranked_sites["site_id"].astype(int).head(min(10, len(ranked_sites))).tolist()
             st.rerun()
-        if b2.button("Clear staging", key="sl_clear_btn"):
+        if b2.button("Clear selected sites", key="sl_clear_btn"):
             st.session_state.sl_selected_site_ids = []
             st.session_state.last_route_click_signature = ""
             st.session_state.sl_last_draw_sig = ""
             st.rerun()
 
-    # ── Assign staging → day ──────────────────────────────────────────────────
-    staging = st.session_state.sl_selected_site_ids
-    if staging:
-        st.caption(f"**{len(staging)} site(s) in staging** — assign to a survey day:")
-        day_nums = sorted(st.session_state.survey_day_lists.keys())
-        add_cols = st.columns(max(1, len(day_nums)))
-        for i, day_num in enumerate(day_nums):
-            if add_cols[i].button(f"➕ Add to Day {day_num}", key=f"sl_add_{day_num}"):
-                existing = st.session_state.survey_day_lists[day_num]
-                new_ids = [s for s in staging if s not in existing]
-                st.session_state.survey_day_lists[day_num] = existing + new_ids
-                st.session_state.sl_selected_site_ids = []
+    # ── Selected survey sites (main output) ──────────────────────────────────
+    selected_ids = st.session_state.sl_selected_site_ids
+    sel_df = sites[sites["site_id"].astype(int).isin(selected_ids)].copy()
+    if not sel_df.empty and selected_ids:
+        sid_order = {sid: i for i, sid in enumerate(selected_ids)}
+        sel_df = sel_df.assign(_ord=sel_df["site_id"].astype(int).map(sid_order)).sort_values("_ord").drop(columns=["_ord"])
+
+    st.markdown(f"#### Selected survey sites ({len(sel_df)})")
+    if sel_df.empty:
+        st.info("No sites selected yet. Use Auto or Manual mode above.")
+    else:
+        sel_df["google_maps_point_url"] = sel_df.apply(
+            lambda r: make_google_maps_point_url(float(r["latitude"]), float(r["longitude"])), axis=1
+        )
+        show_scols = [c for c in ["site_id", "priority_rank", "priority_score", "sdm_suitability",
+                                   "occurrence_support_score", "n_occurrences", "candidate_type",
+                                   "latitude", "longitude", "google_maps_point_url"] if c in sel_df.columns]
+        scol_cfg: dict[str, Any] = {}
+        if "google_maps_point_url" in show_scols:
+            scol_cfg["google_maps_point_url"] = st.column_config.LinkColumn("Google Maps", display_text="📍")
+        st.dataframe(sel_df[show_scols], column_config=scol_cfg, width="stretch", hide_index=True)
+
+        gmaps_all_url = make_google_maps_route_url(sel_df, travelmode=travelmode, max_waypoints=8)
+        ab1, ab2, ab3, ab4 = st.columns(4)
+        ab1.link_button("🗺️ Open all in Google Maps", gmaps_all_url, use_container_width=True)
+        ab2.download_button("⬇ CSV", make_export_csv(sel_df), "survey_site_list.csv", "text/csv", use_container_width=True)
+        ab3.download_button("⬇ HTML", make_shareable_html(sel_df), "survey_site_list.html", "text/html", use_container_width=True)
+        if ab4.button("Clear selected sites", key="sl_clear_main"):
+            st.session_state.sl_selected_site_ids = []
+            st.session_state.last_route_click_signature = ""
+            st.session_state.sl_last_draw_sig = ""
+            st.rerun()
+
+    # ── Optional: split by survey day (collapsed expander) ───────────────────
+    with st.expander("Optional: split selected sites by survey day", expanded=False):
+        if sel_df.empty:
+            st.info("Select survey sites above first.")
+        else:
+            # Assign selected sites to a day
+            st.markdown("**Assign selected sites to a day:**")
+            day_nums = sorted(st.session_state.survey_day_lists.keys())
+            add_cols = st.columns(max(1, len(day_nums)))
+            for i, day_num in enumerate(day_nums):
+                if add_cols[i].button(f"➕ Copy to Day {day_num}", key=f"sl_add_{day_num}"):
+                    existing = st.session_state.survey_day_lists[day_num]
+                    new_ids = [s for s in selected_ids if s not in existing]
+                    st.session_state.survey_day_lists[day_num] = existing + new_ids
+                    st.rerun()
+
+            # Add / remove days
+            dm1, dm2 = st.columns(2)
+            if dm1.button("➕ Add day", key="sl_add_day"):
+                new_day = (max(st.session_state.survey_day_lists.keys()) + 1) if st.session_state.survey_day_lists else 1
+                st.session_state.survey_day_lists[new_day] = []
+                st.rerun()
+            if dm2.button("🗑 Remove last day", key="sl_rm_last_day") and st.session_state.survey_day_lists:
+                last = max(st.session_state.survey_day_lists.keys())
+                del st.session_state.survey_day_lists[last]
                 st.rerun()
 
-    # ── Manage days ───────────────────────────────────────────────────────────
-    st.markdown("#### Survey days")
-    dm1, dm2 = st.columns(2)
-    if dm1.button("➕ Add day"):
-        new_day = (max(st.session_state.survey_day_lists.keys()) + 1) if st.session_state.survey_day_lists else 1
-        st.session_state.survey_day_lists[new_day] = []
-        st.rerun()
-    if dm2.button("🗑 Remove last day") and st.session_state.survey_day_lists:
-        last = max(st.session_state.survey_day_lists.keys())
-        del st.session_state.survey_day_lists[last]
-        st.rerun()
+            # Day lists
+            for day_num in sorted(st.session_state.survey_day_lists.keys()):
+                day_sids = st.session_state.survey_day_lists[day_num]
+                day_sites = sites[sites["site_id"].astype(int).isin(day_sids)].copy()
+                if not day_sites.empty and day_sids:
+                    dord = {sid: i for i, sid in enumerate(day_sids)}
+                    day_sites = day_sites.assign(_ord=day_sites["site_id"].astype(int).map(dord)).sort_values("_ord").drop(columns=["_ord"])
+                with st.expander(f"Day {day_num} — {len(day_sids)} site(s)", expanded=bool(day_sids)):
+                    if day_sites.empty:
+                        st.caption("No sites assigned yet.")
+                    else:
+                        day_sites["google_maps_point_url"] = day_sites.apply(lambda r: make_google_maps_point_url(float(r["latitude"]), float(r["longitude"])), axis=1)
+                        show_dcols = [c for c in ["site_id", "priority_rank", "priority_score", "sdm_suitability", "candidate_type", "latitude", "longitude", "google_maps_point_url"] if c in day_sites.columns]
+                        dcol_cfg: dict[str, Any] = {}
+                        if "google_maps_point_url" in show_dcols:
+                            dcol_cfg["google_maps_point_url"] = st.column_config.LinkColumn("Google Maps", display_text="📍")
+                        st.dataframe(day_sites[show_dcols], column_config=dcol_cfg, width="stretch", hide_index=True)
+                        remove_ids = st.multiselect(f"Remove from Day {day_num}", options=day_sids, default=[], key=f"sl_rm_{day_num}", format_func=lambda x: f"Site {x}")
+                        if remove_ids and st.button("Remove selected", key=f"sl_do_rm_{day_num}"):
+                            st.session_state.survey_day_lists[day_num] = [s for s in day_sids if s not in remove_ids]
+                            st.rerun()
+                        urls = _make_day_gmaps_urls(day_sites, travelmode)
+                        for part_i, url in enumerate(urls, start=1):
+                            label = f"🗺️ Open Day {day_num} in Google Maps" if len(urls) == 1 else f"🗺️ Open Day {day_num} Part {part_i} in Google Maps"
+                            st.link_button(label, url, use_container_width=True)
 
-    for day_num in sorted(st.session_state.survey_day_lists.keys()):
-        day_sids = st.session_state.survey_day_lists[day_num]
-        day_sites = sites[sites["site_id"].astype(int).isin(day_sids)].copy()
-        if not day_sites.empty and day_sids:
-            sid_order = {sid: i for i, sid in enumerate(day_sids)}
-            day_sites = day_sites.assign(_ord=day_sites["site_id"].astype(int).map(sid_order)).sort_values("_ord").drop(columns=["_ord"])
-        with st.expander(f"Day {day_num} — {len(day_sids)} site(s)", expanded=True):
-            if day_sites.empty:
-                st.caption("No sites assigned yet.")
-            else:
-                day_sites["google_maps_point_url"] = day_sites.apply(lambda r: make_google_maps_point_url(float(r["latitude"]), float(r["longitude"])), axis=1)
-                show_dcols = [c for c in ["site_id", "priority_rank", "priority_score", "sdm_suitability", "occurrence_support_score", "n_occurrences", "candidate_type", "latitude", "longitude", "google_maps_point_url"] if c in day_sites.columns]
-                dcol_cfg: dict[str, Any] = {}
-                if "google_maps_point_url" in show_dcols:
-                    dcol_cfg["google_maps_point_url"] = st.column_config.LinkColumn("Google Maps", display_text="📍")
-                st.dataframe(day_sites[show_dcols], column_config=dcol_cfg, width="stretch", hide_index=True)
-                remove_ids = st.multiselect(f"Remove from Day {day_num}", options=day_sids, default=[], key=f"sl_rm_{day_num}", format_func=lambda x: f"Site {x}")
-                if remove_ids and st.button(f"Remove selected", key=f"sl_do_rm_{day_num}"):
-                    st.session_state.survey_day_lists[day_num] = [s for s in day_sids if s not in remove_ids]
-                    st.rerun()
-                urls = _make_day_gmaps_urls(day_sites, travelmode)
-                for part_i, url in enumerate(urls, start=1):
-                    label = f"🗺️ Open Day {day_num} in Google Maps" if len(urls) == 1 else f"🗺️ Open Day {day_num} Part {part_i} in Google Maps"
-                    st.link_button(label, url, use_container_width=True)
+            # Day list downloads
+            if any(st.session_state.survey_day_lists.values()):
+                ddl1, ddl2 = st.columns(2)
+                ddl1.download_button("⬇ Download survey_day_site_lists.csv", make_survey_day_csv(st.session_state.survey_day_lists, sites), "survey_day_site_lists.csv", "text/csv", use_container_width=True)
+                ddl2.download_button("⬇ Download survey_day_site_lists.html", make_survey_day_html(st.session_state.survey_day_lists, sites), "survey_day_site_lists.html", "text/html", use_container_width=True)
 
-    # ── Downloads ─────────────────────────────────────────────────────────────
-    if any(st.session_state.survey_day_lists.values()):
-        dl1, dl2 = st.columns(2)
-        dl1.download_button("⬇ Download survey_day_site_lists.csv", make_survey_day_csv(st.session_state.survey_day_lists, sites), "survey_day_site_lists.csv", "text/csv", use_container_width=True)
-        dl2.download_button("⬇ Download survey_day_site_lists.html", make_survey_day_html(st.session_state.survey_day_lists, sites), "survey_day_site_lists.html", "text/html", use_container_width=True)
-
-    # ── Return combined day DataFrame for map layer ───────────────────────────
-    all_rows = []
-    for day_num in sorted(st.session_state.survey_day_lists.keys()):
-        day_sids = st.session_state.survey_day_lists[day_num]
-        day_sites_r = sites[sites["site_id"].astype(int).isin(day_sids)].copy()
-        if not day_sites_r.empty and day_sids:
-            sid_order = {sid: i for i, sid in enumerate(day_sids)}
-            day_sites_r = day_sites_r.assign(_ord=day_sites_r["site_id"].astype(int).map(sid_order)).sort_values("_ord").drop(columns=["_ord"])
-        day_urls = _make_day_gmaps_urls(day_sites_r, travelmode) if not day_sites_r.empty else []
-        day_url = day_urls[0] if day_urls else ""
-        for order, sid in enumerate(day_sids, start=1):
-            m = sites[sites["site_id"].astype(int) == sid]
-            if m.empty:
-                continue
-            row = m.iloc[0].to_dict()
-            row.update({"survey_day": day_num, "day_route_order": order, "distance_from_previous_km": 0.0, "cumulative_day_distance_km": 0.0, "day_google_maps_route_url": day_url})
-            all_rows.append(row)
+    # ── Return DataFrame for map route layer ─────────────────────────────────
+    # Prefer day lists when populated; fall back to selected sites as survey_day=1
+    all_rows: list[dict] = []
+    day_lists = st.session_state.survey_day_lists
+    if any(day_lists.values()):
+        for day_num in sorted(day_lists.keys()):
+            day_sids = day_lists[day_num]
+            day_sites_r = sites[sites["site_id"].astype(int).isin(day_sids)].copy()
+            if not day_sites_r.empty and day_sids:
+                dord = {sid: i for i, sid in enumerate(day_sids)}
+                day_sites_r = day_sites_r.assign(_ord=day_sites_r["site_id"].astype(int).map(dord)).sort_values("_ord").drop(columns=["_ord"])
+            day_urls = _make_day_gmaps_urls(day_sites_r, travelmode) if not day_sites_r.empty else []
+            day_url = day_urls[0] if day_urls else ""
+            for order, sid in enumerate(day_sids, start=1):
+                m = sites[sites["site_id"].astype(int) == sid]
+                if m.empty:
+                    continue
+                row = m.iloc[0].to_dict()
+                row.update({"survey_day": day_num, "day_route_order": order, "distance_from_previous_km": 0.0, "cumulative_day_distance_km": 0.0, "day_google_maps_route_url": day_url})
+                all_rows.append(row)
+    elif not sel_df.empty:
+        gurl = make_google_maps_route_url(sel_df, travelmode=travelmode, max_waypoints=8) if not sel_df.empty else ""
+        for order, (_, row) in enumerate(sel_df.iterrows(), start=1):
+            r = row.to_dict()
+            r.update({"survey_day": 1, "day_route_order": order, "distance_from_previous_km": 0.0, "cumulative_day_distance_km": 0.0, "day_google_maps_route_url": gurl})
+            all_rows.append(r)
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
