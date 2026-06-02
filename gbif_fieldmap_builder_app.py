@@ -471,12 +471,9 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
                         st.rerun()
         # ── recover by ID (unchanged) ────────────────────────────────────────
         excluded_options = [x for x in sorted(set(st.session_state.excluded_row_ids)) if x in set(occ_raw["_row_id"].astype(int))]
-        if any(x not in excluded_options for x in st.session_state.get("restore_excluded_row_ids", [])):
-            st.session_state.restore_excluded_row_ids = []
         recover_ids = st.multiselect("Excluded row IDs", options=excluded_options, default=[], key="restore_excluded_row_ids")
         if recover_ids and st.button("Recover selected excluded rows"):
             st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) - set(map(int, recover_ids))
-            st.session_state.restore_excluded_row_ids = []
             reset_model_outputs()
             st.rerun()
         filtered = occ_raw[~occ_raw["_row_id"].astype(int).isin(set(st.session_state.excluded_row_ids))].copy()

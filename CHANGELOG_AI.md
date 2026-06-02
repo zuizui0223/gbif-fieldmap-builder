@@ -4,6 +4,19 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-02 - Claude (Anthropic) — Fix StreamlitAPIException in coordinate_exclusion_panel
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Removed two direct assignments to st.session_state.restore_excluded_row_ids that caused StreamlitAPIException: the pre-widget guard (checking stale IDs) and the post-recover-button reset. Both were unnecessary because the multiselect widget's options= already restricts valid choices, and st.rerun() after recovery naturally leaves the selection empty on the next render.
+- Click exclusion behavior and rectangle exclusion behavior unchanged.
+
+Features preserved:
+- All existing features unchanged.
+
 ## 2026-06-02 - Claude (Anthropic) — Issue #1 follow-up: simplify QC rectangle workflow
 
 Changed files:
