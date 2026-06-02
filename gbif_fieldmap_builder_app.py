@@ -1208,17 +1208,11 @@ def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
         st.info("Select candidate survey sites on the map before generating a route.")
         return pd.DataFrame()
     with st.expander("Route planner settings", expanded=True):
-        if st.session_state.get("field_survey_mode"):
-            days = st.number_input("Survey days", 1, 30, 2)
-            max_sites = st.number_input("Max sites per day", 1, 10, min(8, max(1, len(selected_sites))))
-            max_dist = st.number_input("Max straight-line distance per day (km)", 0.0, 500.0, 40.0, 5.0)
-            max_total = st.number_input("Max selected sites to route", 1, 500, min(30, max(1, len(selected_sites))))
-        else:
-            c1, c2, c3, c4 = st.columns(4)
-            days = c1.number_input("Survey days", 1, 30, 2)
-            max_sites = c2.number_input("Max sites per day", 1, 10, min(8, max(1, len(selected_sites))))
-            max_dist = c3.number_input("Max straight-line distance per day (km)", 0.0, 500.0, 40.0, 5.0)
-            max_total = c4.number_input("Max selected sites to route", 1, 500, min(30, max(1, len(selected_sites))))
+        c1, c2, c3, c4 = st.columns(4)
+        days = c1.number_input("Survey days", 1, 30, 2)
+        max_sites = c2.number_input("Max sites per day", 1, 10, min(8, max(1, len(selected_sites))))
+        max_dist = c3.number_input("Max straight-line distance per day (km)", 0.0, 500.0, 40.0, 5.0)
+        max_total = c4.number_input("Max selected sites to route", 1, 500, min(30, max(1, len(selected_sites))))
         method_options = ["selected order"] + ROUTE_ORDER_METHODS
         method = st.selectbox("Route ordering method", method_options, index=0)
         travelmode = st.selectbox("Google Maps travel mode", ["driving", "walking", "bicycling", "transit"], index=0)
@@ -1268,8 +1262,7 @@ def field_recording_panel(sites_df: pd.DataFrame) -> None:
         with st.expander(label, expanded=False):
             with st.form(key=f"field_form_{sid}"):
                 visited = st.checkbox("Visited", value=bool(rec.get("visited", False)))
-                _saved_date = rec.get("survey_date")
-                survey_date = st.date_input("Survey date", value=pd.to_datetime(_saved_date).date() if _saved_date else "today")
+                survey_date = st.date_input("Survey date", value=rec.get("survey_date") or None)
                 found = st.checkbox("Target species found", value=bool(rec.get("target_species_found", False)))
                 abundance = st.number_input("Abundance count", min_value=0, value=int(rec.get("abundance_count", 0)))
                 flowering = st.number_input("Flowering individual count", min_value=0, value=int(rec.get("flowering_individual_count", 0)))
@@ -1367,7 +1360,7 @@ def main() -> None:
     if not field_mode:
         st.subheader("SDM prediction extent")
         st.caption("Choose the prediction area before building SDM. Only blue included points are used below; excluded rows are removed from the analysis view and hard-masked from prediction.")
-    area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode") if not field_mode else st.session_state.get("sdm_area_mode", "bounding box")
+    area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode") if not field_mode else "bounding box"
     if not field_mode:
         c1, c2, c3 = st.columns(3)
         buffer_km = c1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
