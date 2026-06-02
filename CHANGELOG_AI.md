@@ -4,6 +4,39 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-02 - Claude (Anthropic) — export redesign
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Renamed route section to "Export survey sites for Google Maps".
+- Added two export modes: 1. Auto (top-ranked sites with top_n, min_priority_score, min_sdm_suitability, include_occurrence_supported, include_sdm_high filters); 2. Manual (map-click toggle, preserved).
+- Added make_export_csv() producing Google Maps / My Maps import-ready CSV with columns: name, latitude, longitude, priority_rank, priority_score, sdm_suitability, occurrence_support_score, n_occurrences, candidate_type, candidate_method, selection_reason, access_note, google_maps_url.
+- Added make_export_kml() for KML download (Google Earth / My Maps compatible).
+- Download buttons: google_maps_auto_sites.csv/.kml and google_maps_selected_sites.csv/.kml.
+- "Open selected sites in Google Maps" link button.
+- Warning text: export does not guarantee road/ferry/mountain/cliff/restricted-access feasibility.
+- Moved travel mode, start/end location, day-splitting controls into collapsed "Advanced" expander (day-by-day planner fully preserved per AGENTS.md).
+- Added _make_gmaps_url_with_end helper retained from previous iteration.
+- EXPORT_CSV_COLS constant added at module level.
+
+Features preserved:
+- GBIF pagination
+- CSV upload
+- Map-click occurrence exclusion
+- Red QC excluded points
+- Ensemble SDM, VIF stepwise filtering, spatial partition diagnostics
+- Raster-style SDM predict map
+- SDM-high exploration candidates
+- Day-by-day route planner (in Advanced expander)
+- HTML/CSV downloads
+
+Known risks / TODO:
+- Google Maps URL waypoint cap is 8; routes with >9 sites silently drop excess waypoints.
+- KML description is plain text; could be improved with HTML CDATA tables.
+
 ## 2026-06-02 - Claude (Anthropic)
 
 Changed files:
