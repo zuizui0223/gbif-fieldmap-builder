@@ -4,6 +4,23 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Codex - Fix genus GBIF match crash
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Hardened genus GBIF lookup in Genus diversity / SSDM mode by trying species/match with rank, species/match without rank, alternatives, and species/search genus fallback.
+- Wrapped genus occurrence fetch in the UI so a failed GBIF genus lookup is shown as an in-app error instead of crashing Streamlit Cloud.
+
+Features preserved:
+- Existing single-species workflow and all SDM/VIF/spatial partition/predict-map/survey-list features are unchanged.
+- Genus occurrence richness workflow remains occurrence-based only; full SSDM is still intentionally deferred.
+
+Known risks / TODO:
+- GBIF genus matching still depends on GBIF taxonomy and user spelling; invalid names now fail gracefully in the app.
+
 ## 2026-06-03 - Codex - Issue #2 first step: genus occurrence richness mode
 
 Changed files:
