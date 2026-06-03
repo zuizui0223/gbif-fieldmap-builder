@@ -51,7 +51,6 @@ APP_TITLE = "GBIF FieldMap Builder"
 APP_BUILD_ID = "hard-exclusion-v2-20260529"
 EARTH_RADIUS_M = 6_371_008.8
 GBIF_SPECIES_MATCH_URL = "https://api.gbif.org/v1/species/match"
-GBIF_SPECIES_SEARCH_URL = "https://api.gbif.org/v1/species/search"
 GBIF_OCCURRENCE_SEARCH_URL = "https://api.gbif.org/v1/occurrence/search"
 WC_BASE = "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
 LAND_GEOJSON_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_land.geojson"
@@ -288,37 +287,12 @@ def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, countr
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, country_code: str, year_from: Optional[int], year_to: Optional[int]) -> tuple[str, pd.DataFrame]:
-    payload: dict[str, Any] = {}
-    usage_key = None
-    for params in [{"name": genus_name.strip(), "rank": "GENUS"}, {"name": genus_name.strip()}]:
-        match = requests.get(GBIF_SPECIES_MATCH_URL, params=params, timeout=30)
-        match.raise_for_status()
-        payload = match.json()
-        rank = str(payload.get("rank", "")).upper()
-        if rank == "GENUS" and payload.get("usageKey") is not None:
-            usage_key = payload.get("usageKey")
-            break
-        if payload.get("genusKey") is not None:
-            usage_key = payload.get("genusKey")
-            break
-        for alt in payload.get("alternatives", []) or []:
-            if str(alt.get("rank", "")).upper() == "GENUS" and alt.get("usageKey") is not None:
-                payload = alt
-                usage_key = alt.get("usageKey")
-                break
-        if usage_key is not None:
-            break
+    match = requests.get(GBIF_SPECIES_MATCH_URL, params={"name": genus_name.strip(), "rank": "GENUS"}, timeout=30)
+    match.raise_for_status()
+    payload = match.json()
+    usage_key = payload.get("usageKey") or payload.get("genusKey")
     if usage_key is None:
-        search = requests.get(GBIF_SPECIES_SEARCH_URL, params={"q": genus_name.strip(), "rank": "GENUS", "status": "ACCEPTED", "limit": 10}, timeout=30)
-        search.raise_for_status()
-        results = search.json().get("results", [])
-        for result in results:
-            if str(result.get("rank", "")).upper() == "GENUS" and result.get("key") is not None:
-                payload = result
-                usage_key = result.get("key")
-                break
-    if usage_key is None:
-        raise ValueError(f"GBIF could not match a genus for '{genus_name}'. Check spelling or try the Latin genus name only, e.g. Cirsium.")
+        raise ValueError(f"GBIF could not match this genus name: {genus_name}")
 
     params_base: dict[str, Any] = {"taxonKey": usage_key, "hasCoordinate": "true", "hasGeospatialIssue": "false"}
     if country_code.strip():
@@ -365,8 +339,7 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
             "gbifID": rec.get("gbifID") or rec.get("key"),
             "media_url": extract_media_url_from_gbif_record(rec),
         })
-    matched_name = payload.get("scientificName") or payload.get("canonicalName") or genus_name
-    msg = f"GBIF genus match: {matched_name} / taxonKey={usage_key} / rank={payload.get('rank', 'GENUS')}. GBIF total={total_count:,}; fetched={len(rows):,}; cap={int(max_records):,}."
+    msg = f"GBIF genus match: {payload.get('scientificName', genus_name)} / taxonKey={usage_key} / rank={payload.get('rank', 'GENUS')}. GBIF total={total_count:,}; fetched={len(rows):,}; cap={int(max_records):,}."
     return msg, pd.DataFrame(rows)
 
 
@@ -1414,12 +1387,8 @@ def genus_diversity_panel() -> None:
         if not genus_name.strip():
             st.warning("Genus name is empty.")
             return
-        try:
-            with st.spinner("Fetching GBIF genus occurrences page by page, 300 records per request..."):
-                msg, df = fetch_gbif_genus_occurrences_cached(genus_name.strip(), int(max_records), country.strip().upper(), year_from, year_to)
-        except Exception as exc:
-            st.error(f"Could not fetch genus occurrences: {exc}")
-            return
+        with st.spinner("Fetching GBIF genus occurrences page by page, 300 records per request..."):
+            msg, df = fetch_gbif_genus_occurrences_cached(genus_name.strip(), int(max_records), country.strip().upper(), year_from, year_to)
         st.session_state.genus_raw_df = df
         st.session_state.genus_source_key = f"genus::{genus_name}::{country}::{max_records}::{year_from}::{year_to}"
         st.session_state.genus_source_message = msg
