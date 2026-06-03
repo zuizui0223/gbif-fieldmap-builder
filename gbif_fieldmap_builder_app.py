@@ -855,9 +855,9 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame, occ_map_display: pd.DataFr
     """Optional QC panel — collapsed by default so it does not block candidate generation."""
     n_excl = len(set(st.session_state.excluded_row_ids))
     expander_label = (
-        f"Optional: Coordinate quality check ({n_excl} excluded)"
+        f"Advanced: coordinate QC — {n_excl} point(s) excluded"
         if n_excl > 0
-        else "Optional: Coordinate quality check"
+        else "Advanced: coordinate QC — click points to exclude suspicious records"
     )
     with st.expander(expander_label, expanded=False):
         if len(occ_map_display) < len(occ_raw):
@@ -3047,16 +3047,18 @@ def main() -> None:
     load_input_controls()
     st.sidebar.divider()
     st.sidebar.subheader("Sampling design")
-    thinning_m = st.sidebar.number_input("Spatial thinning before clustering (m)", 0, 50_000, 1000, 500)
-    large_dataset_mode = st.sidebar.checkbox("Large dataset mode", value=False, help="Also enabled automatically after loading when valid records exceed 1,000.")
-    max_map_points = st.sidebar.number_input("Max occurrence points shown on map", 100, 50_000, 1000 if large_dataset_mode else 3000, 100, help="Raw records are kept, but only this many occurrence points are drawn on Folium maps. Automatic large dataset mode caps this at 1,000.")
-    exact_dedup = st.sidebar.checkbox("Exact coordinate deduplication", value=True, help="Keep one representative record for identical latitude/longitude coordinates before clustering and SDM.")
-    grid_thinning_deg = st.sidebar.number_input("Grid thinning for analysis (degrees)", min_value=0.0, max_value=5.0, value=0.05 if large_dataset_mode else 0.0, step=0.01, format="%.2f", help="Optional one-record-per-grid-cell thinning before clustering and SDM. Set 0 to disable.")
-    center_method = st.sidebar.selectbox("Candidate center method", ["Medoid", "Centroid"], index=0)
-    survey_range_m = st.sidebar.number_input("Survey range radius around candidate centers (m)", 50, 50_000, 500, 50)
-    cluster_m = st.sidebar.number_input("DBSCAN cluster distance (m)", 1, 500_000, 2000, 500)
-    min_samples = st.sidebar.number_input("Minimum records per cluster", 1, 50, 1, 1)
-    occurrence_weight = st.sidebar.slider("Occurrence record-count weight", 0.0, 0.60, 0.35, 0.05)
+    survey_range_m = st.sidebar.number_input("Survey range radius (m)", 50, 50_000, 500, 50, help="Radius around each candidate center shown as a survey range circle on the map.")
+    cluster_m = st.sidebar.number_input("Candidate grouping scale (m)", 1, 500_000, 2000, 500, help="Occurrences within this distance are grouped into a single survey candidate (DBSCAN clustering distance).")
+    with st.sidebar.expander("Advanced sampling settings", expanded=False):
+        thinning_m = st.number_input("Spatial thinning before clustering (m)", 0, 50_000, 1000, 500, help="Minimum distance between retained records used for candidate clustering.")
+        large_dataset_mode = st.checkbox("Large dataset mode", value=False, help="Also enabled automatically when valid records exceed 1,000.")
+        max_map_points = st.number_input("Max occurrence points shown on map", 100, 50_000, 1000 if large_dataset_mode else 3000, 100, help="Only this many occurrence points are drawn on Folium maps. Raw records are kept.")
+        exact_dedup = st.checkbox("Exact coordinate deduplication", value=True, help="Keep one representative record per unique lat/lon coordinate before clustering.")
+        grid_thinning_deg = st.number_input("Grid thinning for analysis (degrees)", min_value=0.0, max_value=5.0, value=0.05 if large_dataset_mode else 0.0, step=0.01, format="%.2f", help="One record per grid cell before clustering. Set 0 to disable.")
+        center_method = st.selectbox("Candidate center method", ["Medoid", "Centroid"], index=0, help="How to pick the representative point for each occurrence cluster.")
+        min_samples = st.number_input("Minimum records per cluster", 1, 50, 1, 1, help="Clusters with fewer records are discarded.")
+        occurrence_weight = st.slider("Record-density bonus", 0.0, 0.60, 0.35, 0.05, help="How much the number of records in a cluster boosts candidate priority.")
+        show_occurrence_images = st.checkbox("Occurrence image popups", value=False, help="Show GBIF occurrence photos in map popups. Off by default to keep maps fast.")
     st.sidebar.subheader("Candidate scoring")
     observed_weight = st.sidebar.number_input("Observed-data weight", min_value=0.0, max_value=1.0, value=0.7, step=0.05, format="%.2f", key="species_observed_weight")
     model_weight = st.sidebar.number_input("SDM model weight", min_value=0.0, max_value=1.0, value=0.3, step=0.05, format="%.2f", key="species_model_weight")
@@ -3079,15 +3081,13 @@ def main() -> None:
         st.error("No valid coordinate records found.")
         return
 
-    st.subheader("2 — Prepare records")
+    st.subheader("2 — Prepare records and choose survey range")
     active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
     auto_large_dataset_mode = len(occ_raw) > 1000
     effective_large_dataset_mode = bool(large_dataset_mode or auto_large_dataset_mode)
     effective_max_map_points = min(int(max_map_points), 1000) if effective_large_dataset_mode else int(max_map_points)
     if auto_large_dataset_mode:
         st.info("Large dataset mode was enabled automatically because more than 1,000 valid occurrence records were loaded. Raw records are preserved, but maps, candidates, and SDM use capped/thinned inputs.")
-    show_occurrence_images_default = len(occ_raw) <= 500 and not effective_large_dataset_mode
-    show_occurrence_images = st.sidebar.checkbox("Occurrence image popups", value=show_occurrence_images_default, help="Off by default when records exceed 500 because remote images make maps slow.")
     occ_qc_map_display = limit_occurrence_display(occ_raw, active_excluded_ids, int(effective_max_map_points))
     coordinate_exclusion_panel(occ_raw, occ_qc_map_display, bool(show_occurrence_images))
     active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
@@ -3194,28 +3194,29 @@ def main() -> None:
             use_container_width=True,
         )
 
-    st.subheader("SDM prediction extent")
-    st.caption("Choose the prediction area before building SDM. Buffer / convex hull / bounding box are built from the active target occurrence set selected in Step 2.")
-    area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode")
-    c1, c2, c3 = st.columns(3)
-    buffer_km = c1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
-    rectangle_margin_km = c2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
-    exclusion_buffer_km = c3.number_input("Hard exclusion radius (km)", min_value=0.1, max_value=100.0, value=10.0, step=1.0, key="sdm_exclusion_cutout_km", help="Excluded records are removed from training and their surrounding area is physically cut out of the prediction extent.")
-    excluded_occ = excluded_occurrences_from_ids(occ_raw, active_excluded_ids)
-    extent_geom = prediction_area_geometry(occ_sdm_train, area_mode, float(buffer_km), float(rectangle_margin_km), excluded_occ, float(exclusion_buffer_km))
-    if extent_geom is not None and not extent_geom.is_empty:
-        minx, miny, maxx, maxy = extent_geom.bounds
-        st.caption(f"Current SDM input: {len(occ_sdm_train):,} records from the Step 2 active target set; {len(active_excluded_ids):,} red excluded records removed and hard-masked. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")
-        st_folium(
-            make_sdm_extent_preview_map(occ_sdm_train, extent_geom, area_mode),
-            width=None,
-            height=460,
-            returned_objects=[],
-            key=f"sdm_extent_preview_map_{area_mode}",
-        )
-
     st.subheader("Optional: Build SDM")
     with st.expander("Build SDM and predict map", expanded=False):
+        # ── SDM prediction extent ─────────────────────────────────────────────
+        st.markdown("**SDM prediction extent**")
+        st.caption("Buffer / convex hull / bounding box are built from the active target occurrence set selected in Step 2.")
+        area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode")
+        _ec1, _ec2, _ec3 = st.columns(3)
+        buffer_km = _ec1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
+        rectangle_margin_km = _ec2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
+        exclusion_buffer_km = _ec3.number_input("Hard exclusion radius (km)", min_value=0.1, max_value=100.0, value=10.0, step=1.0, key="sdm_exclusion_cutout_km", help="Excluded records are removed from training and their surrounding area is physically cut out of the prediction extent.")
+        excluded_occ = excluded_occurrences_from_ids(occ_raw, active_excluded_ids)
+        extent_geom = prediction_area_geometry(occ_sdm_train, area_mode, float(buffer_km), float(rectangle_margin_km), excluded_occ, float(exclusion_buffer_km))
+        if extent_geom is not None and not extent_geom.is_empty:
+            minx, miny, maxx, maxy = extent_geom.bounds
+            st.caption(f"SDM input: {len(occ_sdm_train):,} records; {len(active_excluded_ids):,} red excluded records removed and hard-masked. Extent: lon {minx:.4f}–{maxx:.4f}, lat {miny:.4f}–{maxy:.4f}.")
+            st_folium(
+                make_sdm_extent_preview_map(occ_sdm_train, extent_geom, area_mode),
+                width=None,
+                height=420,
+                returned_objects=[],
+                key=f"sdm_extent_preview_map_{area_mode}",
+            )
+        st.divider()
         # ── SDM bias-reduction preprocessing ─────────────────────────────────
         st.markdown("**SDM bias-reduction preprocessing**")
         st.caption(

@@ -4,6 +4,35 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Claude (claude-sonnet-4-6) — Simplify Step 2 / Sampling design UI; move SDM extent inside expander
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+
+**Step 2 heading renamed**
+- `"2 — Prepare records"` → `"2 — Prepare records and choose survey range"`.
+
+**Coordinate QC expander relabeled**
+- `"Optional: Coordinate quality check"` → `"Advanced: coordinate QC — click points to exclude suspicious records"` (shows count when points are excluded). Functionally unchanged; click-to-exclude, rectangle draw, clear button, and red excluded points all preserved.
+
+**Sidebar sampling design simplified**
+- Always-visible controls reduced to two: **Survey range radius (m)** and **Candidate grouping scale (m)** (renamed from "DBSCAN cluster distance").
+- All technical controls moved into a collapsed **"Advanced sampling settings"** expander: spatial thinning, large dataset mode, max map points, exact dedup, grid thinning, candidate center method, min records per cluster.
+- "Occurrence record-count weight" renamed to **"Record-density bonus"** and moved into advanced settings.
+- "Occurrence image popups" moved into advanced settings.
+- Candidate scoring (Observed-data weight + SDM model weight) remains always-visible.
+
+**SDM prediction extent moved inside "Optional: Build SDM" expander**
+- Area mode, buffer/hull/bounding-box controls, hard exclusion radius, and the extent preview map are now inside the "Build SDM and predict map" expander.
+- Users see occurrence-based survey candidates without any SDM extent section appearing on the page.
+- Variables (`area_mode`, `buffer_km`, `rectangle_margin_km`, `exclusion_buffer_km`, `excluded_occ`, `extent_geom`) remain accessible to the `if run_sdm:` block via Python scope (Streamlit `with` blocks do not create new Python scope).
+
+Features preserved:
+- Target occurrence set selection, coordinate QC, large dataset caps, SDM/SSDM, VIF, variable presets, weighted scoring, route planner, downloads all unchanged.
+
 ## 2026-06-03 - Claude (claude-sonnet-4-6) — Weighted model support: fix model_support_score refresh bug + UI status banners
 
 Changed files:
