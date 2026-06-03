@@ -4,6 +4,23 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Codex (OpenAI) - Issue #10 target occurrence rectangle selection
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Added Step 2 target occurrence set controls: use all cleaned records, use only records inside a drawn rectangle, or exclude records inside a drawn rectangle.
+- Clarified that the rectangle is not the final SDM/SSDM extent; it only selects which occurrence records are used to derive candidates and prediction extents.
+- Added shared target-selection map/helper and separate active target sets for species mode and genus mode.
+- Derived single-species occurrence candidates, SDM train inputs, and buffer/convex-hull/bounding-box prediction extents from the selected target occurrence set.
+- Derived genus observed richness grids/hotspots and optional SSDM inputs/extents from the selected target occurrence set.
+- Added count metrics for raw records, records inside rectangle, records excluded by rectangle, active target records, candidate inputs, and SDM/SSDM inputs.
+
+Features preserved:
+- Coordinate red-point exclusion, large dataset caps, GBIF downloads, single-species SDM/VIF/predict maps, genus richness, optional SSDM, route planning, and downloads remain available.
+
 ## 2026-06-03 - Codex (OpenAI) - GBIF retry handling for connection resets
 
 Changed files:

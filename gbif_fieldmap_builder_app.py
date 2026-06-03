@@ -155,6 +155,10 @@ def init_session_state() -> None:
         "sl_reset_token": 0,
         "qc_rect_selected_ids": [],
         "qc_last_draw_sig": "",
+        "target_rect_features": [],
+        "target_last_draw_sig": "",
+        "genus_target_rect_features": [],
+        "genus_target_last_draw_sig": "",
         "genus_raw_df": None,
         "genus_source_key": None,
         "genus_source_message": "No genus occurrence data loaded yet.",
@@ -179,6 +183,8 @@ def clear_loaded_data() -> None:
     st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
     st.session_state.qc_rect_selected_ids = []
     st.session_state.qc_last_draw_sig = ""
+    st.session_state.target_rect_features = []
+    st.session_state.target_last_draw_sig = ""
     st.session_state.source_message = "No occurrence data loaded yet."
 
 
@@ -186,6 +192,8 @@ def clear_genus_data() -> None:
     st.session_state.genus_raw_df = None
     st.session_state.genus_source_key = None
     st.session_state.genus_source_message = "No genus occurrence data loaded yet."
+    st.session_state.genus_target_rect_features = []
+    st.session_state.genus_target_last_draw_sig = ""
 
 
 def reset_model_outputs() -> None:
@@ -703,6 +711,111 @@ def make_exclusion_review_map(occ_map_display: pd.DataFrame, excluded_ids: set[i
     except Exception:
         pass
     return fmap
+
+
+def make_target_selection_map(occ_map_display: pd.DataFrame) -> folium.Map:
+    center = (float(occ_map_display["_latitude"].mean()), float(occ_map_display["_longitude"].mean())) if not occ_map_display.empty else (35.5, 135.5)
+    fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
+    fg = FeatureGroup(name="target selection occurrences", show=True)
+    for _, row in occ_map_display.iterrows():
+        rid = int(row["_row_id"])
+        folium.CircleMarker(
+            (row["_latitude"], row["_longitude"]),
+            radius=4,
+            color="#1f77b4",
+            fill=True,
+            fill_color="#1f77b4",
+            fill_opacity=0.65,
+            weight=1,
+            tooltip=f"row {rid}",
+        ).add_to(fg)
+    fg.add_to(fmap)
+    Draw(
+        export=False,
+        draw_options={"rectangle": True, "polyline": False, "circle": False, "marker": False, "circlemarker": False, "polygon": False},
+        edit_options={"edit": False, "remove": True},
+    ).add_to(fmap)
+    LayerControl(collapsed=True).add_to(fmap)
+    try:
+        fmap.fit_bounds([[occ_map_display["_latitude"].min(), occ_map_display["_longitude"].min()], [occ_map_display["_latitude"].max(), occ_map_display["_longitude"].max()]], padding=(30, 30))
+    except Exception:
+        pass
+    return fmap
+
+
+def target_occurrence_set_panel(
+    occ_base: pd.DataFrame,
+    occ_map_display: pd.DataFrame,
+    raw_record_count: int,
+    key_prefix: str,
+    label: str = "Target occurrence set for extent/candidates",
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    st.markdown(f"**{label}**")
+    st.caption(
+        "Drawn rectangles do not become the final SDM extent. "
+        "They only choose which occurrence records are used to build candidate inputs and prediction extents."
+    )
+    mode = st.radio(
+        "Target occurrence set",
+        ["Use all cleaned records", "Use only records inside drawn rectangle", "Exclude records inside drawn rectangle"],
+        index=0,
+        horizontal=True,
+        key=f"{key_prefix}_target_occurrence_mode",
+    )
+    if len(occ_map_display) < len(occ_base):
+        st.caption(f"Showing {len(occ_map_display):,} of {len(occ_base):,} cleaned records on this rectangle-selection map.")
+    col_map, col_clear = st.columns([4, 1])
+    with col_clear:
+        if st.button("Clear target rectangle", key=f"{key_prefix}_clear_target_rect"):
+            st.session_state[f"{key_prefix}_rect_features"] = []
+            st.session_state[f"{key_prefix}_last_draw_sig"] = ""
+            reset_model_outputs()
+            st.rerun()
+    with col_map:
+        draw_data = st_folium(
+            make_target_selection_map(occ_map_display),
+            width=None,
+            height=420,
+            returned_objects=["all_drawings", "last_active_drawing"],
+            key=f"{key_prefix}_target_occurrence_map",
+        )
+    raw_drawings = (draw_data or {}).get("all_drawings") or (draw_data or {}).get("last_active_drawing")
+    features = extract_drawn_features(raw_drawings)
+    if features:
+        draw_sig = str(features)[:800]
+        if draw_sig != st.session_state.get(f"{key_prefix}_last_draw_sig", ""):
+            st.session_state[f"{key_prefix}_last_draw_sig"] = draw_sig
+            st.session_state[f"{key_prefix}_rect_features"] = features
+            reset_model_outputs()
+            st.rerun()
+    stored_features = st.session_state.get(f"{key_prefix}_rect_features", []) or []
+    inside_ids = set(ids_inside_drawn_rectangles(occ_base, "_row_id", "_latitude", "_longitude", stored_features)) if stored_features else set()
+    has_rectangle = bool(stored_features)
+    if mode == "Use all cleaned records":
+        selected = occ_base.copy()
+        rectangle_excluded = 0
+    elif not has_rectangle:
+        st.warning("Draw a rectangle first. Until a rectangle is drawn, all cleaned records are used.")
+        selected = occ_base.copy()
+        rectangle_excluded = 0
+    elif mode == "Use only records inside drawn rectangle":
+        selected = occ_base[occ_base["_row_id"].astype(int).isin(inside_ids)].copy()
+        rectangle_excluded = len(occ_base) - len(selected)
+    else:
+        selected = occ_base[~occ_base["_row_id"].astype(int).isin(inside_ids)].copy()
+        rectangle_excluded = len(inside_ids)
+    counts = {
+        "raw_records": int(raw_record_count),
+        "records_inside_rectangle": int(len(inside_ids)),
+        "records_excluded_by_rectangle": int(rectangle_excluded),
+        "active_target_records": int(len(selected)),
+    }
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Raw records", f"{counts['raw_records']:,}")
+    m2.metric("Inside rectangle", f"{counts['records_inside_rectangle']:,}")
+    m3.metric("Excluded by rectangle", f"{counts['records_excluded_by_rectangle']:,}")
+    m4.metric("Active target records", f"{counts['active_target_records']:,}")
+    return selected.reset_index(drop=True), counts
 
 
 def row_id_from_tooltip(tooltip: Any) -> Optional[int]:
@@ -1932,6 +2045,8 @@ def load_input_controls() -> None:
                 st.session_state.source_message = f"Loaded coordinate CSV: {uploaded.name} ({len(st.session_state.raw_df):,} raw rows)."
                 st.session_state.excluded_row_ids = set()
                 st.session_state.restore_excluded_row_ids = []
+                st.session_state.target_rect_features = []
+                st.session_state.target_last_draw_sig = ""
                 reset_model_outputs()
         return
     name = st.sidebar.text_input("Taxon scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_taxon_scientific_name_input")
@@ -1962,6 +2077,8 @@ def load_input_controls() -> None:
         st.session_state.source_message = msg
         st.session_state.excluded_row_ids = set()
         st.session_state.restore_excluded_row_ids = []
+        st.session_state.target_rect_features = []
+        st.session_state.target_last_draw_sig = ""
         reset_model_outputs()
 
 
@@ -1991,6 +2108,8 @@ def genus_diversity_panel() -> None:
                 st.session_state.genus_raw_df = df
                 st.session_state.genus_source_key = f"genus::{genus_name}::{country}::{max_records}::{year_from}::{year_to}"
                 st.session_state.genus_source_message = msg
+                st.session_state.genus_target_rect_features = []
+                st.session_state.genus_target_last_draw_sig = ""
             except Exception as exc:
                 st.error(f"GBIF genus download failed after retries: {exc}")
                 st.info("Try again in a minute, reduce the maximum record cap, or clear country/year filters. GBIF sometimes resets long paginated requests from Streamlit Cloud.")
@@ -2011,6 +2130,7 @@ def genus_diversity_panel() -> None:
     if occ.empty:
         st.error("No valid genus coordinate records found.")
         return
+    occ_cleaned = occ.copy()
 
     st.sidebar.divider()
     st.sidebar.subheader("Richness grid")
@@ -2025,14 +2145,34 @@ def genus_diversity_panel() -> None:
     richness_metric = st.sidebar.selectbox("Hotspot ranking metric", ["Species richness", "Species with minimum records", "Record count"], index=0, key="genus_richness_metric")
     max_hotspots = st.sidebar.number_input("Max hotspot candidates", min_value=1, max_value=200, value=20, step=1, key="genus_max_hotspots")
 
+    st.subheader("2 窶・Prepare records and species summary")
+    genus_target_display = limit_occurrence_display(occ_cleaned, set(), 1000)
+    occ, genus_target_counts = target_occurrence_set_panel(
+        occ_cleaned,
+        genus_target_display,
+        raw_record_count=len(occ_cleaned),
+        key_prefix="genus_target",
+        label="Target occurrence set for richness hotspots and SSDM",
+    )
+    if occ.empty:
+        st.error("The active genus target occurrence set is empty. Change the rectangle target option or clear the target rectangle.")
+        return
+
     summary = genus_species_summary(occ, int(min_records_for_sdm), float(grid_deg))
     grid = occurrence_richness_grid(occ, float(grid_deg), int(min_records_cell))
     hotspots = richness_hotspot_candidates(grid, richness_metric, int(max_hotspots)) if not grid.empty else pd.DataFrame()
 
     # ── Step 2: Prepare records and species summary ───────────────────────────
-    st.subheader("2 — Prepare records and species summary")
+    st.caption("Counts below show the active target set used for observed richness hotspots and optional SSDM.")
+    g1, g2, g3, g4, g5, g6 = st.columns(6)
+    g1.metric("Raw records", f"{genus_target_counts['raw_records']:,}")
+    g2.metric("Inside rectangle", f"{genus_target_counts['records_inside_rectangle']:,}")
+    g3.metric("Excluded by rectangle", f"{genus_target_counts['records_excluded_by_rectangle']:,}")
+    g4.metric("Active target records", f"{genus_target_counts['active_target_records']:,}")
+    g5.metric("Records for hotspots", f"{len(occ):,}")
+    g6.metric("Records for SSDM", f"{len(occ):,}")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Valid records", f"{len(occ):,}")
+    c1.metric("Valid target records", f"{len(occ):,}")
     c2.metric("Species", f"{summary['species'].nunique():,}" if not summary.empty else "0")
     c3.metric("Grid cells", f"{len(grid):,}")
     c4.metric("Hotspots", f"{len(hotspots):,}")
@@ -2598,6 +2738,10 @@ def main() -> None:
         st.session_state.last_exclude_click_signature = ""
         st.session_state.qc_last_draw_sig = ""
         st.session_state.qc_rect_selected_ids = []
+        st.session_state.target_rect_features = []
+        st.session_state.target_last_draw_sig = ""
+        st.session_state.genus_target_rect_features = []
+        st.session_state.genus_target_last_draw_sig = ""
     st.session_state["_last_analysis_mode"] = analysis_mode
 
     if analysis_mode == "Genus diversity / SSDM":
@@ -2657,9 +2801,20 @@ def main() -> None:
         st.error("All occurrence records were excluded. Clear excluded coordinates.")
         return
 
-    occ_before_dedup_n = len(occ_after_exclusion)
-    occ_candidate_input, occ_sdm_train, large_summary = prepare_large_dataset_inputs(
+    target_map_display = limit_occurrence_display(occ_after_exclusion, set(), int(effective_max_map_points))
+    occ_extent_selected, target_counts = target_occurrence_set_panel(
         occ_after_exclusion,
+        target_map_display,
+        raw_record_count=len(occ_raw),
+        key_prefix="target",
+    )
+    if occ_extent_selected.empty:
+        st.error("The active target occurrence set is empty. Change the rectangle target option or clear the target rectangle.")
+        return
+
+    occ_before_dedup_n = len(occ_extent_selected)
+    occ_candidate_input, occ_sdm_train, large_summary = prepare_large_dataset_inputs(
+        occ_extent_selected,
         bool(exact_dedup),
         float(grid_thinning_deg),
         float(thinning_m),
@@ -2674,20 +2829,24 @@ def main() -> None:
         st.error("All included occurrence records were removed from SDM input. Reduce thinning settings.")
         return
 
+    tc1, tc2 = st.columns(2)
+    tc1.metric("Records used for candidates", f"{len(occ_candidate_input):,}")
+    tc2.metric("Records used for SDM / extent", f"{len(occ_sdm_train):,}")
+
     leaked_occ_ids = sorted(set(occ_sdm_train["_row_id"].astype(int)).intersection(active_excluded_ids))
     if leaked_occ_ids:
         st.error(f"Excluded rows leaked into the thinned SDM occurrence set: {leaked_occ_ids[:20]}. SDM was stopped.")
         return
     occ_candidate_input["cluster_id"] = haversine_dbscan(occ_candidate_input, "_latitude", "_longitude", float(cluster_m), int(min_samples))
     occ_sdm_train["cluster_id"] = haversine_dbscan(occ_sdm_train, "_latitude", "_longitude", float(cluster_m), int(min_samples))
-    occ_map_display = limit_occurrence_display(occ_after_exclusion, active_excluded_ids, int(effective_max_map_points))
+    occ_map_display = limit_occurrence_display(occ_extent_selected, set(), int(effective_max_map_points))
     occurrence_candidates = make_candidate_sites(occ_candidate_input, center_method, float(occurrence_weight))
     occurrence_candidates = add_priority_rank(occurrence_candidates)
     occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")
     if effective_large_dataset_mode:
         st.caption(
             "Large dataset summary: "
-            f"occ_raw={len(occ_raw):,}; "
+            f"occ_raw={len(occ_raw):,}; active_target={len(occ_extent_selected):,}; "
             f"occ_map_display={len(occ_map_display):,} (cap={effective_max_map_points:,}); "
             f"occ_candidate_input={len(occ_candidate_input):,} (target about {large_summary['candidate_target']:,}); "
             f"occ_sdm_train={len(occ_sdm_train):,} (target about {large_summary['sdm_target']:,}). "
@@ -2723,7 +2882,7 @@ def main() -> None:
         )
 
     st.subheader("SDM prediction extent")
-    st.caption("Choose the prediction area before building SDM. Only blue included points are used below; excluded rows are removed from the analysis view and hard-masked from prediction.")
+    st.caption("Choose the prediction area before building SDM. Buffer / convex hull / bounding box are built from the active target occurrence set selected in Step 2.")
     area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode")
     c1, c2, c3 = st.columns(3)
     buffer_km = c1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
@@ -2733,7 +2892,7 @@ def main() -> None:
     extent_geom = prediction_area_geometry(occ_sdm_train, area_mode, float(buffer_km), float(rectangle_margin_km), excluded_occ, float(exclusion_buffer_km))
     if extent_geom is not None and not extent_geom.is_empty:
         minx, miny, maxx, maxy = extent_geom.bounds
-        st.caption(f"Current SDM input: {len(occ_sdm_train):,} blue included records after deduplication/thinning; {len(active_excluded_ids):,} excluded records removed and hard-masked. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")
+        st.caption(f"Current SDM input: {len(occ_sdm_train):,} records from the Step 2 active target set; {len(active_excluded_ids):,} red excluded records removed and hard-masked. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")
         st_folium(
             make_sdm_extent_preview_map(occ_sdm_train, extent_geom, area_mode),
             width=None,
@@ -2777,10 +2936,10 @@ def main() -> None:
         st.caption("buffer = around each occurrence point; convex hull = polygon around records; bounding box = latitude/longitude rectangle around records. All are clipped to land.")
         run_sdm = st.button("Build SDM and predict map", type="primary")
 
-    # ── SDM preprocessing pipeline (applied to occ_after_exclusion) ───────────
+    # ── SDM preprocessing pipeline (applied to Step 2 active target set) ──────
     # Occurrence candidates above use occ_candidate_input; optional SDM uses occ_for_sdm below.
     # SDM uses its own independent preprocessing pipeline for bias reduction.
-    occ_for_sdm = occ_after_exclusion.copy()
+    occ_for_sdm = occ_extent_selected.copy()
     sdm_n_after_qc = len(occ_for_sdm)
 
     if sdm_exact_dedup:
@@ -2813,7 +2972,7 @@ def main() -> None:
     pm3.metric("After exact dedup", f"{sdm_n_after_dedup:,}")
     pm4.metric("After thinning", f"{sdm_n_after_thinning:,}")
     pm5.metric("Final SDM presence pts", f"{sdm_n_final:,}")
-    if sdm_n_final == 0 and not occ_after_exclusion.empty:
+    if sdm_n_final == 0 and not occ_extent_selected.empty:
         st.warning("SDM preprocessing removed all records. Reduce grid/distance thinning or increase the max presence cap.")
 
     current_sdm_occurrence_row_ids = tuple(sorted(occ_for_sdm["_row_id"].astype(int).tolist())) if not occ_for_sdm.empty else ()
@@ -2929,15 +3088,17 @@ def main() -> None:
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Raw valid records", f"{len(occ_raw):,}")
     c2.metric("After exclusion", f"{len(occ_after_exclusion):,}")
-    c3.metric("Candidate input", f"{len(occ_candidate_input):,}")
-    c4.metric("SDM train records", f"{len(occ_sdm_train):,}")
+    c3.metric("Inside rectangle", f"{target_counts['records_inside_rectangle']:,}")
+    c4.metric("Active target set", f"{target_counts['active_target_records']:,}")
     c5.metric("Survey ranges", f"{len(all_candidates):,}")
     c6.metric("Route stops", f"{len(route_plan):,}" if route_plan is not None else "0")
-    p1, p2, p3, p4 = st.columns(4)
-    p1.metric("Candidate clustered points", f"{int((occ_candidate_input['cluster_id'] >= 0).sum()):,}")
-    p2.metric("Map occurrence points", f"{len(occ_map_display):,}")
-    p3.metric("Exact dedupe removed", f"{exact_dedup_removed:,}")
-    p4.metric("Grid thinning removed", f"{grid_thinning_removed:,}")
+    p1, p2, p3, p4, p5, p6 = st.columns(6)
+    p1.metric("Excluded by rectangle", f"{target_counts['records_excluded_by_rectangle']:,}")
+    p2.metric("Candidate input", f"{len(occ_candidate_input):,}")
+    p3.metric("SDM train records", f"{len(occ_sdm_train):,}")
+    p4.metric("Map occurrence points", f"{len(occ_map_display):,}")
+    p5.metric("Exact dedupe removed", f"{exact_dedup_removed:,}")
+    p6.metric("Grid thinning removed", f"{grid_thinning_removed:,}")
 
     fmap = build_map(occ_map_display, all_candidates, overlay, route_plan, 0.0, float(survey_range_m), layers, bool(show_occurrence_images))
     st_folium(fmap, width=None, height=720, returned_objects=[], key="main_map")
