@@ -852,38 +852,43 @@ def nearest_row_id_from_click(occ_raw: pd.DataFrame, click: dict[str, Any], tool
 
 
 def coordinate_exclusion_panel(occ_raw: pd.DataFrame, occ_map_display: pd.DataFrame, show_images: bool) -> pd.DataFrame:
-    """Optional QC panel — collapsed by default so it does not block candidate generation."""
+    """Click-to-exclude individual suspicious records.
+
+    Rectangle-based geographic filtering is handled by the Target occurrence set
+    selector (Use only inside rectangle / Exclude inside rectangle) and is NOT
+    duplicated here.  This panel only supports point-click exclusion of
+    individual records with clearly wrong coordinates (e.g. sea points,
+    misidentified localities).
+    """
     n_excl = len(set(st.session_state.excluded_row_ids))
     expander_label = (
-        f"Advanced: coordinate QC — {n_excl} point(s) excluded"
+        f"Advanced: exclude individual suspicious records — {n_excl} excluded"
         if n_excl > 0
-        else "Advanced: coordinate QC — click points to exclude suspicious records"
+        else "Advanced: exclude individual suspicious records (click on map)"
     )
     with st.expander(expander_label, expanded=False):
+        st.caption(
+            "Click an occurrence point on the map to mark it as excluded (turns red). "
+            "Click it again to restore. Excluded records are removed from all downstream analysis "
+            "and shown as red points. "
+            "To filter by geographic area use the target occurrence options above."
+        )
         if len(occ_map_display) < len(occ_raw):
             st.caption(
-                f"Showing {len(occ_map_display):,} of {len(occ_raw):,} raw records on this map. "
-                "Increase 'Max occurrence points shown on map' to inspect more points."
+                f"Showing {len(occ_map_display):,} of {len(occ_raw):,} records. "
+                "Adjust 'Max occurrence points shown on map' in Advanced sampling settings to inspect more."
             )
-        if len(occ_raw) > 500:
-            st.info(
-                "Large dataset: only a sampled subset of points is shown. "
-                "Draw a rectangle to bulk-exclude suspicious coordinate regions."
-            )
-        if st.button("Clear all excluded coordinates", key="qc_clear_btn"):
+        if st.button("Clear all excluded records", key="qc_clear_btn"):
             st.session_state.excluded_row_ids = set()
             st.session_state.last_exclude_click_signature = ""
-            st.session_state.qc_rect_selected_ids = []
-            st.session_state.qc_last_draw_sig = ""
             reset_model_outputs()
             st.rerun()
         click_data = st_folium(
-            make_exclusion_review_map(occ_map_display, set(st.session_state.excluded_row_ids), add_draw=True, show_images=show_images),
-            width=None, height=520,
-            returned_objects=["last_object_clicked", "last_object_clicked_tooltip", "all_drawings", "last_active_drawing"],
+            make_exclusion_review_map(occ_map_display, set(st.session_state.excluded_row_ids), add_draw=False, show_images=show_images),
+            width=None, height=440,
+            returned_objects=["last_object_clicked", "last_object_clicked_tooltip"],
             key="coordinate_exclusion_map",
         )
-        # ── point-click: toggle exclude/restore ──────────────────────────────
         clicked = (click_data or {}).get("last_object_clicked")
         clicked_tooltip = (click_data or {}).get("last_object_clicked_tooltip")
         if clicked:
@@ -894,26 +899,12 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame, occ_map_display: pd.DataFr
                 if rid is not None:
                     if rid in set(st.session_state.excluded_row_ids):
                         st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) - {rid}
-                        st.success(f"Restored row {rid}.")
+                        st.success(f"Restored record {rid}.")
                     else:
                         st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) | {rid}
-                        st.success(f"Excluded row {rid}.")
+                        st.success(f"Excluded record {rid}.")
                     reset_model_outputs()
                     st.rerun()
-        # ── rectangle draw → immediate bulk exclusion ─────────────────────────
-        raw_drawings = (click_data or {}).get("all_drawings") or (click_data or {}).get("last_active_drawing")
-        qc_features = extract_drawn_features(raw_drawings)
-        if qc_features:
-            draw_sig = str(qc_features)[:400]
-            if draw_sig != st.session_state.get("qc_last_draw_sig", ""):
-                st.session_state.qc_last_draw_sig = draw_sig
-                rect_ids = ids_inside_drawn_rectangles(occ_map_display, "_row_id", "_latitude", "_longitude", qc_features)
-                if rect_ids:
-                    new_excluded = set(st.session_state.excluded_row_ids) | set(rect_ids)
-                    if new_excluded != set(st.session_state.excluded_row_ids):
-                        st.session_state.excluded_row_ids = new_excluded
-                        reset_model_outputs()
-                        st.rerun()
         filtered = occ_raw[~occ_raw["_row_id"].astype(int).isin(set(st.session_state.excluded_row_ids))].copy()
         st.info(f"Included: {len(filtered):,} / {len(occ_raw):,} records. Excluded: {len(occ_raw) - len(filtered):,}.")
     return filtered.reset_index(drop=True)
