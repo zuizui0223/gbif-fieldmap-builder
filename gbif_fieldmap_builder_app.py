@@ -1482,7 +1482,7 @@ def ssdm_hotspot_candidates(grid: pd.DataFrame, max_candidates: int) -> pd.DataF
     return out.reset_index(drop=True)
 
 
-def fit_stacked_species_sdms(occ: pd.DataFrame, variables: list[str], algorithms: list[str], resolution: str, area_mode: str, buffer_km: float, rectangle_margin_km: float, max_pixels: int, min_records: int, max_species: int, max_presence_points: int, n_background: int, binary_threshold: float, max_hotspots: int, status=None, progress=None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, tuple[int, int], list[list[float]]]:
+def fit_stacked_species_sdms(occ: pd.DataFrame, variables: list[str], algorithms: list[str], resolution: str, area_mode: str, buffer_km: float, rectangle_margin_km: float, max_pixels: int, min_records: int, max_species: int, max_presence_points: int, n_background: int, binary_threshold: float, max_hotspots: int, apply_vif: bool, vif_threshold: float, status=None, progress=None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, tuple[int, int], list[list[float]]]:
     work = occ.copy()
     work["_species_clean"] = work["_species"].astype(str).str.strip()
     work = work[work["_species_clean"].ne("")]
@@ -1513,14 +1513,22 @@ def fit_stacked_species_sdms(occ: pd.DataFrame, variables: list[str], algorithms
             positions = np.linspace(0, len(sp_occ) - 1, int(max_presence_points)).round().astype(int)
             sp_occ = sp_occ.iloc[np.unique(positions)].reset_index(drop=True)
         if len(sp_occ) < int(min_records):
-            summary_rows.append({"species": species, "status": "skipped_after_thinning", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "mean_auc": np.nan})
+            summary_rows.append({"species": species, "status": "skipped_after_thinning", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": np.nan, "algorithms": ", ".join(algorithms), "vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": "", "variables_removed_by_vif": ""})
             continue
         pres = sp_occ[["_row_id", "_latitude", "_longitude"]].rename(columns={"_latitude": "latitude", "_longitude": "longitude", "_row_id": "occurrence_row_id"}).copy()
         pres["presence"] = 1
         pres_env = extract_environment(pres, variables, "latitude", "longitude", resolution, status=None)
         train = pd.concat([pres_env, bg_base[pres_env.columns]], ignore_index=True, sort=False)
         try:
-            sdm_result = fit_sdm(train, variables, algorithms, "random holdout", 5, 0.05)
+            if apply_vif:
+                kept_vars, vif_tbl = vif_step(train, variables, float(vif_threshold))
+                removed_vars = vif_tbl.loc[vif_tbl.get("status", "").eq("removed"), "variable"].astype(str).tolist() if not vif_tbl.empty and "status" in vif_tbl.columns else []
+            else:
+                kept_vars = list(variables)
+                removed_vars = []
+            if not kept_vars:
+                raise RuntimeError("No environmental variables remained after VIF filtering.")
+            sdm_result = fit_sdm(train, kept_vars, algorithms, "random holdout", 5, 0.05)
             pred = predict_suitability(grid, sdm_result)["sdm_suitability"].to_numpy(dtype=float)
             pred = np.nan_to_num(pred, nan=0.0)
             richness_cont += pred
@@ -1528,13 +1536,13 @@ def fit_stacked_species_sdms(occ: pd.DataFrame, variables: list[str], algorithms
             metrics = sdm_result["metrics"]
             auc_vals = pd.to_numeric(metrics.get("auc", pd.Series(dtype=float)), errors="coerce")
             mean_auc = float(auc_vals.mean()) if auc_vals.notna().any() else np.nan
-            summary_rows.append({"species": species, "status": "modeled", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": round(mean_auc, 3) if np.isfinite(mean_auc) else np.nan, "algorithms": ", ".join(algorithms)})
+            summary_rows.append({"species": species, "status": "modeled", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": round(mean_auc, 3) if np.isfinite(mean_auc) else np.nan, "algorithms": ", ".join(algorithms), "vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": ", ".join(kept_vars), "variables_removed_by_vif": ", ".join(removed_vars)})
         except Exception as exc:
-            summary_rows.append({"species": species, "status": f"failed: {exc}", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": np.nan, "algorithms": ", ".join(algorithms)})
+            summary_rows.append({"species": species, "status": f"failed: {exc}", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": np.nan, "algorithms": ", ".join(algorithms), "vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": "", "variables_removed_by_vif": ""})
     if progress is not None:
         progress.progress(1.0)
     for species, n_records in skipped_low.items():
-        summary_rows.append({"species": species, "status": "skipped_too_few_records", "n_records": int(n_records), "n_presence_used": 0, "n_background": int(background_n), "mean_auc": np.nan, "algorithms": ""})
+        summary_rows.append({"species": species, "status": "skipped_too_few_records", "n_records": int(n_records), "n_presence_used": 0, "n_background": int(background_n), "mean_auc": np.nan, "algorithms": "", "vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": "", "variables_removed_by_vif": ""})
     out_grid = grid[["raster_row", "raster_col", "cell_index", "latitude", "longitude"]].copy()
     out_grid["ssdm_continuous_richness"] = np.round(richness_cont, 4)
     out_grid["ssdm_binary_richness"] = richness_binary.astype(int)
@@ -1768,6 +1776,9 @@ def genus_diversity_panel() -> None:
         ssdm_climate_vars = st.multiselect("SSDM climate variables", CLIMATE_VARS, default=[], key="ssdm_climate_vars")
         ssdm_variables = ssdm_topo_vars + ssdm_climate_vars
         ssdm_algorithms = st.multiselect("SSDM algorithms", ALGORITHMS, default=["Random forest"], key="ssdm_algorithms")
+        ssdm_apply_vif = st.checkbox("Apply VIF stepwise filtering for each species SDM", value=True, key="ssdm_apply_vif")
+        ssdm_vif_threshold = st.number_input("SSDM VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0, key="ssdm_vif_threshold")
+        st.caption("SSDM VIF filtering is run separately for each species model: repeatedly calculate VIF, remove the variable with the highest VIF above the threshold, then fit the species SDM using the remaining variables.")
         run_ssdm = st.button("Run SSDM", type="primary", key="run_ssdm_button")
 
     if run_ssdm:
@@ -1794,6 +1805,8 @@ def genus_diversity_panel() -> None:
                     n_background=int(ssdm_background),
                     binary_threshold=float(ssdm_binary_threshold),
                     max_hotspots=int(ssdm_hotspot_n),
+                    apply_vif=bool(ssdm_apply_vif),
+                    vif_threshold=float(ssdm_vif_threshold),
                     status=status,
                     progress=progress,
                 )

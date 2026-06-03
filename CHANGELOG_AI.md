@@ -4,6 +4,24 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Codex (OpenAI) - Add VIF filtering to optional SSDM
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Added per-species VIF stepwise filtering to the optional SSDM workflow.
+- Added SSDM UI controls for applying VIF filtering and setting the VIF threshold.
+- Each species SDM now fits using its own VIF-filtered variable set when enabled.
+- Added VIF status, threshold, kept variables, and removed variables to ssdm_species_model_summary.csv.
+
+Features preserved:
+- Genus occurrence richness, optional SSDM maps, large dataset controls, single species SDM, VIF, spatial partition diagnostics, predict map, route planner, and downloads remain available.
+
+Known risks / TODO:
+- Different species may keep different environmental variables after VIF filtering, which is expected for per-species SDMs but should be reviewed in the summary CSV.
+
 ## 2026-06-03 - Codex (OpenAI) - Issue #2 follow-up: optional stacked species SDM
 
 Changed files:
