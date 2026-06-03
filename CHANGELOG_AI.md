@@ -4,24 +4,6 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
-## 2026-06-03 - Codex - Reduce genus fetch blocking
-
-Changed files:
-- gbif_fieldmap_builder_app.py
-- CHANGELOG_AI.md
-
-Summary:
-- Reduced Genus diversity / SSDM GBIF lookup and occurrence request timeouts so failed or slow genus searches do not leave the app loading for as long.
-- Lowered the default genus occurrence cap from 20,000 to 3,000 and maximum selectable cap from 300,000 to 50,000 for the initial occurrence-richness implementation.
-- Added an in-app note before genus fetch starts so users know large genera can take a while.
-
-Features preserved:
-- Existing single-species workflow and all SDM/VIF/spatial partition/predict-map/survey-list features are unchanged.
-- Genus occurrence richness workflow remains occurrence-based only; full SSDM is still intentionally deferred.
-
-Known risks / TODO:
-- Very large genus downloads can still take time because GBIF serves pages of up to 300 records.
-
 ## 2026-06-03 - Codex - Fix genus GBIF match crash
 
 Changed files:

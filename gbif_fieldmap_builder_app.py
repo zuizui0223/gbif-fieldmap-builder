@@ -291,7 +291,7 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
     payload: dict[str, Any] = {}
     usage_key = None
     for params in [{"name": genus_name.strip(), "rank": "GENUS"}, {"name": genus_name.strip()}]:
-        match = requests.get(GBIF_SPECIES_MATCH_URL, params=params, timeout=12)
+        match = requests.get(GBIF_SPECIES_MATCH_URL, params=params, timeout=30)
         match.raise_for_status()
         payload = match.json()
         rank = str(payload.get("rank", "")).upper()
@@ -309,7 +309,7 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
         if usage_key is not None:
             break
     if usage_key is None:
-        search = requests.get(GBIF_SPECIES_SEARCH_URL, params={"q": genus_name.strip(), "rank": "GENUS", "status": "ACCEPTED", "limit": 10}, timeout=12)
+        search = requests.get(GBIF_SPECIES_SEARCH_URL, params={"q": genus_name.strip(), "rank": "GENUS", "status": "ACCEPTED", "limit": 10}, timeout=30)
         search.raise_for_status()
         results = search.json().get("results", [])
         for result in results:
@@ -330,7 +330,7 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
     elif year_to is not None:
         params_base["year"] = f",{int(year_to)}"
 
-    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=20)
+    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=60)
     first.raise_for_status()
     total_count = int(first.json().get("count", 0))
     target = min(int(max_records), total_count if total_count > 0 else int(max_records))
@@ -338,7 +338,7 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
     offset = 0
     while len(records) < target:
         limit = min(300, target - len(records))
-        response = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=20)
+        response = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=60)
         response.raise_for_status()
         page = response.json()
         batch = page.get("results", [])
@@ -1402,7 +1402,7 @@ def genus_diversity_panel() -> None:
     selected_country = st.sidebar.selectbox("Country code filter optional", country_options, index=1, key="genus_country_code_filter_select")
     custom_country = st.sidebar.text_input("Custom country code optional", value="", max_chars=2, key="genus_country_code_filter_custom")
     country = custom_country.strip().upper() or selected_country
-    max_records = st.sidebar.number_input("Maximum genus GBIF records to fetch", 100, 50_000, 3_000, 500, help="GBIF returns at most 300 records per request. Start small while validating the occurrence richness map; increase later if needed.", key="genus_max_records")
+    max_records = st.sidebar.number_input("Maximum genus GBIF records to fetch", 100, 300_000, 20_000, 1000, help="GBIF returns at most 300 records per request. The app fetches repeated pages until this cap or GBIF endOfRecords.", key="genus_max_records")
     min_records_species = st.sidebar.number_input("Minimum records per species", 1, 500, 10, 1, key="genus_min_records_species")
     use_year = st.sidebar.checkbox("Filter genus records by year", value=False, key="genus_use_year")
     year_from = year_to = None
@@ -1415,7 +1415,6 @@ def genus_diversity_panel() -> None:
             st.warning("Genus name is empty.")
             return
         try:
-            st.info(f"Fetching up to {int(max_records):,} genus records from GBIF. Large genera may take a while; reduce the cap if the app feels slow.")
             with st.spinner("Fetching GBIF genus occurrences page by page, 300 records per request..."):
                 msg, df = fetch_gbif_genus_occurrences_cached(genus_name.strip(), int(max_records), country.strip().upper(), year_from, year_to)
         except Exception as exc:
