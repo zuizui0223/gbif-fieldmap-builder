@@ -4,22 +4,40 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
-## 2026-06-03 - Claude (claude-sonnet-4-6) — Fix SSL error on Streamlit Cloud (Python 3.14)
+## 2026-06-03 - Claude (claude-sonnet-4-6) — Issue #2 follow-up: shared SSDM VIF, BIO protection, VIF diagnostics, partition settings
 
 Changed files:
 - gbif_fieldmap_builder_app.py
-- requirements.txt
-- .python-version (new)
 - CHANGELOG_AI.md
 
 Summary:
-- Added `certifi` to imports and `requirements.txt`.
-- Added `_requests_get()` helper that passes `verify=certifi.where()` to every outbound `requests.get()` call, providing an up-to-date CA certificate bundle instead of relying on the system bundle that broke on Python 3.14.
-- Replaced all external `requests.get()` calls (GBIF species match, occurrence search, genus search, land GeoJSON) with `_requests_get()`. WorldClim raster download (`download_file`) uses `requests.get` with streaming and is unchanged (it hits a different CDN and is not affected).
-- Added `.python-version` pinned to `3.12` for Streamlit Cloud stability; Python 3.14 introduced stricter SSL handling that caused the original `SSLError`.
+
+**Shared SSDM VIF (run once, not per species)**
+- Removed per-species VIF from `fit_stacked_species_sdms`. VIF is now run **once** on a pooled sample (up to 1,000 genus occurrence records + shared background grid points) before the species loop.
+- The same retained variable set (`kept_vars`) is used for every per-species model, preventing inconsistent variable sets and the BIO-variable disappearance bug reported by the user.
+- Added `ssdm_variable_diagnostics(env_df, variables)` — computes diagnostic table before VIF: variable, group (climate/topography/other), min, max, sd, unique_values, missing_fraction, max_abs_corr, VIF, status.
+- Added `run_ssdm_shared_vif(env_df, variables, vif_threshold)` — wraps `vif_step` with BIO-variable protection: if VIF removes all `bio1`–`bio19` variables, the least-correlated BIO variable is automatically restored and marked `fallback-kept (BIO protection)`.
+
+**SSDM partition settings exposed**
+- `fit_stacked_species_sdms` now accepts `ssdm_partition_method` (default `"random holdout"`) and `ssdm_test_split` (default `0.20`). Passes `holdout_test_size` through to `fit_sdm`.
+- `fit_sdm` gains `holdout_test_size=0.25` parameter (used by random holdout); single-species SDM callers are unchanged and keep the existing 0.25 default.
+- UI: added `SSDM partition method` selectbox (`random holdout` / `none (training only)`) and `SSDM holdout test split proportion` number input. `none` skips validation for fastest exploratory runs.
+- UI caption clearly states: "Spatial block/checkerboard partitions are available in single-species SDM but not yet implemented for SSDM."
+
+**VIF diagnostics table in UI**
+- After SSDM runs with VIF enabled, displays `Shared VIF diagnostics` table showing per-variable stats, max_abs_corr, VIF, and final status (kept/removed/fallback-kept).
+- If BIO fallback was triggered, a `st.warning` is shown explaining which variable was restored.
+- Added `ssdm_vif_diagnostics.csv` download button.
+
+**UI label update**
+- Checkbox label changed from "Apply VIF stepwise filtering for each species SDM" → "Apply shared VIF for SSDM (run once on pooled data)".
+- Updated caption to explain shared VIF behavior and BIO protection.
+
+**Single-species SDM unchanged**
+- VIF, spatial partition, and all single-species SDM workflow are unmodified.
 
 Features preserved:
-- All GBIF fetch, SDM, SSDM, exclusion, route planning, and download features unchanged.
+- Genus occurrence richness, hotspots, SSDM maps, SSDM downloads, large-dataset mode, exclusion/QC, route planner unchanged.
 
 ## 2026-06-03 - Claude (claude-sonnet-4-6) — Issue #4: Unify species/genus workflows; make SDM/SSDM optional
 

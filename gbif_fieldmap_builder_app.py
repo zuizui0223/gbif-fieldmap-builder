@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-import certifi
 import folium
 import numpy as np
 import pandas as pd
@@ -225,12 +224,6 @@ def read_uploaded_csv(uploaded: Any) -> pd.DataFrame:
         return pd.read_csv(uploaded, encoding="latin1")
 
 
-def _requests_get(url: str, **kwargs) -> requests.Response:
-    """requests.get with certifi CA bundle for Streamlit Cloud SSL compatibility."""
-    kwargs.setdefault("verify", certifi.where())
-    return requests.get(url, **kwargs)
-
-
 def extract_media_url_from_gbif_record(rec: dict[str, Any]) -> str:
     media = rec.get("media") or []
     if isinstance(media, list):
@@ -244,7 +237,7 @@ def extract_media_url_from_gbif_record(rec: dict[str, Any]) -> str:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, country_code: str, year_from: Optional[int], year_to: Optional[int]) -> tuple[str, pd.DataFrame]:
-    match = _requests_get(GBIF_SPECIES_MATCH_URL, params={"name": scientific_name.strip()}, timeout=30)
+    match = requests.get(GBIF_SPECIES_MATCH_URL, params={"name": scientific_name.strip()}, timeout=30)
     match.raise_for_status()
     payload = match.json()
     usage_key = payload.get("usageKey")
@@ -261,7 +254,7 @@ def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, countr
     elif year_to is not None:
         params_base["year"] = f",{int(year_to)}"
 
-    first = _requests_get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=60)
+    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=60)
     first.raise_for_status()
     total_count = int(first.json().get("count", 0))
     target = min(int(max_records), total_count if total_count > 0 else int(max_records))
@@ -269,7 +262,7 @@ def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, countr
     offset = 0
     while len(records) < target:
         limit = min(300, target - len(records))
-        response = _requests_get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=60)
+        response = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=60)
         response.raise_for_status()
         page = response.json()
         batch = page.get("results", [])
@@ -315,14 +308,14 @@ def _resolve_gbif_genus_key(genus_name: str) -> tuple[Optional[int], dict[str, A
     genus = genus_name.strip()
     if not genus:
         return None, {}
-    response = _requests_get(GBIF_SPECIES_MATCH_URL, params={"name": genus, "rank": "GENUS"}, timeout=20)
+    response = requests.get(GBIF_SPECIES_MATCH_URL, params={"name": genus, "rank": "GENUS"}, timeout=20)
     response.raise_for_status()
     payload = response.json()
     canonical = str(payload.get("canonicalName") or payload.get("genus") or "").strip()
     if payload.get("rank") == "GENUS" and payload.get("usageKey") and canonical.lower() == genus.lower():
         return int(payload["usageKey"]), payload
 
-    search = _requests_get(GBIF_SPECIES_SEARCH_URL, params={"q": genus, "rank": "GENUS", "limit": 10}, timeout=20)
+    search = requests.get(GBIF_SPECIES_SEARCH_URL, params={"q": genus, "rank": "GENUS", "limit": 10}, timeout=20)
     search.raise_for_status()
     for candidate in search.json().get("results", []):
         canonical = str(candidate.get("canonicalName") or candidate.get("scientificName") or "").strip()
@@ -357,7 +350,7 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
     elif year_to is not None:
         params_base["year"] = f",{int(year_to)}"
 
-    first = _requests_get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=45)
+    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=45)
     first.raise_for_status()
     total_count = int(first.json().get("count", 0))
     target = min(int(max_records), total_count if total_count > 0 else int(max_records))
@@ -365,7 +358,7 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
     offset = 0
     while len(records) < target:
         limit = min(300, target - len(records))
-        response = _requests_get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=45)
+        response = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=45)
         response.raise_for_status()
         page = response.json()
         batch = page.get("results", [])
@@ -582,7 +575,7 @@ def make_richness_map(grid: pd.DataFrame, hotspots: pd.DataFrame, metric: str) -
 
 @st.cache_resource(show_spinner=False)
 def load_land_geometry():
-    response = _requests_get(LAND_GEOJSON_URL, timeout=120)
+    response = requests.get(LAND_GEOJSON_URL, timeout=120)
     response.raise_for_status()
     geojson = response.json()
     return unary_union([shape(feature["geometry"]) for feature in geojson.get("features", [])])
@@ -1212,6 +1205,84 @@ def vif_step(df: pd.DataFrame, variables: list[str], threshold: float) -> tuple[
     return kept, final
 
 
+def ssdm_variable_diagnostics(env_df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
+    """Diagnostic table (variable, group, stats, max_abs_corr, VIF) computed before SSDM VIF filtering."""
+    if not variables or env_df.empty:
+        return pd.DataFrame()
+    X = env_df[variables].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    X_imp = pd.DataFrame(SimpleImputer(strategy="median").fit_transform(X), columns=variables)
+    corr_mat = X_imp.corr().abs()
+    vif_raw = compute_vif_table(X_imp, variables)
+    vif_map = dict(zip(vif_raw["variable"], vif_raw["vif"]))
+    rows = []
+    for var in variables:
+        col = X[var]
+        if re.match(r"^bio\d+$", var, re.IGNORECASE):
+            group = "climate"
+        elif var in {"elevation", "slope", "roughness"}:
+            group = "topography"
+        else:
+            group = "other"
+        others = corr_mat[var].drop(var) if var in corr_mat.columns else pd.Series(dtype=float)
+        rows.append({
+            "variable": var,
+            "group": group,
+            "min": round(float(col.min()), 4) if col.notna().any() else np.nan,
+            "max": round(float(col.max()), 4) if col.notna().any() else np.nan,
+            "sd": round(float(col.std()), 4) if col.notna().any() else np.nan,
+            "unique_values": int(col.nunique()),
+            "missing_fraction": round(float(col.isna().mean()), 4),
+            "max_abs_corr": round(float(others.max()), 4) if not others.empty else np.nan,
+            "vif": vif_map.get(var, np.nan),
+            "status": "to_evaluate",
+        })
+    return pd.DataFrame(rows)
+
+
+def run_ssdm_shared_vif(
+    env_df: pd.DataFrame,
+    variables: list[str],
+    vif_threshold: float,
+) -> tuple[list[str], pd.DataFrame, bool]:
+    """Run VIF once on pooled SSDM environmental data with BIO-variable protection.
+
+    Returns (kept_vars, diagnostics_df, fallback_used).
+    If VIF removes all BIO climate variables, the least-correlated BIO variable is
+    restored and flagged as 'fallback-kept (BIO protection)'.
+    """
+    diag = ssdm_variable_diagnostics(env_df, variables)
+    kept, vif_tbl = vif_step(env_df, variables, vif_threshold)
+
+    bio_orig = [v for v in variables if re.match(r"^bio\d+$", v, re.IGNORECASE)]
+    bio_kept = [v for v in kept if re.match(r"^bio\d+$", v, re.IGNORECASE)]
+    fallback_used = False
+
+    if bio_orig and not bio_kept:
+        X = env_df[bio_orig].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+        X_imp = pd.DataFrame(SimpleImputer(strategy="median").fit_transform(X), columns=bio_orig)
+        mean_corr = X_imp.corr().abs().mean()
+        best_bio = str(mean_corr.idxmin())
+        if best_bio not in kept:
+            kept = list(kept) + [best_bio]
+        fallback_used = True
+        if not diag.empty and "status" in diag.columns:
+            diag.loc[diag["variable"] == best_bio, "status"] = "fallback-kept (BIO protection)"
+
+    # Propagate VIF-step statuses into the diagnostics table
+    if not vif_tbl.empty and "status" in vif_tbl.columns and not diag.empty:
+        for _, vrow in vif_tbl.iterrows():
+            var = str(vrow["variable"])
+            st_val = str(vrow.get("status", "kept"))
+            mask = diag["variable"].eq(var) & diag["status"].eq("to_evaluate")
+            diag.loc[mask, "status"] = st_val
+
+    # Any remaining 'to_evaluate' are kept
+    if not diag.empty and "status" in diag.columns:
+        diag.loc[diag["status"].eq("to_evaluate"), "status"] = "kept"
+
+    return kept, diag, fallback_used
+
+
 def generate_land_points(occ: pd.DataFrame, n_points: int, area_mode: str, buffer_km: float, rectangle_margin_km: float, excluded_occ: Optional[pd.DataFrame] = None, exclusion_buffer_km: float = 0.0, random_state: int = 42, status=None) -> pd.DataFrame:
     rng = np.random.default_rng(random_state)
     geom = prediction_area_geometry(occ, area_mode, buffer_km, rectangle_margin_km, excluded_occ, exclusion_buffer_km)
@@ -1297,7 +1368,7 @@ def auc_warning(auc: float, method: str) -> str:
     return ""
 
 
-def fit_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str], partition_method: str, k_folds: int, checkerboard_deg: float) -> dict[str, Any]:
+def fit_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str], partition_method: str, k_folds: int, checkerboard_deg: float, holdout_test_size: float = 0.25) -> dict[str, Any]:
     data = train_df.copy()
     X = data[variables].apply(pd.to_numeric, errors="coerce")
     y = data["presence"].astype(int)
@@ -1305,7 +1376,7 @@ def fit_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str],
         raise ValueError("Need both presence and background points for SDM.")
     metrics = []; models = {}
     if partition_method == "random holdout":
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25, random_state=42, stratify=y)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=float(holdout_test_size), random_state=42, stratify=y)
         for alg in algorithms:
             model = make_model(alg); model.fit(X_train, y_train)
             auc = float(roc_auc_score(y_test, model.predict_proba(X_test)[:, 1]))
@@ -1537,7 +1608,37 @@ def ssdm_hotspot_candidates(grid: pd.DataFrame, max_candidates: int) -> pd.DataF
     return out.reset_index(drop=True)
 
 
-def fit_stacked_species_sdms(occ: pd.DataFrame, variables: list[str], algorithms: list[str], resolution: str, area_mode: str, buffer_km: float, rectangle_margin_km: float, max_pixels: int, min_records: int, max_species: int, max_presence_points: int, n_background: int, binary_threshold: float, max_hotspots: int, apply_vif: bool, vif_threshold: float, status=None, progress=None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, tuple[int, int], list[list[float]]]:
+def fit_stacked_species_sdms(
+    occ: pd.DataFrame,
+    variables: list[str],
+    algorithms: list[str],
+    resolution: str,
+    area_mode: str,
+    buffer_km: float,
+    rectangle_margin_km: float,
+    max_pixels: int,
+    min_records: int,
+    max_species: int,
+    max_presence_points: int,
+    n_background: int,
+    binary_threshold: float,
+    max_hotspots: int,
+    apply_vif: bool,
+    vif_threshold: float,
+    ssdm_partition_method: str = "random holdout",
+    ssdm_test_split: float = 0.20,
+    status=None,
+    progress=None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, tuple[int, int], list[list[float]], pd.DataFrame]:
+    """Fit stacked per-species SDMs on a shared environmental grid.
+
+    VIF is run ONCE on pooled occurrence/background data and the same retained
+    variables are used for every species model.  Per-species VIF is intentionally
+    avoided to prevent inconsistent variable sets and BIO-variable loss on small
+    species samples.
+
+    Returns (summary_df, richness_grid, hotspots, shape, bounds, vif_diag_df).
+    """
     work = occ.copy()
     work["_species_clean"] = work["_species"].astype(str).str.strip()
     work = work[work["_species_clean"].ne("")]
@@ -1546,7 +1647,10 @@ def fit_stacked_species_sdms(occ: pd.DataFrame, variables: list[str], algorithms
     skipped_low = counts[counts < int(min_records)]
     if eligible.empty:
         raise RuntimeError("No species had enough records for SSDM.")
-    grid, shape, bounds, stride = build_environment_prediction_grid(work, variables, resolution, area_mode, buffer_km, rectangle_margin_km, max_pixels, status=status)
+
+    grid, shape, bounds, stride = build_environment_prediction_grid(
+        work, variables, resolution, area_mode, buffer_km, rectangle_margin_km, max_pixels, status=status
+    )
     richness_cont = np.zeros(len(grid), dtype=float)
     richness_binary = np.zeros(len(grid), dtype=int)
     summary_rows = []
@@ -1556,6 +1660,29 @@ def fit_stacked_species_sdms(occ: pd.DataFrame, variables: list[str], algorithms
     bg_base = grid.iloc[bg_idx][["latitude", "longitude"] + variables].copy()
     bg_base["presence"] = 0
     bg_base["occurrence_row_id"] = np.nan
+
+    # ── Shared VIF: run once on pooled presence sample + background ────────────
+    vif_diag: pd.DataFrame = pd.DataFrame()
+    vif_fallback_used = False
+    if apply_vif:
+        if status is not None:
+            status.write("Running shared VIF on pooled occurrence/background data (once for all species)...")
+        all_pres = work[["_latitude", "_longitude"]].rename(columns={"_latitude": "latitude", "_longitude": "longitude"}).copy()
+        all_pres["presence"] = 1
+        all_pres["occurrence_row_id"] = np.nan
+        if len(all_pres) > 1000:
+            all_pres = all_pres.sample(1000, random_state=42).reset_index(drop=True)
+        all_pres_env = extract_environment(all_pres, variables, "latitude", "longitude", resolution, status=None)
+        pooled = pd.concat([all_pres_env, bg_base[all_pres_env.columns]], ignore_index=True, sort=False)
+        kept_vars, vif_diag, vif_fallback_used = run_ssdm_shared_vif(pooled, variables, float(vif_threshold))
+        removed_vars = [v for v in variables if v not in kept_vars]
+    else:
+        kept_vars = list(variables)
+        removed_vars = []
+
+    if not kept_vars:
+        raise RuntimeError("No environmental variables remained after shared VIF filtering.")
+
     total = len(eligible)
     for i, (species, n_records) in enumerate(eligible.items(), start=1):
         if status is not None:
@@ -1568,41 +1695,43 @@ def fit_stacked_species_sdms(occ: pd.DataFrame, variables: list[str], algorithms
             positions = np.linspace(0, len(sp_occ) - 1, int(max_presence_points)).round().astype(int)
             sp_occ = sp_occ.iloc[np.unique(positions)].reset_index(drop=True)
         if len(sp_occ) < int(min_records):
-            summary_rows.append({"species": species, "status": "skipped_after_thinning", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": np.nan, "algorithms": ", ".join(algorithms), "vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": "", "variables_removed_by_vif": ""})
+            summary_rows.append({"species": species, "status": "skipped_after_thinning", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": np.nan, "algorithms": ", ".join(algorithms), "shared_vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": ", ".join(kept_vars), "variables_removed_by_vif": ", ".join(removed_vars), "partition_method": ssdm_partition_method, "test_split": float(ssdm_test_split) if ssdm_partition_method == "random holdout" else np.nan})
             continue
         pres = sp_occ[["_row_id", "_latitude", "_longitude"]].rename(columns={"_latitude": "latitude", "_longitude": "longitude", "_row_id": "occurrence_row_id"}).copy()
         pres["presence"] = 1
-        pres_env = extract_environment(pres, variables, "latitude", "longitude", resolution, status=None)
-        train = pd.concat([pres_env, bg_base[pres_env.columns]], ignore_index=True, sort=False)
+        pres_env = extract_environment(pres, kept_vars, "latitude", "longitude", resolution, status=None)
+        bg_cols = ["latitude", "longitude", "presence", "occurrence_row_id"] + kept_vars
+        bg_for_sp = bg_base[["latitude", "longitude", "presence", "occurrence_row_id"] + [v for v in kept_vars if v in bg_base.columns]].copy()
+        train = pd.concat([pres_env[[c for c in bg_cols if c in pres_env.columns]], bg_for_sp[[c for c in bg_cols if c in bg_for_sp.columns]]], ignore_index=True, sort=False)
         try:
-            if apply_vif:
-                kept_vars, vif_tbl = vif_step(train, variables, float(vif_threshold))
-                removed_vars = vif_tbl.loc[vif_tbl.get("status", "").eq("removed"), "variable"].astype(str).tolist() if not vif_tbl.empty and "status" in vif_tbl.columns else []
-            else:
-                kept_vars = list(variables)
-                removed_vars = []
             if not kept_vars:
-                raise RuntimeError("No environmental variables remained after VIF filtering.")
-            sdm_result = fit_sdm(train, kept_vars, algorithms, "random holdout", 5, 0.05)
+                raise RuntimeError("No environmental variables remained after shared VIF filtering.")
+            sdm_result = fit_sdm(
+                train, kept_vars, algorithms,
+                ssdm_partition_method, 5, 0.05,
+                holdout_test_size=float(ssdm_test_split),
+            )
             pred = predict_suitability(grid, sdm_result)["sdm_suitability"].to_numpy(dtype=float)
             pred = np.nan_to_num(pred, nan=0.0)
             richness_cont += pred
             richness_binary += (pred >= float(binary_threshold)).astype(int)
-            metrics = sdm_result["metrics"]
-            auc_vals = pd.to_numeric(metrics.get("auc", pd.Series(dtype=float)), errors="coerce")
+            metrics_df = sdm_result["metrics"]
+            auc_vals = pd.to_numeric(metrics_df.get("auc", pd.Series(dtype=float)), errors="coerce")
             mean_auc = float(auc_vals.mean()) if auc_vals.notna().any() else np.nan
-            summary_rows.append({"species": species, "status": "modeled", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": round(mean_auc, 3) if np.isfinite(mean_auc) else np.nan, "algorithms": ", ".join(algorithms), "vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": ", ".join(kept_vars), "variables_removed_by_vif": ", ".join(removed_vars)})
+            summary_rows.append({"species": species, "status": "modeled", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": round(mean_auc, 3) if np.isfinite(mean_auc) else np.nan, "algorithms": ", ".join(algorithms), "shared_vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": ", ".join(kept_vars), "variables_removed_by_vif": ", ".join(removed_vars), "partition_method": ssdm_partition_method, "test_split": float(ssdm_test_split) if ssdm_partition_method == "random holdout" else np.nan})
         except Exception as exc:
-            summary_rows.append({"species": species, "status": f"failed: {exc}", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": np.nan, "algorithms": ", ".join(algorithms), "vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": "", "variables_removed_by_vif": ""})
+            summary_rows.append({"species": species, "status": f"failed: {exc}", "n_records": int(n_records), "n_presence_used": int(len(sp_occ)), "n_background": int(background_n), "mean_auc": np.nan, "algorithms": ", ".join(algorithms), "shared_vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": "", "variables_removed_by_vif": ", ".join(removed_vars), "partition_method": ssdm_partition_method, "test_split": float(ssdm_test_split) if ssdm_partition_method == "random holdout" else np.nan})
+
     if progress is not None:
         progress.progress(1.0)
     for species, n_records in skipped_low.items():
-        summary_rows.append({"species": species, "status": "skipped_too_few_records", "n_records": int(n_records), "n_presence_used": 0, "n_background": int(background_n), "mean_auc": np.nan, "algorithms": "", "vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": "", "variables_removed_by_vif": ""})
+        summary_rows.append({"species": species, "status": "skipped_too_few_records", "n_records": int(n_records), "n_presence_used": 0, "n_background": int(background_n), "mean_auc": np.nan, "algorithms": "", "shared_vif_applied": bool(apply_vif), "vif_threshold": float(vif_threshold) if apply_vif else np.nan, "variables_kept": "", "variables_removed_by_vif": "", "partition_method": ssdm_partition_method, "test_split": np.nan})
+
     out_grid = grid[["raster_row", "raster_col", "cell_index", "latitude", "longitude"]].copy()
     out_grid["ssdm_continuous_richness"] = np.round(richness_cont, 4)
     out_grid["ssdm_binary_richness"] = richness_binary.astype(int)
     hotspots = ssdm_hotspot_candidates(out_grid, max_hotspots)
-    return pd.DataFrame(summary_rows), out_grid, hotspots, shape, bounds
+    return pd.DataFrame(summary_rows), out_grid, hotspots, shape, bounds, vif_diag
 
 
 def make_sdm_exploration_candidates(pred_table: pd.DataFrame, known_occ: pd.DataFrame, occurrence_candidates: pd.DataFrame, min_suitability: float, quantile_cutoff: float, min_distance_known_m: float, cluster_distance_m: float, max_candidates: int, start_site_id: int) -> pd.DataFrame:
@@ -1840,9 +1969,40 @@ def genus_diversity_panel() -> None:
         ssdm_climate_vars = st.multiselect("SSDM climate variables", CLIMATE_VARS, default=[], key="ssdm_climate_vars")
         ssdm_variables = ssdm_topo_vars + ssdm_climate_vars
         ssdm_algorithms = st.multiselect("SSDM algorithms", ALGORITHMS, default=["Random forest"], key="ssdm_algorithms")
-        ssdm_apply_vif = st.checkbox("Apply VIF stepwise filtering for each species SDM", value=True, key="ssdm_apply_vif")
+        st.markdown("**Shared VIF filtering (run once for all species)**")
+        ssdm_apply_vif = st.checkbox("Apply shared VIF for SSDM (run once on pooled data)", value=True, key="ssdm_apply_vif")
         ssdm_vif_threshold = st.number_input("SSDM VIF threshold", min_value=1.0, max_value=100.0, value=10.0, step=1.0, key="ssdm_vif_threshold")
-        st.caption("SSDM VIF filtering is run separately for each species model: repeatedly calculate VIF, remove the variable with the highest VIF above the threshold, then fit the species SDM using the remaining variables.")
+        st.caption(
+            "Shared VIF: VIF filtering is run **once** on a pooled sample of all genus occurrences and background points. "
+            "The same retained variable set is then used for every per-species model. "
+            "This prevents per-species VIF instability and avoids accidentally removing all BIO climate variables for species with small or narrow-range occurrence sets. "
+            "If VIF removes all BIO climate variables, the least-correlated BIO variable is automatically restored (fallback-kept)."
+        )
+        st.markdown("**SSDM validation / partition**")
+        ssdm_partition_method = st.selectbox(
+            "SSDM partition method",
+            ["random holdout", "none (training only)"],
+            index=0,
+            key="ssdm_partition_method",
+            help="random holdout: fit on a training split and evaluate AUC on a held-out test split. "
+                 "none (training only): fit on all data, no AUC computed — fastest option for exploratory runs. "
+                 "Spatial block/checkerboard partitions are available in single-species SDM but not yet implemented for SSDM.",
+        )
+        ssdm_test_split = st.number_input(
+            "SSDM holdout test split proportion",
+            min_value=0.05, max_value=0.50, value=0.20, step=0.05, format="%.2f",
+            key="ssdm_test_split",
+            help="Fraction of presence+background rows held out for AUC evaluation. Only used for random holdout. "
+                 "Default 0.20 (20%). For very small species samples, reduce to 0.10.",
+            disabled=(ssdm_partition_method == "none (training only)"),
+        )
+        if ssdm_partition_method == "none (training only)":
+            st.caption("⚠️ SSDM partition: none — models are fit on all data. No AUC will be computed.")
+        else:
+            st.caption(
+                f"SSDM partition: random holdout with test split = {ssdm_test_split:.0%}. "
+                "Spatial partition methods (block, checkerboard) are available in single-species SDM but not yet implemented for SSDM."
+            )
         run_ssdm = st.button("Run SSDM", type="primary", key="run_ssdm_button")
 
     if run_ssdm:
@@ -1854,7 +2014,7 @@ def genus_diversity_panel() -> None:
             status = st.empty()
             progress = st.progress(0.0)
             try:
-                model_summary, ssdm_grid, ssdm_hotspots, ssdm_shape, ssdm_bounds = fit_stacked_species_sdms(
+                model_summary, ssdm_grid, ssdm_hotspots, ssdm_shape, ssdm_bounds, ssdm_vif_diag = fit_stacked_species_sdms(
                     occ=occ,
                     variables=ssdm_variables,
                     algorithms=ssdm_algorithms,
@@ -1871,10 +2031,30 @@ def genus_diversity_panel() -> None:
                     max_hotspots=int(ssdm_hotspot_n),
                     apply_vif=bool(ssdm_apply_vif),
                     vif_threshold=float(ssdm_vif_threshold),
+                    ssdm_partition_method=ssdm_partition_method,
+                    ssdm_test_split=float(ssdm_test_split) if ssdm_partition_method != "none (training only)" else 0.20,
                     status=status,
                     progress=progress,
                 )
                 st.success("SSDM complete.")
+
+                # ── Shared VIF diagnostics ────────────────────────────────────
+                if ssdm_apply_vif and ssdm_vif_diag is not None and not ssdm_vif_diag.empty:
+                    fallback_rows = ssdm_vif_diag[ssdm_vif_diag.get("status", pd.Series(dtype=str)).str.contains("fallback", case=False, na=False)]
+                    if not fallback_rows.empty:
+                        st.warning(
+                            "⚠️ Shared VIF removed all BIO climate variables. "
+                            f"Fallback: {', '.join(fallback_rows['variable'].tolist())} was restored. "
+                            "Consider selecting fewer/less-correlated climate variables."
+                        )
+                    st.write("Shared VIF diagnostics (run once for all species)")
+                    st.caption(
+                        "This table shows variable statistics, max pairwise correlation, and VIF computed on a pooled sample "
+                        "of all genus occurrences and background points before VIF filtering. "
+                        "All species models use the same 'kept' variable set."
+                    )
+                    st.dataframe(ssdm_vif_diag, width="stretch", hide_index=True)
+
                 st.write("SSDM species model summary")
                 st.dataframe(model_summary, width="stretch", hide_index=True)
                 st.write("Continuous SSDM richness map")
@@ -1891,6 +2071,9 @@ def genus_diversity_panel() -> None:
                 d3.download_button("ssdm_hotspot_candidates.csv", ssdm_hotspots.to_csv(index=False).encode("utf-8"), "ssdm_hotspot_candidates.csv", "text/csv", width="stretch")
                 d4.download_button("continuous SSDM HTML", continuous_map.get_root().render().encode("utf-8"), "ssdm_continuous_richness_map.html", "text/html", width="stretch")
                 d5.download_button("binary SSDM HTML", binary_map.get_root().render().encode("utf-8"), "ssdm_binary_richness_map.html", "text/html", width="stretch")
+                if ssdm_apply_vif and ssdm_vif_diag is not None and not ssdm_vif_diag.empty:
+                    d_vif_col = st.columns(1)[0]
+                    d_vif_col.download_button("ssdm_vif_diagnostics.csv", ssdm_vif_diag.to_csv(index=False).encode("utf-8"), "ssdm_vif_diagnostics.csv", "text/csv", use_container_width=True)
             except Exception as exc:
                 st.error(f"SSDM failed: {exc}")
 
