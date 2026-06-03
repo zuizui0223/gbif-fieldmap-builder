@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import time
 import urllib.parse
 import zipfile
 from dataclasses import dataclass
@@ -54,6 +55,7 @@ ENV_SENTINEL_ABS = 1e20
 GBIF_SPECIES_MATCH_URL = "https://api.gbif.org/v1/species/match"
 GBIF_SPECIES_SEARCH_URL = "https://api.gbif.org/v1/species/search"
 GBIF_OCCURRENCE_SEARCH_URL = "https://api.gbif.org/v1/occurrence/search"
+GBIF_REQUEST_HEADERS = {"User-Agent": "GBIF-FieldMap-Builder/1.0"}
 WC_BASE = "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
 LAND_GEOJSON_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_land.geojson"
 CACHE_DIR = Path(os.environ.get("GBIF_FIELDMAP_CACHE", "/tmp/gbif_fieldmap_builder"))
@@ -67,6 +69,24 @@ SPECIES_CANDIDATES = ["species", "scientificname", "scientific_name", "scientifi
 MEDIA_CANDIDATES = ["mediaurl", "media_url", "imageurl", "image_url", "identifier", "associatedmedia", "associated_media", "photo", "image", "写真", "画像"]
 GBIF_ID_CANDIDATES = ["gbifid", "gbif_id", "key", "occurrenceid", "occurrence_id"]
 LOCALITY_CANDIDATES = ["locality", "municipality", "county", "stateprovince", "location", "place", "site", "場所", "地点"]
+
+def gbif_get_json(url: str, params: dict[str, Any], timeout: int, attempts: int = 4) -> dict[str, Any]:
+    last_error: Optional[Exception] = None
+    total_attempts = max(1, int(attempts))
+    for attempt in range(total_attempts):
+        try:
+            response = requests.get(url, params=params, timeout=timeout, headers=GBIF_REQUEST_HEADERS)
+            if response.status_code in {429, 500, 502, 503, 504} and attempt < total_attempts - 1:
+                last_error = requests.HTTPError(f"GBIF temporary HTTP {response.status_code}", response=response)
+            else:
+                response.raise_for_status()
+                return response.json()
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+        if attempt < total_attempts - 1:
+            time.sleep(min(8.0, 1.5 * (2 ** attempt)))
+    raise RuntimeError(f"GBIF request failed after {total_attempts} attempts: {last_error}")
+
 
 TOPOGRAPHY_VARS = ["elevation", "slope", "roughness"]
 CLIMATE_VARS = [f"bio{i}" for i in range(1, 20)]
@@ -236,9 +256,7 @@ def extract_media_url_from_gbif_record(rec: dict[str, Any]) -> str:
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, country_code: str, year_from: Optional[int], year_to: Optional[int]) -> tuple[str, pd.DataFrame]:
-    match = requests.get(GBIF_SPECIES_MATCH_URL, params={"name": scientific_name.strip()}, timeout=30)
-    match.raise_for_status()
-    payload = match.json()
+    payload = gbif_get_json(GBIF_SPECIES_MATCH_URL, {"name": scientific_name.strip()}, timeout=30)
     usage_key = payload.get("usageKey")
     if usage_key is None:
         raise ValueError(f"GBIF could not match this scientific name: {scientific_name}")
@@ -253,17 +271,14 @@ def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, countr
     elif year_to is not None:
         params_base["year"] = f",{int(year_to)}"
 
-    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=60)
-    first.raise_for_status()
-    total_count = int(first.json().get("count", 0))
+    first = gbif_get_json(GBIF_OCCURRENCE_SEARCH_URL, {**params_base, "limit": 0, "offset": 0}, timeout=60)
+    total_count = int(first.get("count", 0))
     target = min(int(max_records), total_count if total_count > 0 else int(max_records))
     records: list[dict[str, Any]] = []
     offset = 0
     while len(records) < target:
         limit = min(300, target - len(records))
-        response = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=60)
-        response.raise_for_status()
-        page = response.json()
+        page = gbif_get_json(GBIF_OCCURRENCE_SEARCH_URL, {**params_base, "offset": offset, "limit": limit}, timeout=60)
         batch = page.get("results", [])
         if not batch:
             break
@@ -307,16 +322,13 @@ def _resolve_gbif_genus_key(genus_name: str) -> tuple[Optional[int], dict[str, A
     genus = genus_name.strip()
     if not genus:
         return None, {}
-    response = requests.get(GBIF_SPECIES_MATCH_URL, params={"name": genus, "rank": "GENUS"}, timeout=20)
-    response.raise_for_status()
-    payload = response.json()
+    payload = gbif_get_json(GBIF_SPECIES_MATCH_URL, {"name": genus, "rank": "GENUS"}, timeout=20)
     canonical = str(payload.get("canonicalName") or payload.get("genus") or "").strip()
     if payload.get("rank") == "GENUS" and payload.get("usageKey") and canonical.lower() == genus.lower():
         return int(payload["usageKey"]), payload
 
-    search = requests.get(GBIF_SPECIES_SEARCH_URL, params={"q": genus, "rank": "GENUS", "limit": 10}, timeout=20)
-    search.raise_for_status()
-    for candidate in search.json().get("results", []):
+    search_payload = gbif_get_json(GBIF_SPECIES_SEARCH_URL, {"q": genus, "rank": "GENUS", "limit": 10}, timeout=20)
+    for candidate in search_payload.get("results", []):
         canonical = str(candidate.get("canonicalName") or candidate.get("scientificName") or "").strip()
         if canonical.lower() == genus.lower() and candidate.get("rank") == "GENUS" and (candidate.get("nubKey") or candidate.get("key")):
             payload = dict(candidate)
@@ -324,7 +336,7 @@ def _resolve_gbif_genus_key(genus_name: str) -> tuple[Optional[int], dict[str, A
             payload.setdefault("rank", "GENUS")
             payload["gbifBackboneKey"] = candidate.get("nubKey") or candidate.get("key")
             return int(payload["gbifBackboneKey"]), payload
-    for candidate in search.json().get("results", []):
+    for candidate in search_payload.get("results", []):
         if candidate.get("rank") == "GENUS" and (candidate.get("nubKey") or candidate.get("key")):
             payload = dict(candidate)
             payload.setdefault("rank", "GENUS")
@@ -349,17 +361,14 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
     elif year_to is not None:
         params_base["year"] = f",{int(year_to)}"
 
-    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=45)
-    first.raise_for_status()
-    total_count = int(first.json().get("count", 0))
+    first = gbif_get_json(GBIF_OCCURRENCE_SEARCH_URL, {**params_base, "limit": 0, "offset": 0}, timeout=45)
+    total_count = int(first.get("count", 0))
     target = min(int(max_records), total_count if total_count > 0 else int(max_records))
     records: list[dict[str, Any]] = []
     offset = 0
     while len(records) < target:
         limit = min(300, target - len(records))
-        response = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=45)
-        response.raise_for_status()
-        page = response.json()
+        page = gbif_get_json(GBIF_OCCURRENCE_SEARCH_URL, {**params_base, "offset": offset, "limit": limit}, timeout=45)
         batch = page.get("results", [])
         if not batch:
             break
@@ -1941,8 +1950,13 @@ def load_input_controls() -> None:
         if not name.strip():
             st.warning("Scientific name is empty.")
             return
-        with st.spinner("Fetching GBIF occurrences page by page, 300 records per request..."):
-            msg, df = fetch_gbif_occurrences_cached(name.strip(), int(max_records), country.strip().upper(), year_from, year_to)
+        try:
+            with st.spinner("Fetching GBIF occurrences page by page, 300 records per request..."):
+                msg, df = fetch_gbif_occurrences_cached(name.strip(), int(max_records), country.strip().upper(), year_from, year_to)
+        except Exception as exc:
+            st.error(f"GBIF occurrence download failed after retries: {exc}")
+            st.info("Try again in a minute, reduce the maximum record cap, or clear country/year filters. GBIF sometimes resets long paginated requests from Streamlit Cloud.")
+            return
         st.session_state.raw_df = df
         st.session_state.source_key = f"gbif::{name}::{country}::{max_records}::{year_from}::{year_to}"
         st.session_state.source_message = msg
@@ -1978,7 +1992,8 @@ def genus_diversity_panel() -> None:
                 st.session_state.genus_source_key = f"genus::{genus_name}::{country}::{max_records}::{year_from}::{year_to}"
                 st.session_state.genus_source_message = msg
             except Exception as exc:
-                st.error(f"GBIF genus download failed: {exc}")
+                st.error(f"GBIF genus download failed after retries: {exc}")
+                st.info("Try again in a minute, reduce the maximum record cap, or clear country/year filters. GBIF sometimes resets long paginated requests from Streamlit Cloud.")
 
     if st.session_state.genus_raw_df is None:
         st.info(st.session_state.genus_source_message)

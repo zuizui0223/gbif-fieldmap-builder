@@ -4,6 +4,21 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Codex (OpenAI) - GBIF retry handling for connection resets
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Added a shared GBIF JSON request helper with retry/backoff for temporary HTTP 429/5xx, timeout, and connection-reset failures.
+- Routed species and genus GBIF match/search/occurrence requests through the retry helper.
+- Prevented single-species GBIF downloads from crashing the app when a request fails, matching the safer genus-mode behavior.
+- Improved user-facing GBIF failure messages with guidance to retry, lower the record cap, or clear filters.
+
+Features preserved:
+- GBIF paginated downloads, large dataset caps, genus richness/SSDM, single-species SDM/VIF/predict maps, exclusion, route planning, and downloads remain available.
+
 ## 2026-06-03 - Codex (OpenAI) - Issue #10 large GBIF dataset auto-capping
 
 Changed files:
