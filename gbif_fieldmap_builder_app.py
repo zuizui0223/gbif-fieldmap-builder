@@ -765,16 +765,17 @@ def target_occurrence_set_panel(
     occ_map_display: pd.DataFrame,
     raw_record_count: int,
     key_prefix: str,
-    label: str = "Target occurrence set for extent/candidates",
+    label: str = "Survey area selection",
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     st.markdown(f"**{label}**")
     st.caption(
-        "Drawn rectangles do not become the final SDM extent. "
-        "They only choose which occurrence records are used to build candidate inputs and prediction extents."
+        "Select the area you can actually visit for fieldwork. "
+        "Survey candidates and occurrence hotspots are generated from records in this area. "
+        "SDM can predict across a wider macro-scale extent — set that separately inside Optional: Build SDM."
     )
     mode = st.radio(
-        "Target occurrence set",
-        ["Use all cleaned records", "Use only records inside drawn rectangle", "Exclude records inside drawn rectangle"],
+        "Survey area",
+        ["Use all records", "Use only records inside drawn rectangle", "Exclude records inside drawn rectangle"],
         index=0,
         horizontal=True,
         key=f"{key_prefix}_target_occurrence_mode",
@@ -3074,7 +3075,7 @@ def main() -> None:
         st.error("No valid coordinate records found.")
         return
 
-    st.subheader("2 — Prepare records and choose survey range")
+    st.subheader("2 — Choose your survey area")
     active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
     auto_large_dataset_mode = len(occ_raw) > 1000
     effective_large_dataset_mode = bool(large_dataset_mode or auto_large_dataset_mode)
@@ -3146,11 +3147,11 @@ def main() -> None:
         )
 
     # ── Occurrence-based survey candidates (available without SDM) ────────────
-    st.subheader("3 — Occurrence-based survey site suggestions")
+    st.subheader("3 — Survey site suggestions")
     st.caption(
-        "Survey ranges generated from GBIF occurrence clusters — no SDM required. "
-        "These candidates are ready to use immediately. "
-        "Optional SDM below can add suitability scores and exploration ranges."
+        "Candidate survey sites generated from occurrence clusters within your Step 2 survey area. "
+        "Ready to use immediately — no SDM required. "
+        "Optional SDM below predicts suitability at macro scale and can re-rank or add new exploration candidates."
     )
     if st.session_state.sdm_result is None:
         st.info(
@@ -3190,9 +3191,14 @@ def main() -> None:
     st.subheader("Optional: Build SDM")
     with st.expander("Build SDM and predict map", expanded=False):
         # ── SDM prediction extent ─────────────────────────────────────────────
-        st.markdown("**SDM prediction extent**")
-        st.caption("Buffer / convex hull / bounding box are built from the active target occurrence set selected in Step 2.")
-        area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="All three modes are land-only: buffer, convex hull, or bounding box.", key="sdm_area_mode")
+        st.markdown("**SDM prediction extent — macro scale**")
+        st.caption(
+            "This is the area where SDM suitability is predicted. "
+            "It is built from occurrence records and can be set wider than your Step 2 survey area. "
+            "A broader extent captures more environmental variation and generally improves SDM accuracy. "
+            "Increase the buffer radius or use 'bounding box' to predict at macro scale."
+        )
+        area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="buffer = expand around each point; convex hull = polygon around all records; bounding box = rectangular area. All land-only.", key="sdm_area_mode")
         _ec1, _ec2, _ec3 = st.columns(3)
         buffer_km = _ec1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
         rectangle_margin_km = _ec2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
@@ -3203,7 +3209,7 @@ def main() -> None:
             minx, miny, maxx, maxy = extent_geom.bounds
             st.caption(
                 f"SDM prediction extent: lon {minx:.4f}–{maxx:.4f}, lat {miny:.4f}–{maxy:.4f}. "
-                "The extent can be wider than the Step 2 survey area — SDM predicts at macro scale."
+                "This macro-scale extent is used for SDM training and prediction — it can be much wider than your Step 2 fieldwork survey area."
             )
             st_folium(
                 make_sdm_extent_preview_map(occ_sdm_train, extent_geom, area_mode),
