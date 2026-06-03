@@ -4,6 +4,28 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Claude (claude-sonnet-4-6) — Weighted model support: fix model_support_score refresh bug + UI status banners
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+
+**Bug fix: model_support_score not updated after SDM runs (species mode)**
+- After `predict_suitability` populates `sdm_suitability`, code now explicitly writes `model_support_score = sdm_suitability.clip(0,1)` before the final `add_priority_rank` call. Previously the column stayed at 0.0 from the first call.
+
+**Improved `add_priority_rank` fallback logic**
+- When `model_support_score = 0.0` but `sdm_suitability` is non-NaN (meaning SDM ran after the score was initialised), `sdm_suitability` is used instead. Docstring added.
+
+**Model support status banners**
+- Species mode: info/success banner in "3 — Occurrence-based survey site suggestions" showing weights and SDM status.
+- Genus mode: info/success banner in "4 — Selected hotspot sites" showing weights and SSDM status.
+
+Features preserved:
+- Observed-data candidates available without SDM/SSDM. All scoring columns preserved.
+
+
 ## 2026-06-03 - Claude (claude-sonnet-4-6) — Simplify environmental variable selection with presets; add Balanced ecology preset
 
 Changed files:
