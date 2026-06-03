@@ -4,24 +4,6 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
-## 2026-06-03 - Codex - Issue #2 first step: genus occurrence richness mode
-
-Changed files:
-- gbif_fieldmap_builder_app.py
-- CHANGELOG_AI.md
-
-Summary:
-- Added top-level Analysis mode selector with Single species survey planning and Genus diversity / SSDM.
-- Added first-stage Genus diversity / SSDM workflow: genus name input, optional country/year filters, paginated GBIF genus occurrence download, grouping by species, species summary table, occurrence-based richness grid map, richness hotspot candidates, and CSV/HTML downloads.
-- Full SSDM stacking is intentionally not implemented yet; this step stops at stable occurrence-based richness mapping.
-
-Features preserved:
-- Existing single-species GBIF pagination, CSV upload, red QC occurrence exclusion, SDM, VIF, spatial partition diagnostics, predict map, SDM-high exploration candidates, survey site list, route/export helpers, and downloads remain in Single species survey planning mode.
-
-Known risks / TODO:
-- Genus richness is occurrence-based and may reflect GBIF sampling bias.
-- Full per-species SDM/SSDM stacking remains TODO after occurrence richness map behavior is validated.
-
 ## 2026-06-02 - Claude (Anthropic) — Issue #1 follow-up: simplify map layers and remove Priority table
 
 Changed files:
