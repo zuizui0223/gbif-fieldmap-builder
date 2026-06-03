@@ -4,6 +4,27 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Codex (OpenAI) - Issue #3 large dataset mode
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Added Large dataset mode controls and a Max occurrence points shown on map setting.
+- Separated the single-species data flow into occ_raw, occ_analysis, occ_map_display, and occ_sdm_train.
+- Limited occurrence maps to a display subset while keeping raw records available for exclusion state and counts.
+- Disabled occurrence image popups by default when raw valid records exceed 500.
+- Added exact coordinate deduplication and optional grid thinning before clustering and SDM.
+- Moved clustering, candidate generation, SDM extent, background generation, SDM fitting, predict map, and SDM-high exploration to the reduced occ_sdm_train set instead of all raw GBIF records.
+- Added performance summary metrics for raw records, after exclusion, analysis records, SDM training records, map points, dedupe removals, and grid-thinning removals.
+
+Features preserved:
+- GBIF paginated occurrence download, CSV upload, map-click exclusion, candidate generation, ensemble SDM, VIF, spatial partition diagnostics, predict map, SDM-high candidates, route planner, and downloads remain available.
+
+Known risks / TODO:
+- In very large datasets, only displayed map points can be toggled by clicking; increase Max occurrence points shown on map to inspect more points.
+
 ## 2026-06-03 - Codex (OpenAI) - Fix genus GBIF backbone key selection
 
 Changed files:

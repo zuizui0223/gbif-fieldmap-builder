@@ -611,22 +611,23 @@ def ids_inside_drawn_rectangles(df: pd.DataFrame, id_col: str, lat_col: str, lon
     return sorted(ids)
 
 
-def make_exclusion_review_map(occ_raw: pd.DataFrame, excluded_ids: set[int], add_draw: bool = False) -> folium.Map:
-    center = (float(occ_raw["_latitude"].mean()), float(occ_raw["_longitude"].mean())) if not occ_raw.empty else (35.5, 135.5)
+def make_exclusion_review_map(occ_map_display: pd.DataFrame, excluded_ids: set[int], add_draw: bool = False, show_images: bool = True) -> folium.Map:
+    center = (float(occ_map_display["_latitude"].mean()), float(occ_map_display["_longitude"].mean())) if not occ_map_display.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
     fg_in = FeatureGroup(name="included occurrences", show=True)
     fg_ex = FeatureGroup(name="excluded occurrences", show=True)
-    for _, row in occ_raw.iterrows():
+    for _, row in occ_map_display.iterrows():
         rid = int(row["_row_id"])
         excluded = rid in excluded_ids
         color = "#d62728" if excluded else "#1f77b4"
+        media_html = image_html(row.get("_media_url", "")) if show_images else ""
         html = f"""
         <b>{'Excluded' if excluded else 'Included'} occurrence</b><br>
         row_id: {rid}<br>
         lat/lon: {row['_latitude']:.6f}, {row['_longitude']:.6f}<br>
         locality: {row.get('_locality','')}<br>
         GBIF: {row.get('_gbif_id','')}
-        {image_html(row.get('_media_url',''))}
+        {media_html}
         """
         folium.CircleMarker(
             (row["_latitude"], row["_longitude"]),
@@ -645,7 +646,7 @@ def make_exclusion_review_map(occ_raw: pd.DataFrame, excluded_ids: set[int], add
         Draw(export=False, draw_options={"rectangle": True, "polyline": False, "circle": False, "marker": False, "circlemarker": False, "polygon": False}, edit_options={"edit": False, "remove": True}).add_to(fmap)
     LayerControl(collapsed=True).add_to(fmap)
     try:
-        fmap.fit_bounds([[occ_raw["_latitude"].min(), occ_raw["_longitude"].min()], [occ_raw["_latitude"].max(), occ_raw["_longitude"].max()]], padding=(30, 30))
+        fmap.fit_bounds([[occ_map_display["_latitude"].min(), occ_map_display["_longitude"].min()], [occ_map_display["_latitude"].max(), occ_map_display["_longitude"].max()]], padding=(30, 30))
     except Exception:
         pass
     return fmap
@@ -669,9 +670,11 @@ def nearest_row_id_from_click(occ_raw: pd.DataFrame, click: dict[str, Any], tool
     return int(occ_raw.loc[int(dists.idxmin()), "_row_id"])
 
 
-def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
+def coordinate_exclusion_panel(occ_raw: pd.DataFrame, occ_map_display: pd.DataFrame, show_images: bool) -> pd.DataFrame:
     st.subheader("Coordinate quality check")
     with st.expander("Click occurrence points on the map to exclude them", expanded=True):
+        if len(occ_map_display) < len(occ_raw):
+            st.caption(f"Showing {len(occ_map_display):,} of {len(occ_raw):,} raw occurrence points on this map. Increase 'Max occurrence points shown on map' to inspect more points.")
         if st.button("Clear excluded coordinates"):
             st.session_state.excluded_row_ids = set()
             st.session_state.restore_excluded_row_ids = []
@@ -681,7 +684,7 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
             reset_model_outputs()
             st.rerun()
         click_data = st_folium(
-            make_exclusion_review_map(occ_raw, set(st.session_state.excluded_row_ids), add_draw=True),
+            make_exclusion_review_map(occ_map_display, set(st.session_state.excluded_row_ids), add_draw=True, show_images=show_images),
             width=None, height=520,
             returned_objects=["last_object_clicked", "last_object_clicked_tooltip", "all_drawings", "last_active_drawing"],
             key="coordinate_exclusion_map",
@@ -692,7 +695,7 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
         if clicked:
             sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f},{clicked_tooltip}"
             if sig != st.session_state.last_exclude_click_signature:
-                rid = nearest_row_id_from_click(occ_raw, clicked, clicked_tooltip)
+                rid = nearest_row_id_from_click(occ_map_display, clicked, clicked_tooltip)
                 st.session_state.last_exclude_click_signature = sig
                 if rid is not None:
                     if rid in set(st.session_state.excluded_row_ids):
@@ -711,7 +714,7 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
             draw_sig = str(qc_features)[:400]
             if draw_sig != st.session_state.get("qc_last_draw_sig", ""):
                 st.session_state.qc_last_draw_sig = draw_sig
-                rect_ids = ids_inside_drawn_rectangles(occ_raw, "_row_id", "_latitude", "_longitude", qc_features)
+                rect_ids = ids_inside_drawn_rectangles(occ_map_display, "_row_id", "_latitude", "_longitude", qc_features)
                 if rect_ids:
                     new_excluded = set(st.session_state.excluded_row_ids) | set(rect_ids)
                     if new_excluded != set(st.session_state.excluded_row_ids):
@@ -728,6 +731,59 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame) -> pd.DataFrame:
         filtered = occ_raw[~occ_raw["_row_id"].astype(int).isin(set(st.session_state.excluded_row_ids))].copy()
         st.info(f"Included records: {len(filtered)} / {len(occ_raw)}. Excluded: {len(occ_raw) - len(filtered)}.")
     return filtered.reset_index(drop=True)
+
+
+def occurrence_sort_for_representative(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    work = df.copy()
+    work["_year_sort"] = pd.to_numeric(work.get("_year"), errors="coerce").fillna(-9999)
+    work["_has_photo_sort"] = work.get("_media_url", "").astype(str).str.len() > 0
+    return work.sort_values(["_has_photo_sort", "_year_sort", "_row_id"], ascending=[False, False, True]).reset_index(drop=True)
+
+
+def exact_coordinate_deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy().reset_index(drop=True)
+    work = occurrence_sort_for_representative(df)
+    return work.drop_duplicates(subset=["_latitude", "_longitude"], keep="first").drop(columns=[c for c in ["_year_sort", "_has_photo_sort"] if c in work.columns]).reset_index(drop=True)
+
+
+def grid_thin(df: pd.DataFrame, grid_degrees: float) -> pd.DataFrame:
+    if df.empty or float(grid_degrees) <= 0:
+        return df.copy().reset_index(drop=True)
+    work = occurrence_sort_for_representative(df)
+    cell = float(grid_degrees)
+    work["_grid_lon"] = np.floor(work["_longitude"].astype(float) / cell).astype(int)
+    work["_grid_lat"] = np.floor(work["_latitude"].astype(float) / cell).astype(int)
+    work = work.drop_duplicates(subset=["_grid_lat", "_grid_lon"], keep="first")
+    drop_cols = [c for c in ["_grid_lon", "_grid_lat", "_year_sort", "_has_photo_sort"] if c in work.columns]
+    return work.drop(columns=drop_cols).reset_index(drop=True)
+
+
+def limit_occurrence_display(occ_raw: pd.DataFrame, excluded_ids: set[int], max_points: int) -> pd.DataFrame:
+    if occ_raw.empty:
+        return occ_raw.copy()
+    cap = max(1, int(max_points))
+    if len(occ_raw) <= cap:
+        return occ_raw.copy().reset_index(drop=True)
+    work = occ_raw.copy()
+    work["_display_priority"] = work["_row_id"].astype(int).isin(excluded_ids).astype(int)
+    work = occurrence_sort_for_representative(work).sort_values(["_display_priority", "_row_id"], ascending=[False, True]).reset_index(drop=True)
+    excluded = work[work["_display_priority"].eq(1)]
+    included = work[work["_display_priority"].eq(0)]
+    if len(excluded) >= cap:
+        out = excluded.head(cap)
+    else:
+        remain = cap - len(excluded)
+        if len(included) <= remain:
+            sampled = included
+        else:
+            positions = np.linspace(0, len(included) - 1, remain).round().astype(int)
+            sampled = included.iloc[np.unique(positions)]
+        out = pd.concat([excluded, sampled], ignore_index=True, sort=False)
+    drop_cols = [c for c in ["_display_priority", "_year_sort", "_has_photo_sort"] if c in out.columns]
+    return out.drop(columns=drop_cols).reset_index(drop=True)
 
 
 def spatial_thin(df: pd.DataFrame, thinning_m: float) -> pd.DataFrame:
@@ -1360,7 +1416,7 @@ def popup_html_site(row: pd.Series) -> str:
     """
 
 
-def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str, Any]], route_plan: Optional[pd.DataFrame], occurrence_buffer_m: float, survey_range_m: float, layers: dict[str, bool]) -> folium.Map:
+def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str, Any]], route_plan: Optional[pd.DataFrame], occurrence_buffer_m: float, survey_range_m: float, layers: dict[str, bool], show_images: bool = True) -> folium.Map:
     center = (float(occ["_latitude"].mean()), float(occ["_longitude"].mean())) if not occ.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=8, tiles="OpenStreetMap", control_scale=True)
     if layers.get("predict") and overlay is not None:
@@ -1370,7 +1426,8 @@ def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str
         fg = FeatureGroup(name="occurrences after exclusion", show=True)
         mc = MarkerCluster()
         for _, row in occ.iterrows():
-            html = f"Occurrence<br>{row['_latitude']:.6f}, {row['_longitude']:.6f}<br>{row.get('_species','')}<br>GBIF {row.get('_gbif_id','')}<br>{image_html(row.get('_media_url',''))}"
+            media_html = image_html(row.get("_media_url", "")) if show_images else ""
+            html = f"Occurrence<br>{row['_latitude']:.6f}, {row['_longitude']:.6f}<br>{row.get('_species','')}<br>GBIF {row.get('_gbif_id','')}<br>{media_html}"
             folium.CircleMarker((row["_latitude"], row["_longitude"]), radius=4, color="#1f77b4", fill=True, popup=folium.Popup(html, max_width=330)).add_to(mc)
         mc.add_to(fg); fg.add_to(fmap)
     if layers.get("candidate_circles") and sites is not None and not sites.empty:
@@ -1890,6 +1947,10 @@ def main() -> None:
     st.sidebar.divider()
     st.sidebar.subheader("Sampling design")
     thinning_m = st.sidebar.number_input("Spatial thinning before clustering (m)", 0, 50_000, 1000, 500)
+    large_dataset_mode = st.sidebar.checkbox("Large dataset mode", value=False, help="Limit map drawing and thin analysis inputs so large GBIF downloads do not drive every map/SDM operation.")
+    max_map_points = st.sidebar.number_input("Max occurrence points shown on map", 100, 50_000, 1000 if large_dataset_mode else 3000, 100, help="Raw records are kept, but only this many occurrence points are drawn on Folium maps.")
+    exact_dedup = st.sidebar.checkbox("Exact coordinate deduplication", value=True, help="Keep one representative record for identical latitude/longitude coordinates before clustering and SDM.")
+    grid_thinning_deg = st.sidebar.number_input("Grid thinning for analysis (degrees)", min_value=0.0, max_value=5.0, value=0.05 if large_dataset_mode else 0.0, step=0.01, format="%.2f", help="Optional one-record-per-grid-cell thinning before clustering and SDM. Set 0 to disable.")
     center_method = st.sidebar.selectbox("Candidate center method", ["Medoid", "Centroid"], index=0)
     survey_range_m = st.sidebar.number_input("Survey range radius around candidate centers (m)", 50, 50_000, 500, 50)
     cluster_m = st.sidebar.number_input("DBSCAN cluster distance (m)", 1, 500_000, 2000, 500)
@@ -1913,28 +1974,44 @@ def main() -> None:
         st.error("No valid coordinate records found.")
         return
 
-    occ_checked = coordinate_exclusion_panel(occ_raw)
     active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
-    occ_checked = occ_raw[~occ_raw["_row_id"].astype(int).isin(active_excluded_ids)].copy().reset_index(drop=True)
-    leaked_checked_ids = sorted(set(occ_checked["_row_id"].astype(int)).intersection(active_excluded_ids))
+    show_occurrence_images_default = len(occ_raw) <= 500
+    show_occurrence_images = st.sidebar.checkbox("Occurrence image popups", value=show_occurrence_images_default, help="Off by default when records exceed 500 because remote images make maps slow.")
+    occ_qc_map_display = limit_occurrence_display(occ_raw, active_excluded_ids, int(max_map_points))
+    coordinate_exclusion_panel(occ_raw, occ_qc_map_display, bool(show_occurrence_images))
+    active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
+    occ_analysis = occ_raw[~occ_raw["_row_id"].astype(int).isin(active_excluded_ids)].copy().reset_index(drop=True)
+    leaked_checked_ids = sorted(set(occ_analysis["_row_id"].astype(int)).intersection(active_excluded_ids))
     if leaked_checked_ids:
         st.error(f"Excluded rows leaked into the included occurrence set: {leaked_checked_ids[:20]}. SDM was stopped.")
         return
-    if occ_checked.empty:
+    if occ_analysis.empty:
         st.error("All occurrence records were excluded. Clear excluded coordinates.")
         return
 
-    occ = spatial_thin(occ_checked, float(thinning_m))
-    leaked_occ_ids = sorted(set(occ["_row_id"].astype(int)).intersection(active_excluded_ids))
+    occ_after_exclusion = occ_analysis.copy()
+    occ_before_dedup_n = len(occ_analysis)
+    occ_analysis = exact_coordinate_deduplicate(occ_analysis) if exact_dedup else occ_analysis
+    exact_dedup_removed = occ_before_dedup_n - len(occ_analysis)
+    occ_before_grid_n = len(occ_analysis)
+    occ_analysis = grid_thin(occ_analysis, float(grid_thinning_deg))
+    grid_thinning_removed = occ_before_grid_n - len(occ_analysis)
+    if occ_analysis.empty:
+        st.error("All included occurrence records were removed by deduplication/grid thinning. Reduce thinning settings.")
+        return
+
+    occ_sdm_train = spatial_thin(occ_analysis, float(thinning_m))
+    leaked_occ_ids = sorted(set(occ_sdm_train["_row_id"].astype(int)).intersection(active_excluded_ids))
     if leaked_occ_ids:
         st.error(f"Excluded rows leaked into the thinned SDM occurrence set: {leaked_occ_ids[:20]}. SDM was stopped.")
         return
-    occ["cluster_id"] = haversine_dbscan(occ, "_latitude", "_longitude", float(cluster_m), int(min_samples))
-    current_sdm_occurrence_row_ids = tuple(sorted(occ["_row_id"].astype(int).tolist()))
+    occ_sdm_train["cluster_id"] = haversine_dbscan(occ_sdm_train, "_latitude", "_longitude", float(cluster_m), int(min_samples))
+    occ_map_display = limit_occurrence_display(occ_after_exclusion, active_excluded_ids, int(max_map_points))
+    current_sdm_occurrence_row_ids = tuple(sorted(occ_sdm_train["_row_id"].astype(int).tolist()))
     if st.session_state.sdm_occurrence_row_ids is not None and st.session_state.sdm_occurrence_row_ids != current_sdm_occurrence_row_ids:
         reset_model_outputs()
         st.info("Coordinate exclusions or thinning changed. Previous SDM and predict map were cleared; rebuild SDM to use the current occurrence set.")
-    occurrence_candidates = make_candidate_sites(occ, center_method, float(occurrence_weight))
+    occurrence_candidates = make_candidate_sites(occ_sdm_train, center_method, float(occurrence_weight))
     occurrence_candidates = add_priority_rank(occurrence_candidates)
     occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")
 
@@ -1946,12 +2023,12 @@ def main() -> None:
     rectangle_margin_km = c2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
     exclusion_buffer_km = c3.number_input("Hard exclusion radius (km)", min_value=0.1, max_value=100.0, value=10.0, step=1.0, key="sdm_exclusion_cutout_km", help="Excluded records are removed from training and their surrounding area is physically cut out of the prediction extent.")
     excluded_occ = excluded_occurrences_from_ids(occ_raw, active_excluded_ids)
-    extent_geom = prediction_area_geometry(occ, area_mode, float(buffer_km), float(rectangle_margin_km), excluded_occ, float(exclusion_buffer_km))
+    extent_geom = prediction_area_geometry(occ_sdm_train, area_mode, float(buffer_km), float(rectangle_margin_km), excluded_occ, float(exclusion_buffer_km))
     if extent_geom is not None and not extent_geom.is_empty:
         minx, miny, maxx, maxy = extent_geom.bounds
-        st.caption(f"Current SDM input: {len(occ):,} blue included records after thinning; {len(active_excluded_ids):,} excluded records removed and hard-masked. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")
+        st.caption(f"Current SDM input: {len(occ_sdm_train):,} blue included records after deduplication/thinning; {len(active_excluded_ids):,} excluded records removed and hard-masked. Extent bounds: lon {minx:.4f} to {maxx:.4f}, lat {miny:.4f} to {maxy:.4f}.")
         st_folium(
-            make_sdm_extent_preview_map(occ, extent_geom, area_mode),
+            make_sdm_extent_preview_map(occ_sdm_train, extent_geom, area_mode),
             width=None,
             height=460,
             returned_objects=[],
@@ -1987,13 +2064,13 @@ def main() -> None:
             st.warning("Select at least one algorithm.")
         elif extent_geom is None or extent_geom.is_empty:
             st.error("The SDM prediction extent is empty after red-point cutouts. SDM was stopped.")
-        elif set(occ["_row_id"].astype(int)).intersection(active_excluded_ids):
+        elif set(occ_sdm_train["_row_id"].astype(int)).intersection(active_excluded_ids):
             st.error("Excluded row IDs are still present in the SDM input. SDM was stopped to prevent using excluded occurrences.")
         else:
             try:
                 progress = st.progress(0.0)
                 status.write("Generating presence/background data...")
-                pb = build_presence_background(occ, int(n_background), area_mode, float(buffer_km), float(rectangle_margin_km), excluded_occ, float(exclusion_buffer_km), status)
+                pb = build_presence_background(occ_sdm_train, int(n_background), area_mode, float(buffer_km), float(rectangle_margin_km), excluded_occ, float(exclusion_buffer_km), status)
                 progress.progress(0.15)
                 status.write("Extracting environmental variables for training data...")
                 train = extract_environment(pb, variables, "latitude", "longitude", resolution, status)
@@ -2018,7 +2095,7 @@ def main() -> None:
                 sdm_result = fit_sdm(train, kept_vars, algorithms, partition_method, int(k_folds), float(checkerboard_deg))
                 progress.progress(0.70)
                 status.write("Predicting raster-style suitability map...")
-                overlay, pred_table = build_predict_map(occ, kept_vars, resolution, sdm_result, area_mode, float(buffer_km), float(rectangle_margin_km), int(max_pixels), excluded_occ, float(exclusion_buffer_km), status)
+                overlay, pred_table = build_predict_map(occ_sdm_train, kept_vars, resolution, sdm_result, area_mode, float(buffer_km), float(rectangle_margin_km), int(max_pixels), excluded_occ, float(exclusion_buffer_km), status)
                 st.session_state.sdm_result = sdm_result
                 st.session_state.sdm_train_table = sdm_result.get("training_table", train)
                 st.session_state.prediction_overlay = overlay
@@ -2067,7 +2144,7 @@ def main() -> None:
             min_dist = c3.number_input("Min distance from known records/ranges (m)", 0, 200_000, 3000, 500)
             max_new = c4.number_input("Max new ranges", 1, 200, 20, 1)
             explore_cluster_m = st.number_input("Exploration clustering distance (m)", 100, 200_000, 3000, 500)
-            exploration = make_sdm_exploration_candidates(pred_table, occ, all_candidates, float(min_suit), float(q), float(min_dist), float(explore_cluster_m), int(max_new), int(all_candidates["site_id"].max()) + 1 if not all_candidates.empty else 1)
+            exploration = make_sdm_exploration_candidates(pred_table, occ_sdm_train, all_candidates, float(min_suit), float(q), float(min_dist), float(explore_cluster_m), int(max_new), int(all_candidates["site_id"].max()) + 1 if not all_candidates.empty else 1)
         if not exploration.empty:
             all_candidates = pd.concat([all_candidates, exploration], ignore_index=True, sort=False)
 
@@ -2076,15 +2153,21 @@ def main() -> None:
     all_candidates = order_sites(all_candidates, "Nearest-neighbor route")
     route_plan = route_planner_panel(all_candidates)
 
+    st.subheader("Performance summary")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("Raw valid records", f"{len(occ_raw):,}")
-    c2.metric("After exclusion", f"{len(occ_checked):,}")
-    c3.metric("After thinning", f"{len(occ):,}")
-    c4.metric("Occurrence clusters", f"{int((occ['cluster_id'] >= 0).sum()):,}")
+    c2.metric("After exclusion", f"{len(occ_after_exclusion):,}")
+    c3.metric("Analysis records", f"{len(occ_analysis):,}")
+    c4.metric("SDM train records", f"{len(occ_sdm_train):,}")
     c5.metric("Survey ranges", f"{len(all_candidates):,}")
     c6.metric("Route stops", f"{len(route_plan):,}" if route_plan is not None else "0")
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Occurrence clusters", f"{int((occ_sdm_train['cluster_id'] >= 0).sum()):,}")
+    p2.metric("Map occurrence points", f"{len(occ_map_display):,}")
+    p3.metric("Exact dedupe removed", f"{exact_dedup_removed:,}")
+    p4.metric("Grid thinning removed", f"{grid_thinning_removed:,}")
 
-    fmap = build_map(occ, all_candidates, overlay, route_plan, 0.0, float(survey_range_m), layers)
+    fmap = build_map(occ_map_display, all_candidates, overlay, route_plan, 0.0, float(survey_range_m), layers, bool(show_occurrence_images))
     st_folium(fmap, width=None, height=720, returned_objects=[], key="main_map")
 
     html_bytes = fmap.get_root().render().encode("utf-8")
