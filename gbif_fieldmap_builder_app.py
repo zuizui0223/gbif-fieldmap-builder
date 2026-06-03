@@ -1157,6 +1157,21 @@ def available_sort_cols(df: pd.DataFrame, desired: list[str]) -> list[str]:
 
 
 def add_priority_rank(sites: pd.DataFrame, observed_weight: float = 0.7, model_weight: float = 0.3) -> pd.DataFrame:
+    """Compute weighted priority score and rank.
+
+    priority_score = observed_weight * occurrence_support_score
+                   + model_weight   * model_support_score
+                   + optional small bonuses (recency, photo, base)
+
+    model_support_score is taken from (in priority order):
+      1. model_support_score column (if present and non-NaN, and non-zero when sdm_suitability is available)
+      2. sdm_suitability column (fallback for rows where model_support_score is NaN or 0 but SDM has run)
+      3. ssdm_model_support_score column
+      4. 0.0 (when no model data is available)
+
+    SDM/SSDM is optional: when no model data exists, model_support_score=0 and
+    priority_score is determined entirely by occurrence support.
+    """
     out = sites.copy()
     if out.empty:
         out["priority_rank"] = []
@@ -1170,14 +1185,19 @@ def add_priority_rank(sites: pd.DataFrame, observed_weight: float = 0.7, model_w
     else:
         observed_source = pd.Series(0.0, index=out.index)
     observed = pd.to_numeric(observed_source, errors="coerce").fillna(0.0).clip(0, 1)
+    # Build model series with fallback: prefer model_support_score, but if it is 0
+    # while sdm_suitability is non-NaN (meaning SDM ran after model_support_score was set),
+    # use sdm_suitability instead so re-ranking reflects actual SDM predictions.
     if "model_support_score" in out.columns:
         model = pd.to_numeric(out["model_support_score"], errors="coerce")
-    elif "sdm_suitability" in out.columns:
-        model = pd.to_numeric(out["sdm_suitability"], errors="coerce")
-    elif "ssdm_model_support_score" in out.columns:
-        model = pd.to_numeric(out["ssdm_model_support_score"], errors="coerce")
     else:
         model = pd.Series(np.nan, index=out.index)
+    if "sdm_suitability" in out.columns:
+        sdm_suit = pd.to_numeric(out["sdm_suitability"], errors="coerce")
+        model = model.where(model.notna() & ~(model.eq(0.0) & sdm_suit.notna()), sdm_suit)
+    elif "ssdm_model_support_score" in out.columns:
+        ssdm_score = pd.to_numeric(out["ssdm_model_support_score"], errors="coerce")
+        model = model.where(model.notna(), ssdm_score)
     model = model.clip(0, 1)
     base_priority = pd.to_numeric(out.get("priority_score", observed), errors="coerce").fillna(observed).clip(0, 1)
     bonus = (base_priority - observed).clip(lower=0, upper=0.20)
@@ -2405,6 +2425,23 @@ def genus_diversity_panel() -> None:
 
         # ── Step 4: Selected hotspot sites ───────────────────────────────────
         st.subheader("4 — Selected hotspot sites")
+        has_ssdm_support = (
+            "model_support_score" in hotspots.columns
+            and pd.to_numeric(hotspots["model_support_score"], errors="coerce").gt(0).any()
+        )
+        if not has_ssdm_support:
+            st.info(
+                f"ℹ️ **Model support score: not available yet.** "
+                f"Hotspots are ranked by observed richness only "
+                f"(observed weight = {genus_observed_weight:.2f}). "
+                "Run optional SSDM below to add predicted richness-based model support and re-rank hotspots."
+            )
+        else:
+            st.success(
+                f"✅ **Model support score: SSDM predicted richness active.** "
+                f"Hotspots are re-ranked with observed weight = {genus_observed_weight:.2f} and "
+                f"SSDM model weight = {genus_model_weight:.2f}."
+            )
         hotspot_cols = ["hotspot_rank", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "candidate_type", "latitude", "longitude", "species_richness", "record_count", "species_with_min_records", "species_list", "score_explanation", "google_maps_url"]
         st.dataframe(hotspots[[c for c in hotspot_cols if c in hotspots.columns]], width="stretch", hide_index=True)
 
@@ -3122,6 +3159,20 @@ def main() -> None:
         "These candidates are ready to use immediately. "
         "Optional SDM below can add suitability scores and exploration ranges."
     )
+    if st.session_state.sdm_result is None:
+        st.info(
+            f"ℹ️ **Model support score: not available yet.** "
+            f"Candidates are ranked by observed occurrence support only "
+            f"(observed weight = {observed_weight:.2f}). "
+            "Run optional SDM below to add SDM suitability-based model support and re-rank candidates."
+        )
+    else:
+        st.success(
+            f"✅ **Model support score: SDM suitability active.** "
+            f"Candidates are re-ranked with observed weight = {observed_weight:.2f} and "
+            f"model weight = {model_weight:.2f}. "
+            "Rebuild SDM if settings changed."
+        )
     if occurrence_candidates.empty:
         st.warning("No occurrence clusters found. Try reducing the cluster distance or minimum-samples setting in the sidebar.")
     else:
@@ -3380,6 +3431,13 @@ def main() -> None:
             tmp = extract_environment(tmp, sdm_result["variables"], "lat_tmp", "lon_tmp", resolution, status)
             all_candidates = tmp.rename(columns={"lat_tmp": "latitude", "lon_tmp": "longitude"})
             all_candidates = predict_suitability(all_candidates, sdm_result)
+            # Explicitly refresh model_support_score from sdm_suitability so the weighted
+            # re-ranking in add_priority_rank (called below) uses the actual SDM predictions.
+            if "sdm_suitability" in all_candidates.columns:
+                all_candidates["model_support_score"] = (
+                    pd.to_numeric(all_candidates["sdm_suitability"], errors="coerce")
+                    .clip(0, 1).round(3)
+                )
         except Exception as exc:
             st.warning(f"Could not predict suitability for occurrence-supported ranges: {exc}")
         with st.expander("Create SDM-high exploration ranges", expanded=True):
