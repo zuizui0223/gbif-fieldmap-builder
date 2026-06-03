@@ -8,4 +8,5 @@ scikit-learn
 shapely
 geopy
 requests
+certifi
 rasterio
