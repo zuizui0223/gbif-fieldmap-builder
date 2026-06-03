@@ -4,6 +4,23 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Claude (claude-sonnet-4-6) — Fix SSL error on Streamlit Cloud (Python 3.14)
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- requirements.txt
+- .python-version (new)
+- CHANGELOG_AI.md
+
+Summary:
+- Added `certifi` to imports and `requirements.txt`.
+- Added `_requests_get()` helper that passes `verify=certifi.where()` to every outbound `requests.get()` call, providing an up-to-date CA certificate bundle instead of relying on the system bundle that broke on Python 3.14.
+- Replaced all external `requests.get()` calls (GBIF species match, occurrence search, genus search, land GeoJSON) with `_requests_get()`. WorldClim raster download (`download_file`) uses `requests.get` with streaming and is unchanged (it hits a different CDN and is not affected).
+- Added `.python-version` pinned to `3.12` for Streamlit Cloud stability; Python 3.14 introduced stricter SSL handling that caused the original `SSLError`.
+
+Features preserved:
+- All GBIF fetch, SDM, SSDM, exclusion, route planning, and download features unchanged.
+
 ## 2026-06-03 - Claude (claude-sonnet-4-6) — Issue #4: Unify species/genus workflows; make SDM/SSDM optional
 
 Changed files:
