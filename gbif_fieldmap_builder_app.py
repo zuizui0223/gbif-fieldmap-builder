@@ -124,7 +124,6 @@ def init_session_state() -> None:
         "vif_table": None,
         "excluded_row_ids": set(),
         "last_exclude_click_signature": "",
-        "restore_excluded_row_ids": [],
         "sdm_occurrence_row_ids": None,
         "selected_route_site_ids": [],
         "last_route_click_signature": "",
@@ -150,7 +149,6 @@ def clear_loaded_data() -> None:
         st.session_state[key] = None
     st.session_state.excluded_row_ids = set()
     st.session_state.last_exclude_click_signature = ""
-    st.session_state.restore_excluded_row_ids = []
     st.session_state.selected_route_site_ids = []
     st.session_state.last_route_click_signature = ""
     st.session_state.survey_day_lists = {1: [], 2: []}
@@ -716,13 +714,26 @@ def nearest_row_id_from_click(occ_raw: pd.DataFrame, click: dict[str, Any], tool
 
 
 def coordinate_exclusion_panel(occ_raw: pd.DataFrame, occ_map_display: pd.DataFrame, show_images: bool) -> pd.DataFrame:
-    st.subheader("Coordinate quality check")
-    with st.expander("Click occurrence points on the map to exclude them", expanded=True):
+    """Optional QC panel — collapsed by default so it does not block candidate generation."""
+    n_excl = len(set(st.session_state.excluded_row_ids))
+    expander_label = (
+        f"Optional: Coordinate quality check ({n_excl} excluded)"
+        if n_excl > 0
+        else "Optional: Coordinate quality check"
+    )
+    with st.expander(expander_label, expanded=False):
         if len(occ_map_display) < len(occ_raw):
-            st.caption(f"Showing {len(occ_map_display):,} of {len(occ_raw):,} raw occurrence points on this map. Increase 'Max occurrence points shown on map' to inspect more points.")
-        if st.button("Clear excluded coordinates"):
+            st.caption(
+                f"Showing {len(occ_map_display):,} of {len(occ_raw):,} raw records on this map. "
+                "Increase 'Max occurrence points shown on map' to inspect more points."
+            )
+        if len(occ_raw) > 500:
+            st.info(
+                "Large dataset: only a sampled subset of points is shown. "
+                "Draw a rectangle to bulk-exclude suspicious coordinate regions."
+            )
+        if st.button("Clear all excluded coordinates", key="qc_clear_btn"):
             st.session_state.excluded_row_ids = set()
-            st.session_state.restore_excluded_row_ids = []
             st.session_state.last_exclude_click_signature = ""
             st.session_state.qc_rect_selected_ids = []
             st.session_state.qc_last_draw_sig = ""
@@ -734,7 +745,7 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame, occ_map_display: pd.DataFr
             returned_objects=["last_object_clicked", "last_object_clicked_tooltip", "all_drawings", "last_active_drawing"],
             key="coordinate_exclusion_map",
         )
-        # ── existing point-click behavior (unchanged) ────────────────────────
+        # ── point-click: toggle exclude/restore ──────────────────────────────
         clicked = (click_data or {}).get("last_object_clicked")
         clicked_tooltip = (click_data or {}).get("last_object_clicked_tooltip")
         if clicked:
@@ -749,10 +760,9 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame, occ_map_display: pd.DataFr
                     else:
                         st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) | {rid}
                         st.success(f"Excluded row {rid}.")
-                    st.session_state.restore_excluded_row_ids = []
                     reset_model_outputs()
                     st.rerun()
-        # ── rectangle → immediate exclusion ──────────────────────────────────
+        # ── rectangle draw → immediate bulk exclusion ─────────────────────────
         raw_drawings = (click_data or {}).get("all_drawings") or (click_data or {}).get("last_active_drawing")
         qc_features = extract_drawn_features(raw_drawings)
         if qc_features:
@@ -766,15 +776,8 @@ def coordinate_exclusion_panel(occ_raw: pd.DataFrame, occ_map_display: pd.DataFr
                         st.session_state.excluded_row_ids = new_excluded
                         reset_model_outputs()
                         st.rerun()
-        # ── recover by ID (unchanged) ────────────────────────────────────────
-        excluded_options = [x for x in sorted(set(st.session_state.excluded_row_ids)) if x in set(occ_raw["_row_id"].astype(int))]
-        recover_ids = st.multiselect("Excluded row IDs", options=excluded_options, default=[], key="restore_excluded_row_ids")
-        if recover_ids and st.button("Recover selected excluded rows"):
-            st.session_state.excluded_row_ids = set(st.session_state.excluded_row_ids) - set(map(int, recover_ids))
-            reset_model_outputs()
-            st.rerun()
         filtered = occ_raw[~occ_raw["_row_id"].astype(int).isin(set(st.session_state.excluded_row_ids))].copy()
-        st.info(f"Included records: {len(filtered)} / {len(occ_raw)}. Excluded: {len(occ_raw) - len(filtered)}.")
+        st.info(f"Included: {len(filtered):,} / {len(occ_raw):,} records. Excluded: {len(occ_raw) - len(filtered):,}.")
     return filtered.reset_index(drop=True)
 
 
@@ -1876,12 +1879,6 @@ def genus_diversity_panel() -> None:
             except Exception as exc:
                 st.error(f"GBIF genus download failed: {exc}")
 
-    st.subheader("Genus diversity — occurrence richness hotspots")
-    st.caption(
-        "Occurrence richness maps show observed species richness from GBIF records — no modeling required. "
-        "Use these hotspot candidates directly for survey planning. "
-        "Optional SSDM (stacked species distribution models) is available at the bottom of this page as an enhancement."
-    )
     if st.session_state.genus_raw_df is None:
         st.info(st.session_state.genus_source_message)
         return
@@ -1916,17 +1913,21 @@ def genus_diversity_panel() -> None:
     grid = occurrence_richness_grid(occ, float(grid_deg), int(min_records_cell))
     hotspots = richness_hotspot_candidates(grid, richness_metric, int(max_hotspots)) if not grid.empty else pd.DataFrame()
 
+    # ── Step 2: Prepare records and species summary ───────────────────────────
+    st.subheader("2 — Prepare records and species summary")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Valid records", f"{len(occ):,}")
     c2.metric("Species", f"{summary['species'].nunique():,}" if not summary.empty else "0")
     c3.metric("Grid cells", f"{len(grid):,}")
     c4.metric("Hotspots", f"{len(hotspots):,}")
-
-    st.write("Species summary")
     st.dataframe(summary, width="stretch", hide_index=True)
 
-    st.write("Occurrence-based species richness grid map")
-    st.caption("Observed richness: species counted from GBIF occurrence records inside each grid cell.")
+    # ── Step 3: Occurrence-based richness hotspots ────────────────────────────
+    st.subheader("3 — Occurrence-based richness hotspots")
+    st.caption(
+        "Observed species richness from GBIF occurrence records — no modeling required. "
+        "Use the hotspot candidates below directly for survey planning."
+    )
     if grid.empty:
         st.warning("No richness grid could be built. Check whether GBIF records have species names.")
     else:
@@ -1934,7 +1935,8 @@ def genus_diversity_panel() -> None:
         st_folium(fmap, width=None, height=720, returned_objects=[], key="genus_richness_map")
         html_bytes = fmap.get_root().render().encode("utf-8")
 
-        st.write("Richness hotspot candidates")
+        # ── Step 4: Selected hotspot sites ───────────────────────────────────
+        st.subheader("4 — Selected hotspot sites")
         hotspot_cols = ["hotspot_rank", "candidate_type", "latitude", "longitude", "species_richness", "record_count", "species_with_min_records", "species_list", "google_maps_url"]
         st.dataframe(hotspots[[c for c in hotspot_cols if c in hotspots.columns]], width="stretch", hide_index=True)
 
@@ -1945,7 +1947,7 @@ def genus_diversity_panel() -> None:
         d3.download_button("Hotspots CSV", hotspots.to_csv(index=False).encode("utf-8"), "genus_richness_hotspots.csv", "text/csv", width="stretch")
         d4.download_button("Richness HTML map", html_bytes, "genus_richness_map.html", "text/html", width="stretch")
 
-    st.subheader("Optional SSDM: stack species SDMs")
+    st.subheader("Optional: Run SSDM")
     st.caption("Predicted stacked richness: fit one SDM per eligible species, predict on a shared environmental grid, then sum suitability values across species. This does not run automatically.")
     with st.expander("Run stacked species distribution models", expanded=False):
         s1, s2, s3 = st.columns(3)
@@ -2268,7 +2270,7 @@ def _make_gmaps_url_with_end(ordered: pd.DataFrame, travelmode: str, start_locat
 
 
 def route_planner_panel(sites: pd.DataFrame) -> pd.DataFrame:
-    st.subheader("Survey site list")
+    st.subheader("4 — Selected survey sites")
     st.caption(
         "⚠️ Google Maps verification is required. "
         "This app does not guarantee road, ferry, mountain, cliff, or restricted-access feasibility."
@@ -2491,6 +2493,7 @@ def main() -> None:
         st.error("No valid coordinate records found.")
         return
 
+    st.subheader("2 — Prepare records")
     active_excluded_ids = set(map(int, st.session_state.excluded_row_ids))
     show_occurrence_images_default = len(occ_raw) <= 500
     show_occurrence_images = st.sidebar.checkbox("Occurrence image popups", value=show_occurrence_images_default, help="Off by default when records exceed 500 because remote images make maps slow.")
@@ -2533,7 +2536,7 @@ def main() -> None:
     occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")
 
     # ── Occurrence-based survey candidates (available without SDM) ────────────
-    st.subheader("Occurrence-supported survey candidates")
+    st.subheader("3 — Occurrence-based survey site suggestions")
     st.caption(
         "Survey ranges generated from GBIF occurrence clusters — no SDM required. "
         "These candidates are ready to use immediately. "
@@ -2580,8 +2583,8 @@ def main() -> None:
             key=f"sdm_extent_preview_map_{area_mode}",
         )
 
-    st.subheader("SDM (optional enhancement)")
-    with st.expander("Optional: Build SDM and predict map", expanded=False):
+    st.subheader("Optional: Build SDM")
+    with st.expander("Build SDM and predict map", expanded=False):
         resolution = st.selectbox("WorldClim raster resolution", RESOLUTIONS, index=2)
         st.caption(f"Selected resolution: {RESOLUTION_NOTE[resolution]}")
         st.markdown("<span style='color:#8c510a;font-weight:700'>Topography variables</span>", unsafe_allow_html=True)
