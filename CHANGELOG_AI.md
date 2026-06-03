@@ -4,6 +4,36 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Claude (claude-sonnet-4-6) — Issue #4 follow-up: fix widget key conflict, non-blocking QC, symmetric headings
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+
+**Fix `restore_excluded_row_ids` widget key conflict**
+- Removed `restore_excluded_row_ids` from `init_session_state` defaults and from `clear_loaded_data`.
+- Removed the `st.multiselect("Excluded row IDs", ..., key="restore_excluded_row_ids")` widget and its associated "Recover selected excluded rows" button from `coordinate_exclusion_panel`. This eliminates the Streamlit widget-state conflict reported in the issue.
+- Click-to-restore still works: clicking an already-excluded point on the QC map toggles it back to included.
+
+**Non-blocking, collapsed QC panel**
+- `coordinate_exclusion_panel` expander changed from `expanded=True` to `expanded=False`. The QC section is now clearly optional and does not block the occurrence candidate section.
+- Expander label shows the current excluded count: "Optional: Coordinate quality check (N excluded)" when exclusions are active.
+- Added a large-dataset hint: when `occ_raw > 500` records, a note recommends using rectangle drawing for bulk exclusion.
+
+**Symmetric numbered section headings (species and genus modes)**
+- Species mode: `2 — Prepare records` → `3 — Occurrence-based survey site suggestions` → `4 — Selected survey sites` (route planner) → `Optional: Build SDM`.
+- Genus mode: `2 — Prepare records and species summary` → `3 — Occurrence-based richness hotspots` → `4 — Selected hotspot sites` → `Optional: Run SSDM`.
+- Both modes now follow a parallel 1–4 + optional structure as requested.
+
+**Genus panel restructure**
+- The previous top-level `st.subheader("Genus diversity — occurrence richness hotspots")` (before data-load check) was replaced with numbered section subheaders placed after data loads, keeping the same data-guard logic.
+- Step 4 "Selected hotspot sites" now uses the hotspot candidates table (previously "Richness hotspot candidates") with the same data and downloads.
+
+Features preserved:
+- All exclusion logic (click, rectangle, clear), SDM/SSDM, VIF, route planner, downloads unchanged.
+
 ## 2026-06-03 - Claude (claude-sonnet-4-6) — Issue #2 follow-up: shared SSDM VIF, BIO protection, VIF diagnostics, partition settings
 
 Changed files:
