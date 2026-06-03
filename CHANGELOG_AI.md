@@ -4,6 +4,26 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-03 - Codex (OpenAI) - Issue #2 first step: genus occurrence richness mode
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Added an Analysis mode selector with Single species survey planning and Genus diversity / SSDM.
+- Added Genus diversity / SSDM mode with a separate genus input, country filter keys, GBIF paginated genus occurrence download, species grouping, species summary table, occurrence-based richness grid map, hotspot candidates, and CSV/HTML downloads.
+- Kept full SSDM out of this step; the genus mode is occurrence-richness only until this map is stable.
+- Added GBIF genus-name fallback matching through species search and catches genus download errors in the UI so a failed genus lookup does not crash the app.
+- Used a lighter default genus fetch cap to reduce Streamlit Cloud blocking risk while preserving the 300-record GBIF pagination behavior.
+
+Features preserved:
+- Single species GBIF download, CSV upload, coordinate exclusion, clustering, SDM, VIF, spatial partition diagnostics, predict map, SDM-high candidates, route planner, and HTML download remain unchanged.
+
+Known risks / TODO:
+- Full SSDM is intentionally not implemented yet.
+- Very large genus downloads can still take time because GBIF is paginated at 300 records per request.
+
 ## 2026-06-02 - Claude (Anthropic) — Issue #1 follow-up: simplify map layers and remove Priority table
 
 Changed files:

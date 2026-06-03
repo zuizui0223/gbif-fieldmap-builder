@@ -51,6 +51,7 @@ APP_TITLE = "GBIF FieldMap Builder"
 APP_BUILD_ID = "hard-exclusion-v2-20260529"
 EARTH_RADIUS_M = 6_371_008.8
 GBIF_SPECIES_MATCH_URL = "https://api.gbif.org/v1/species/match"
+GBIF_SPECIES_SEARCH_URL = "https://api.gbif.org/v1/species/search"
 GBIF_OCCURRENCE_SEARCH_URL = "https://api.gbif.org/v1/occurrence/search"
 WC_BASE = "https://geodata.ucdavis.edu/climate/worldclim/2_1/base"
 LAND_GEOJSON_URL = "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_land.geojson"
@@ -134,6 +135,9 @@ def init_session_state() -> None:
         "sl_reset_token": 0,
         "qc_rect_selected_ids": [],
         "qc_last_draw_sig": "",
+        "genus_raw_df": None,
+        "genus_source_key": None,
+        "genus_source_message": "No genus occurrence data loaded yet.",
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -156,6 +160,12 @@ def clear_loaded_data() -> None:
     st.session_state.qc_rect_selected_ids = []
     st.session_state.qc_last_draw_sig = ""
     st.session_state.source_message = "No occurrence data loaded yet."
+
+
+def clear_genus_data() -> None:
+    st.session_state.genus_raw_df = None
+    st.session_state.genus_source_key = None
+    st.session_state.genus_source_message = "No genus occurrence data loaded yet."
 
 
 def reset_model_outputs() -> None:
@@ -279,6 +289,234 @@ def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, countr
         })
     msg = f"GBIF match: {payload.get('scientificName', scientific_name)} / usageKey={usage_key} / confidence={payload.get('confidence')}. GBIF total={total_count:,}; fetched={len(rows):,}; cap={int(max_records):,}."
     return msg, pd.DataFrame(rows)
+
+
+def _species_name_from_genus_record(rec: dict[str, Any]) -> str:
+    species = rec.get("species") or rec.get("acceptedScientificName") or ""
+    species = str(species).strip()
+    if species:
+        return species
+    genus = str(rec.get("genus") or "").strip()
+    epithet = str(rec.get("specificEpithet") or "").strip()
+    if genus and epithet:
+        return f"{genus} {epithet}"
+    return str(rec.get("scientificName") or "").strip()
+
+
+def _resolve_gbif_genus_key(genus_name: str) -> tuple[Optional[int], dict[str, Any]]:
+    genus = genus_name.strip()
+    if not genus:
+        return None, {}
+    attempts = [
+        {"name": genus, "rank": "GENUS"},
+        {"name": genus},
+    ]
+    for params in attempts:
+        response = requests.get(GBIF_SPECIES_MATCH_URL, params=params, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+        if payload.get("rank") == "GENUS" and payload.get("usageKey"):
+            return int(payload["usageKey"]), payload
+        if payload.get("genusKey"):
+            payload = dict(payload)
+            payload.setdefault("rank", "GENUS")
+            return int(payload["genusKey"]), payload
+    search = requests.get(GBIF_SPECIES_SEARCH_URL, params={"q": genus, "rank": "GENUS", "limit": 10}, timeout=20)
+    search.raise_for_status()
+    for candidate in search.json().get("results", []):
+        canonical = str(candidate.get("canonicalName") or candidate.get("scientificName") or "").strip()
+        if canonical.lower() == genus.lower() and candidate.get("key"):
+            payload = dict(candidate)
+            payload.setdefault("scientificName", canonical)
+            payload.setdefault("rank", "GENUS")
+            return int(candidate["key"]), payload
+    for candidate in search.json().get("results", []):
+        if candidate.get("key"):
+            payload = dict(candidate)
+            payload.setdefault("rank", "GENUS")
+            return int(candidate["key"]), payload
+    return None, {}
+
+
+@st.cache_data(show_spinner=False, ttl=3600)
+def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, country_code: str, year_from: Optional[int], year_to: Optional[int]) -> tuple[str, pd.DataFrame]:
+    usage_key, payload = _resolve_gbif_genus_key(genus_name)
+    if usage_key is None:
+        raise ValueError(f"GBIF could not match this genus name: {genus_name}")
+
+    params_base: dict[str, Any] = {"taxonKey": usage_key, "hasCoordinate": "true", "hasGeospatialIssue": "false"}
+    if country_code.strip():
+        params_base["country"] = country_code.strip().upper()
+    if year_from is not None and year_to is not None:
+        params_base["year"] = f"{int(year_from)},{int(year_to)}"
+    elif year_from is not None:
+        params_base["year"] = f"{int(year_from)},"
+    elif year_to is not None:
+        params_base["year"] = f",{int(year_to)}"
+
+    first = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "limit": 0, "offset": 0}, timeout=45)
+    first.raise_for_status()
+    total_count = int(first.json().get("count", 0))
+    target = min(int(max_records), total_count if total_count > 0 else int(max_records))
+    records: list[dict[str, Any]] = []
+    offset = 0
+    while len(records) < target:
+        limit = min(300, target - len(records))
+        response = requests.get(GBIF_OCCURRENCE_SEARCH_URL, params={**params_base, "offset": offset, "limit": limit}, timeout=45)
+        response.raise_for_status()
+        page = response.json()
+        batch = page.get("results", [])
+        if not batch:
+            break
+        records.extend(batch)
+        offset += len(batch)
+        if page.get("endOfRecords"):
+            break
+
+    rows = []
+    for rec in records:
+        rows.append({
+            "decimalLatitude": rec.get("decimalLatitude"),
+            "decimalLongitude": rec.get("decimalLongitude"),
+            "eventDate": rec.get("eventDate", ""),
+            "year": rec.get("year"),
+            "species": _species_name_from_genus_record(rec),
+            "scientificName": rec.get("scientificName", ""),
+            "genus": rec.get("genus", ""),
+            "basisOfRecord": rec.get("basisOfRecord", ""),
+            "countryCode": rec.get("countryCode", ""),
+            "locality": rec.get("locality", ""),
+            "gbifID": rec.get("gbifID") or rec.get("key"),
+            "media_url": extract_media_url_from_gbif_record(rec),
+        })
+    matched_name = payload.get("scientificName") or payload.get("canonicalName") or genus_name
+    msg = f"GBIF genus match: {matched_name} / taxonKey={usage_key} / rank={payload.get('rank', 'GENUS')}. GBIF total={total_count:,}; fetched={len(rows):,}; cap={int(max_records):,}."
+    return msg, pd.DataFrame(rows)
+
+
+def genus_species_summary(occ: pd.DataFrame, min_records_for_sdm: int, grid_deg: float) -> pd.DataFrame:
+    columns = ["species", "n_records", "n_unique_grid_cells", "year_min", "year_max", "enough_records_for_future_sdm"]
+    if occ.empty:
+        return pd.DataFrame(columns=columns)
+    work = occ.copy()
+    work["_species_clean"] = work["_species"].astype(str).str.strip()
+    work = work[work["_species_clean"].ne("")]
+    if work.empty:
+        return pd.DataFrame(columns=columns)
+    cell = float(grid_deg)
+    work["_grid_lon"] = np.floor(work["_longitude"].astype(float) / cell).astype(int)
+    work["_grid_lat"] = np.floor(work["_latitude"].astype(float) / cell).astype(int)
+    work["_grid_id"] = work["_grid_lat"].astype(str) + ":" + work["_grid_lon"].astype(str)
+    work["_year_num"] = pd.to_numeric(work.get("_year"), errors="coerce")
+    rows = []
+    for species, group in work.groupby("_species_clean", sort=True):
+        rows.append({
+            "species": species,
+            "n_records": int(len(group)),
+            "n_unique_grid_cells": int(group["_grid_id"].nunique()),
+            "year_min": int(group["_year_num"].min()) if group["_year_num"].notna().any() else np.nan,
+            "year_max": int(group["_year_num"].max()) if group["_year_num"].notna().any() else np.nan,
+            "enough_records_for_future_sdm": int(len(group)) >= int(min_records_for_sdm),
+        })
+    return pd.DataFrame(rows).sort_values(["n_records", "species"], ascending=[False, True]).reset_index(drop=True)
+
+
+def occurrence_richness_grid(occ: pd.DataFrame, grid_deg: float, min_records_per_species_cell: int) -> pd.DataFrame:
+    if occ.empty:
+        return pd.DataFrame()
+    work = occ.copy()
+    work["_species_clean"] = work["_species"].astype(str).str.strip()
+    work = work[work["_species_clean"].ne("")]
+    if work.empty:
+        return pd.DataFrame()
+    cell = float(grid_deg)
+    work["grid_col"] = np.floor(work["_longitude"].astype(float) / cell).astype(int)
+    work["grid_row"] = np.floor(work["_latitude"].astype(float) / cell).astype(int)
+    rows = []
+    for (grid_row, grid_col), group in work.groupby(["grid_row", "grid_col"], sort=True):
+        counts = group.groupby("_species_clean").size().sort_values(ascending=False)
+        qualifying = counts[counts >= int(min_records_per_species_cell)]
+        lon_min = float(grid_col) * cell
+        lat_min = float(grid_row) * cell
+        rows.append({
+            "grid_row": int(grid_row),
+            "grid_col": int(grid_col),
+            "latitude": lat_min + cell / 2.0,
+            "longitude": lon_min + cell / 2.0,
+            "lat_min": lat_min,
+            "lat_max": lat_min + cell,
+            "lon_min": lon_min,
+            "lon_max": lon_min + cell,
+            "species_richness": int(len(counts)),
+            "record_count": int(len(group)),
+            "species_with_min_records": int(len(qualifying)),
+            "species_list": "; ".join(list(counts.index)),
+        })
+    return pd.DataFrame(rows).sort_values(["species_richness", "record_count"], ascending=[False, False]).reset_index(drop=True)
+
+
+def richness_hotspot_candidates(grid: pd.DataFrame, metric: str, max_candidates: int) -> pd.DataFrame:
+    if grid.empty:
+        return pd.DataFrame()
+    metric_col = {"Species richness": "species_richness", "Record count": "record_count", "Species with minimum records": "species_with_min_records"}.get(metric, "species_richness")
+    out = grid.sort_values([metric_col, "species_richness", "record_count"], ascending=False).head(int(max_candidates)).copy()
+    out.insert(0, "hotspot_rank", range(1, len(out) + 1))
+    out["candidate_type"] = "Occurrence richness hotspot"
+    out["google_maps_url"] = [make_google_maps_point_url(float(r["latitude"]), float(r["longitude"])) for _, r in out.iterrows()]
+    return out.reset_index(drop=True)
+
+
+def richness_color(value: float, max_value: float) -> str:
+    if max_value <= 0:
+        return "#ffffcc"
+    ratio = max(0.0, min(1.0, float(value) / float(max_value)))
+    colors = ["#ffffcc", "#c2e699", "#78c679", "#31a354", "#006837"]
+    return colors[min(len(colors) - 1, int(ratio * (len(colors) - 1)))]
+
+
+def make_richness_map(grid: pd.DataFrame, hotspots: pd.DataFrame, metric: str) -> folium.Map:
+    center = (float(grid["latitude"].mean()), float(grid["longitude"].mean())) if not grid.empty else (35.5, 135.5)
+    fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
+    metric_col = {"Species richness": "species_richness", "Record count": "record_count", "Species with minimum records": "species_with_min_records"}.get(metric, "species_richness")
+    max_value = float(grid[metric_col].max()) if not grid.empty else 0.0
+    fg_grid = FeatureGroup(name=f"occurrence richness grid: {metric}", show=True)
+    for _, row in grid.iterrows():
+        value = float(row[metric_col])
+        popup = folium.Popup(
+            f"<b>Richness grid cell</b><br>{metric}: {value:g}<br>Species richness: {int(row['species_richness'])}<br>Records: {int(row['record_count'])}<br>Species: {row.get('species_list', '')}",
+            max_width=520,
+        )
+        folium.Rectangle(
+            bounds=[[row["lat_min"], row["lon_min"]], [row["lat_max"], row["lon_max"]]],
+            color=richness_color(value, max_value),
+            weight=1,
+            fill=True,
+            fill_color=richness_color(value, max_value),
+            fill_opacity=0.48,
+            popup=popup,
+            tooltip=f"{metric}: {value:g}",
+        ).add_to(fg_grid)
+    fg_grid.add_to(fmap)
+    if hotspots is not None and not hotspots.empty:
+        fg_hot = FeatureGroup(name="richness hotspot candidates", show=True)
+        for _, row in hotspots.iterrows():
+            folium.CircleMarker(
+                (row["latitude"], row["longitude"]),
+                radius=7,
+                color="#d73027",
+                fill=True,
+                fill_color="#d73027",
+                fill_opacity=0.9,
+                popup=folium.Popup(f"Hotspot rank {int(row['hotspot_rank'])}<br>{metric}: {row.get(metric_col, '')}<br><a href='{row['google_maps_url']}' target='_blank'>Open in Google Maps</a>", max_width=360),
+                tooltip=f"hotspot {int(row['hotspot_rank'])}",
+            ).add_to(fg_hot)
+        fg_hot.add_to(fmap)
+    LayerControl(collapsed=True).add_to(fmap)
+    try:
+        fmap.fit_bounds([[grid["lat_min"].min(), grid["lon_min"].min()], [grid["lat_max"].max(), grid["lon_max"].max()]], padding=(30, 30))
+    except Exception:
+        pass
+    return fmap
 
 
 @st.cache_resource(show_spinner=False)
@@ -1182,6 +1420,92 @@ def load_input_controls() -> None:
         reset_model_outputs()
 
 
+def genus_diversity_panel() -> None:
+    st.sidebar.header("Genus data source")
+    genus_name = st.sidebar.text_input("Genus name", value="", placeholder="e.g. Cirsium", key="genus_name_input_no_autofill")
+    country_options = ["", "JP", "US", "GB", "CN", "KR", "TW", "DE", "FR", "IT", "ES", "AU", "NZ", "CA", "BR", "IN", "ID", "TH", "VN"]
+    selected_country = st.sidebar.selectbox("Country code filter optional", country_options, index=1, key="genus_country_code_filter")
+    custom_country = st.sidebar.text_input("Custom country code optional", value="", max_chars=2, key="genus_country_code_filter_custom", help="Two-letter ISO country code. Overrides the dropdown when set.")
+    country = custom_country.strip().upper() or selected_country
+    max_records = st.sidebar.number_input("Maximum GBIF records to fetch", 300, 50_000, 3_000, 300, key="genus_max_records", help="GBIF returns at most 300 records per request. Genus mode starts with a lighter cap so Streamlit Cloud stays responsive.")
+    use_year = st.sidebar.checkbox("Filter by year", value=False, key="genus_use_year_filter")
+    year_from = year_to = None
+    if use_year:
+        c1, c2 = st.sidebar.columns(2)
+        year_from = int(c1.number_input("From", 1600, 2100, 2000, key="genus_year_from"))
+        year_to = int(c2.number_input("To", 1600, 2100, 2026, key="genus_year_to"))
+    if st.sidebar.button("Clear genus data", key="clear_genus_data_button"):
+        clear_genus_data()
+    if st.sidebar.button("Fetch genus occurrences from GBIF", type="primary", key="fetch_genus_occurrences_button"):
+        if not genus_name.strip():
+            st.warning("Genus name is empty.")
+        else:
+            try:
+                with st.spinner("Fetching GBIF genus occurrences page by page, 300 records per request..."):
+                    msg, df = fetch_gbif_genus_occurrences_cached(genus_name.strip(), int(max_records), country.strip().upper(), year_from, year_to)
+                st.session_state.genus_raw_df = df
+                st.session_state.genus_source_key = f"genus::{genus_name}::{country}::{max_records}::{year_from}::{year_to}"
+                st.session_state.genus_source_message = msg
+            except Exception as exc:
+                st.error(f"GBIF genus download failed: {exc}")
+
+    st.subheader("Genus diversity / SSDM")
+    st.caption("This mode currently builds occurrence-based species richness outputs only. Full SSDM is intentionally left for the next step after this richness map is stable.")
+    if st.session_state.genus_raw_df is None:
+        st.info(st.session_state.genus_source_message)
+        return
+    st.success(st.session_state.genus_source_message)
+    try:
+        detected = detect_occurrence_columns(st.session_state.genus_raw_df)
+        occ = clean_occurrences(st.session_state.genus_raw_df, detected)
+    except Exception as exc:
+        st.error(str(exc))
+        return
+    if occ.empty:
+        st.error("No valid genus coordinate records found.")
+        return
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Richness grid")
+    grid_deg = st.sidebar.number_input("Grid cell size (degrees)", min_value=0.01, max_value=5.0, value=0.25, step=0.05, format="%.2f", key="genus_grid_deg")
+    min_records_cell = st.sidebar.number_input("Minimum records per species per cell", min_value=1, max_value=100, value=1, step=1, key="genus_min_records_cell")
+    min_records_for_sdm = st.sidebar.number_input("Minimum records flag for future SSDM", min_value=1, max_value=500, value=10, step=1, key="genus_min_records_for_sdm")
+    richness_metric = st.sidebar.selectbox("Hotspot ranking metric", ["Species richness", "Species with minimum records", "Record count"], index=0, key="genus_richness_metric")
+    max_hotspots = st.sidebar.number_input("Max hotspot candidates", min_value=1, max_value=200, value=20, step=1, key="genus_max_hotspots")
+
+    summary = genus_species_summary(occ, int(min_records_for_sdm), float(grid_deg))
+    grid = occurrence_richness_grid(occ, float(grid_deg), int(min_records_cell))
+    hotspots = richness_hotspot_candidates(grid, richness_metric, int(max_hotspots)) if not grid.empty else pd.DataFrame()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Valid records", f"{len(occ):,}")
+    c2.metric("Species", f"{summary['species'].nunique():,}" if not summary.empty else "0")
+    c3.metric("Grid cells", f"{len(grid):,}")
+    c4.metric("Hotspots", f"{len(hotspots):,}")
+
+    st.write("Species summary")
+    st.dataframe(summary, width="stretch", hide_index=True)
+
+    st.write("Occurrence-based species richness grid map")
+    if grid.empty:
+        st.warning("No richness grid could be built. Check whether GBIF records have species names.")
+    else:
+        fmap = make_richness_map(grid, hotspots, richness_metric)
+        st_folium(fmap, width=None, height=720, returned_objects=[], key="genus_richness_map")
+        html_bytes = fmap.get_root().render().encode("utf-8")
+
+        st.write("Richness hotspot candidates")
+        hotspot_cols = ["hotspot_rank", "candidate_type", "latitude", "longitude", "species_richness", "record_count", "species_with_min_records", "species_list", "google_maps_url"]
+        st.dataframe(hotspots[[c for c in hotspot_cols if c in hotspots.columns]], width="stretch", hide_index=True)
+
+        st.subheader("Downloads")
+        d1, d2, d3, d4 = st.columns(4)
+        d1.download_button("Species summary CSV", summary.to_csv(index=False).encode("utf-8"), "genus_species_summary.csv", "text/csv", width="stretch")
+        d2.download_button("Richness grid CSV", grid.to_csv(index=False).encode("utf-8"), "genus_richness_grid.csv", "text/csv", width="stretch")
+        d3.download_button("Hotspots CSV", hotspots.to_csv(index=False).encode("utf-8"), "genus_richness_hotspots.csv", "text/csv", width="stretch")
+        d4.download_button("Richness HTML map", html_bytes, "genus_richness_map.html", "text/html", width="stretch")
+
+
 def make_route_selection_map(sites: pd.DataFrame, selected_ids: list[int], add_draw: bool = False) -> folium.Map:
     selected = set(map(int, selected_ids))
     center = (float(sites["latitude"].mean()), float(sites["longitude"].mean())) if not sites.empty else (35.5, 135.5)
@@ -1544,6 +1868,11 @@ def main() -> None:
     st.caption("Occurrence-based survey ranges, map-click coordinate exclusion, raster-style SDM predict maps, VIF filtering, spatial partition diagnostics, and route planning.")
 
     st.sidebar.caption(f"Build: {APP_BUILD_ID}")
+    analysis_mode = st.sidebar.radio("Analysis mode", ["Single species survey planning", "Genus diversity / SSDM"], index=0, key="analysis_mode")
+    if analysis_mode == "Genus diversity / SSDM":
+        genus_diversity_panel()
+        return
+
     st.sidebar.header("Data source")
     load_input_controls()
     st.sidebar.divider()
