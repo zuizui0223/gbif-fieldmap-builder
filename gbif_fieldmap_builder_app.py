@@ -886,10 +886,10 @@ def target_occurrence_set_panel(
         "active_target_records": int(len(selected)),
     }
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Raw records", f"{counts['raw_records']:,}")
+    m1.metric("Active survey-area records", f"{counts['raw_records']:,}")
     m2.metric("Inside rectangle", f"{counts['records_inside_rectangle']:,}")
     m3.metric("Excluded by rectangle", f"{counts['records_excluded_by_rectangle']:,}")
-    m4.metric("Active target records", f"{counts['active_target_records']:,}")
+    m4.metric("Selected for candidates", f"{counts['active_target_records']:,}")
     return selected.reset_index(drop=True), counts
 
 
@@ -1249,6 +1249,72 @@ def make_sdm_extent_preview_map(occ: pd.DataFrame, extent_geom, area_mode: str) 
     except Exception:
         pass
     return fmap
+
+def make_sdm_setup_map(
+    occ_sdm_final: pd.DataFrame,
+    excluded_raw: pd.DataFrame,
+    extent_geom=None,
+    area_mode: str = "bounding box",
+) -> folium.Map:
+    """Consolidated SDM setup map: extent outline + all analysis points + excluded QC points + rectangle draw.
+
+    occ_sdm_final — final SDM presence points after QC + bias reduction; shown in blue, NOT capped.
+    excluded_raw  — raw records excluded by SDM QC rectangles; shown in red (capped at 500 for performance).
+    extent_geom   — SDM prediction extent polygon; shown as orange outline.
+    """
+    all_pts = pd.concat([occ_sdm_final, excluded_raw], ignore_index=True, sort=False) if not excluded_raw.empty else occ_sdm_final
+    center = (float(all_pts["_latitude"].mean()), float(all_pts["_longitude"].mean())) if not all_pts.empty else (35.5, 135.5)
+    fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
+
+    # Extent polygon
+    if extent_geom is not None and not extent_geom.is_empty:
+        folium.GeoJson(
+            extent_geom.__geo_interface__,
+            name=f"SDM prediction extent ({area_mode})",
+            style_function=lambda _: {"color": "#e66101", "weight": 2, "fillColor": "#fdb863", "fillOpacity": 0.12},
+            tooltip=f"SDM prediction extent: {area_mode}",
+        ).add_to(fmap)
+
+    # Included SDM analysis points (blue) — show all, no cap
+    fg_inc = FeatureGroup(name=f"SDM analysis points ({len(occ_sdm_final):,} included)", show=True)
+    for _, row in occ_sdm_final.iterrows():
+        folium.CircleMarker(
+            (row["_latitude"], row["_longitude"]),
+            radius=4, color="#1f77b4", fill=True, fill_color="#1f77b4", fill_opacity=0.85, weight=1,
+            tooltip=f"SDM analysis point | row {int(row['_row_id'])}",
+        ).add_to(fg_inc)
+    fg_inc.add_to(fmap)
+
+    # Excluded QC points (red) — capped at 500 for performance since they are not analysis points
+    if not excluded_raw.empty:
+        show_excl = excluded_raw if len(excluded_raw) <= 500 else excluded_raw.sample(500, random_state=42)
+        fg_exc = FeatureGroup(name=f"SDM QC excluded ({len(excluded_raw):,} excluded)", show=True)
+        for _, row in show_excl.iterrows():
+            folium.CircleMarker(
+                (row["_latitude"], row["_longitude"]),
+                radius=5, color="#d62728", fill=True, fill_color="#d62728", fill_opacity=0.85, weight=1,
+                tooltip=f"Excluded by SDM QC | row {int(row['_row_id'])}",
+            ).add_to(fg_exc)
+        fg_exc.add_to(fmap)
+
+    # Rectangle draw for SDM QC exclusion
+    Draw(
+        export=False,
+        draw_options={"rectangle": True, "polyline": False, "circle": False, "marker": False, "circlemarker": False, "polygon": False},
+        edit_options={"edit": False, "remove": True},
+    ).add_to(fmap)
+
+    LayerControl(collapsed=True).add_to(fmap)
+    try:
+        if extent_geom is not None and not extent_geom.is_empty:
+            minx, miny, maxx, maxy = extent_geom.bounds
+            fmap.fit_bounds([[miny, minx], [maxy, maxx]], padding=(20, 20))
+        elif not all_pts.empty:
+            fmap.fit_bounds([[all_pts["_latitude"].min(), all_pts["_longitude"].min()], [all_pts["_latitude"].max(), all_pts["_longitude"].max()]], padding=(30, 30))
+    except Exception:
+        pass
+    return fmap
+
 
 def representative_medoid(group: pd.DataFrame) -> pd.Series:
     if len(group) == 1:
@@ -2409,16 +2475,8 @@ def load_input_controls(default_fetch_cap: int = FAST_SPECIES_GBIF_FETCH_CAP) ->
         return
     name = st.sidebar.text_input("Taxon scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_taxon_scientific_name_input")
     country_options = ["", "JP", "US", "GB", "CN", "KR", "TW", "DE", "FR", "IT", "ES", "AU", "NZ", "CA", "BR", "IN", "ID", "TH", "VN"]
-    selected_country = st.sidebar.selectbox("Country code filter optional", country_options, index=1, key="gbif_country_code_filter_select")
-    with st.sidebar.expander("Advanced country filter", expanded=False):
-        custom_country = st.text_input(
-            "Custom country code optional",
-            value="",
-            max_chars=2,
-            key="gbif_country_code_filter_custom",
-            help="Two-letter ISO country code. Overrides the dropdown when set.",
-        )
-    country = custom_country.strip().upper() or selected_country
+    selected_country = st.sidebar.selectbox("Country code filter (optional)", country_options, index=1, key="gbif_country_code_filter_select", help="Leave blank for worldwide. Two-letter ISO country code.")
+    country = selected_country
     use_year = st.sidebar.checkbox("Filter by year", value=False)
     year_from = year_to = None
     if use_year:
@@ -2480,16 +2538,8 @@ def genus_diversity_panel() -> None:
     )
     genus_name = st.sidebar.text_input("Genus name", value="", placeholder="e.g. Cirsium", key="genus_name_input_no_autofill")
     country_options = ["", "JP", "US", "GB", "CN", "KR", "TW", "DE", "FR", "IT", "ES", "AU", "NZ", "CA", "BR", "IN", "ID", "TH", "VN"]
-    selected_country = st.sidebar.selectbox("Country code filter optional", country_options, index=1, key="genus_country_code_filter")
-    with st.sidebar.expander("Advanced country filter", expanded=False):
-        custom_country = st.text_input(
-            "Custom country code optional",
-            value="",
-            max_chars=2,
-            key="genus_country_code_filter_custom",
-            help="Two-letter ISO country code. Overrides the dropdown when set.",
-        )
-    country = custom_country.strip().upper() or selected_country
+    selected_country = st.sidebar.selectbox("Country code filter (optional)", country_options, index=1, key="genus_country_code_filter", help="Leave blank for worldwide. Two-letter ISO country code.")
+    country = selected_country
     use_year = st.sidebar.checkbox("Filter by year", value=False, key="genus_use_year_filter")
     year_from = year_to = None
     if use_year:
@@ -2596,7 +2646,7 @@ def genus_diversity_panel() -> None:
     # ── Step 2: Prepare records and species summary ───────────────────────────
     st.caption("Counts below show the active target set used for observed richness hotspots. Optional SSDM starts independently from fetched genus records.")
     g1, g2, g3, g4, g5, g6 = st.columns(6)
-    g1.metric("Raw records", f"{genus_target_counts['raw_records']:,}")
+    g1.metric("Active survey-area records", f"{genus_target_counts['raw_records']:,}")
     g2.metric("Inside rectangle", f"{genus_target_counts['records_inside_rectangle']:,}")
     g3.metric("Excluded by rectangle", f"{genus_target_counts['records_excluded_by_rectangle']:,}")
     g4.metric("Active target records", f"{genus_target_counts['active_target_records']:,}")
@@ -3367,21 +3417,21 @@ def main() -> None:
 
     st.subheader("Optional: Build SDM")
     with st.expander("Build SDM and predict map", expanded=False):
-        sdm_qc_display = limit_occurrence_display(occ_raw, set(map(int, st.session_state.sdm_excluded_row_ids)), min(int(effective_max_map_points), 1000))
-        occ_sdm_qc_included = sdm_rectangle_qc_panel(occ_raw, sdm_qc_display)
-        if occ_sdm_qc_included.empty:
-            st.warning("SDM QC removed all fetched occurrence records. Clear SDM QC rectangles to build SDM.")
-        st.divider()
+        # ── SDM bias-reduction preprocessing controls ─────────────────────────
         st.markdown("**SDM bias-reduction preprocessing**")
         st.caption(
-            "These settings apply only to SDM. Step 2 survey-area selection is used only for observed-data candidate generation."
+            "Applied to SDM training only — Step 2 observed-data candidates are not affected."
         )
         sp1, sp2 = st.columns(2)
         sdm_ind_exact_dedup = sp1.checkbox("Exact coordinate deduplication", value=True, key="sdm_ind_prep_exact_dedup", help="Keep one representative record per unique lat/lon coordinate.")
-        sdm_ind_grid_deg = sp1.number_input("Grid thinning (degrees, 0 = off)", min_value=0.0, max_value=5.0, value=0.05, step=0.01, format="%.2f", key="sdm_ind_prep_grid_deg", help="Keep one record per grid cell of this size. Reduces spatial autocorrelation.")
-        sdm_ind_distance_m = sp2.number_input("Distance thinning - spThin-like (m, 0 = off)", min_value=0, max_value=100_000, value=1000, step=500, key="sdm_ind_prep_distance_m", help="Minimum nearest-neighbour distance between retained presence points.")
-        sdm_ind_max_presence = sp2.number_input("Maximum SDM presence points", min_value=1, max_value=50_000, value=int(sdm_working_records), step=25, key="sdm_ind_prep_max_presence", help="Hard cap on presence points passed to optional SDM.")
-        occ_sdm_train = occ_sdm_qc_included.copy().reset_index(drop=True)
+        sdm_ind_grid_deg = sp1.number_input("Grid thinning (degrees, 0 = off)", min_value=0.0, max_value=5.0, value=0.05, step=0.01, format="%.2f", key="sdm_ind_prep_grid_deg", help="Keep one record per grid cell. Reduces spatial autocorrelation.")
+        sdm_ind_distance_m = sp2.number_input("Distance thinning — spThin-like (m, 0 = off)", min_value=0, max_value=100_000, value=1000, step=500, key="sdm_ind_prep_distance_m", help="Minimum nearest-neighbour distance between retained presence points.")
+        sdm_ind_max_presence = sp2.number_input("Maximum SDM presence points", min_value=1, max_value=50_000, value=int(sdm_working_records), step=25, key="sdm_ind_prep_max_presence", help="Hard cap on SDM presence points. Raw GBIF records are preserved.")
+
+        # Apply QC exclusions then preprocessing to get final SDM presence points
+        _sdm_excl_ids = set(map(int, st.session_state.sdm_excluded_row_ids))
+        occ_sdm_qc_included = occ_raw[~occ_raw["_row_id"].astype(int).isin(_sdm_excl_ids)].copy().reset_index(drop=True)
+        occ_sdm_train = occ_sdm_qc_included.copy()
         if sdm_ind_exact_dedup:
             occ_sdm_train = exact_coordinate_deduplicate(occ_sdm_train)
         occ_sdm_train = grid_thin(occ_sdm_train, float(sdm_ind_grid_deg))
@@ -3389,87 +3439,61 @@ def main() -> None:
             occ_sdm_train = spatial_thin(occ_sdm_train, float(sdm_ind_distance_m))
         if len(occ_sdm_train) > int(sdm_ind_max_presence):
             occ_sdm_train = spatially_balanced_cap(occ_sdm_train, int(sdm_ind_max_presence))
-        st.caption(f"SDM training input after SDM QC/thinning: {len(occ_sdm_train):,} records.")
+
         st.divider()
-        # ── SDM prediction extent ─────────────────────────────────────────────
+        # ── SDM prediction extent controls ────────────────────────────────────
         st.markdown("**SDM prediction extent — macro scale**")
         st.caption(
-            "This is the area where SDM suitability is predicted. "
-            "It is built from SDM QC-cleaned records and is independent from your Step 2 survey area. "
-            "A broader extent captures more environmental variation and generally improves SDM accuracy. "
-            "Increase the buffer radius or use 'bounding box' to predict at macro scale."
+            "The extent defines where SDM suitability is predicted. "
+            "It is independent from your Step 2 survey area and can be set wider to capture more environmental variation. "
+            "A broader extent generally improves SDM accuracy — increase the buffer radius or use 'bounding box'."
         )
         area_mode = st.selectbox("Area to predict", AREA_MODES, index=2, help="buffer = expand around each point; convex hull = polygon around all records; bounding box = rectangular area. All land-only.", key="sdm_area_mode")
-        _ec1, _ec2, _ec3 = st.columns(3)
-        buffer_km = _ec1.number_input("Buffer radius for buffer / convex hull (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
-        rectangle_margin_km = _ec2.number_input("Margin around bounding box (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
-        exclusion_buffer_km = _ec3.number_input("Hard exclusion radius (km)", min_value=0.1, max_value=100.0, value=10.0, step=1.0, key="sdm_exclusion_cutout_km", help="Excluded records are removed from training and their surrounding area is physically cut out of the prediction extent.")
-        # Extent preview (no hard-exclusion cutouts since QC is handled below)
+        _ec1, _ec2 = st.columns(2)
+        buffer_km = _ec1.number_input("Buffer radius / hull buffer (km)", min_value=0.1, max_value=500.0, value=10.0, step=1.0, key="sdm_buffer_km")
+        rectangle_margin_km = _ec2.number_input("Bounding-box margin (km)", min_value=0.0, max_value=500.0, value=20.0, step=5.0, key="sdm_rectangle_margin_km")
+        exclusion_buffer_km = 0.0  # no hard-exclusion cutouts; QC handled in setup map below
+
         extent_geom = prediction_area_geometry(occ_sdm_train, area_mode, float(buffer_km), float(rectangle_margin_km), None, 0.0)
-        if extent_geom is not None and not extent_geom.is_empty:
-            minx, miny, maxx, maxy = extent_geom.bounds
-            st.caption(
-                f"SDM prediction extent: lon {minx:.4f}–{maxx:.4f}, lat {miny:.4f}–{maxy:.4f}. "
-                "This macro-scale extent is used for SDM training and prediction — it can be much wider than your Step 2 fieldwork survey area."
-            )
-            st_folium(
-                make_sdm_extent_preview_map(occ_sdm_train, extent_geom, area_mode),
-                width=None,
-                height=420,
-                returned_objects=[],
-                key=f"sdm_extent_preview_map_{area_mode}",
-            )
+
         st.divider()
-        # ── Optional: exclude suspicious records from SDM training ────────────
-        st.markdown("**SDM occurrence input**")
+        # ── Consolidated SDM setup map ────────────────────────────────────────
+        st.markdown("**SDM setup map**")
         st.caption(
-            "SDM QC is independent from Step 2. The Step 2 survey-area rectangle is used only for observed-data candidate generation."
+            "Blue points = final SDM analysis points actually used for model fitting (all shown, not capped). "
+            "Red points = records excluded by SDM QC rectangles. "
+            "Orange outline = SDM prediction extent. "
+            "Draw a rectangle to bulk-exclude suspicious records from SDM training."
         )
-        _sdm_qc_excl = set(map(int, st.session_state.sdm_excluded_row_ids))
-        _sdm_qc_n = len(_sdm_qc_excl)
-        if _sdm_qc_n > 0:
-            st.caption(f"Currently excluded from SDM: {_sdm_qc_n} record(s) — shown as red points.")
-        _sdm_qc_display = limit_occurrence_display(occ_sdm_train, _sdm_qc_excl, min(len(occ_sdm_train), 500))
-        _sdm_qc_data = st_folium(
-            make_exclusion_review_map(_sdm_qc_display, _sdm_qc_excl, add_draw=False, show_images=False),
-            width=None, height=380,
-            returned_objects=[],
-            key="sdm_qc_map",
-        )
-        _sdm_clicked = (_sdm_qc_data or {}).get("last_object_clicked")
-        _sdm_clicked_tooltip = (_sdm_qc_data or {}).get("last_object_clicked_tooltip")
-        if False and _sdm_clicked:
-            _sdm_sig = f"{_sdm_clicked.get('lat'):.6f},{_sdm_clicked.get('lng'):.6f},{_sdm_clicked_tooltip}"
-            if _sdm_sig != st.session_state.sdm_qc_click_sig:
-                st.session_state.sdm_qc_click_sig = _sdm_sig
-                _sdm_rid = nearest_row_id_from_click(_sdm_qc_display, _sdm_clicked, _sdm_clicked_tooltip)
-                if _sdm_rid is not None:
-                    if _sdm_rid in _sdm_qc_excl:
-                        st.session_state.sdm_excluded_row_ids = _sdm_qc_excl - {_sdm_rid}
-                        st.success(f"Restored SDM record {_sdm_rid}.")
-                    else:
-                        st.session_state.sdm_excluded_row_ids = _sdm_qc_excl | {_sdm_rid}
-                        st.success(f"Excluded SDM record {_sdm_rid}.")
+        _sdm_excl_raw = occ_raw[occ_raw["_row_id"].astype(int).isin(_sdm_excl_ids)].copy() if _sdm_excl_ids else pd.DataFrame()
+        if occ_sdm_train.empty:
+            st.warning("SDM QC / preprocessing removed all fetched records. Clear SDM QC rectangles or adjust bias-reduction settings.")
+        else:
+            if extent_geom is not None and not extent_geom.is_empty:
+                minx, miny, maxx, maxy = extent_geom.bounds
+                st.caption(f"Final SDM presence points: {len(occ_sdm_train):,}. Prediction extent: lon {minx:.4f}–{maxx:.4f}, lat {miny:.4f}–{maxy:.4f}.")
+            _sdm_map_data = st_folium(
+                make_sdm_setup_map(occ_sdm_train, _sdm_excl_raw, extent_geom, area_mode),
+                width=None, height=500,
+                returned_objects=["all_drawings", "last_active_drawing"],
+                key="sdm_setup_map",
+            )
+            # Handle rectangle draw → SDM QC exclusion
+            _raw_drawings = (_sdm_map_data or {}).get("all_drawings") or (_sdm_map_data or {}).get("last_active_drawing")
+            _qc_features = extract_drawn_features(_raw_drawings)
+            if _qc_features:
+                _draw_sig = str(_qc_features)[:800]
+                if _draw_sig != st.session_state.get("sdm_qc_click_sig", ""):
+                    _new_excl = set(ids_inside_drawn_rectangles(occ_raw, "_row_id", "_latitude", "_longitude", _qc_features))
+                    st.session_state.sdm_qc_click_sig = _draw_sig
+                    st.session_state.sdm_excluded_row_ids = _new_excl
                     reset_model_outputs()
                     st.rerun()
-        if _sdm_qc_n > 0 and st.button("Clear all SDM exclusions", key="sdm_qc_clear"):
-            st.session_state.sdm_excluded_row_ids = set()
-            st.session_state.sdm_qc_click_sig = ""
-            reset_model_outputs()
-            st.rerun()
-        st.divider()
-        # ── SDM bias-reduction preprocessing ─────────────────────────────────
-        st.markdown("**SDM bias-reduction preprocessing**")
-        st.caption(
-            "GBIF records are often clustered near roads, cities, trails, and popular observation sites. "
-            "Spatial thinning reduces sampling bias before SDM fitting. "
-            "These settings apply only to SDM training — occurrence-based survey candidates above are unaffected."
-        )
-        sp1, sp2 = st.columns(2)
-        sdm_exact_dedup = sp1.checkbox("Exact coordinate deduplication", value=True, key="sdm_prep_exact_dedup", help="Keep one representative record per unique lat/lon coordinate.")
-        sdm_grid_deg = sp1.number_input("Grid thinning (degrees, 0 = off)", min_value=0.0, max_value=5.0, value=0.05, step=0.01, format="%.2f", key="sdm_prep_grid_deg", help="Keep one record per grid cell of this size. Reduces spatial autocorrelation.")
-        sdm_distance_m = sp2.number_input("Distance thinning — spThin-like (m, 0 = off)", min_value=0, max_value=100_000, value=1000, step=500, key="sdm_prep_distance_m", help="Minimum nearest-neighbour distance between retained presence points. Equivalent to spThin minimum distance.")
-        sdm_max_presence = sp2.number_input("Maximum SDM presence points", min_value=1, max_value=50_000, value=int(sdm_working_records), step=25, key="sdm_prep_max_presence", help="Hard cap on presence points passed to optional SDM. Raw records are preserved, but SDM uses a spatially representative subset by default.")
+            if _sdm_excl_ids and st.button("Clear SDM QC exclusions", key="sdm_qc_clear"):
+                st.session_state.sdm_excluded_row_ids = set()
+                st.session_state.sdm_qc_click_sig = ""
+                reset_model_outputs()
+                st.rerun()
         st.divider()
         # ── Environmental variables ───────────────────────────────────────────
         resolution = st.selectbox("WorldClim raster resolution", RESOLUTIONS, index=2)
@@ -3542,11 +3566,11 @@ def main() -> None:
     # Preprocessing metrics display
     st.caption("**SDM preprocessing summary** — bias-reduced presence points for SDM training:")
     pm1, pm2, pm3, pm4, pm5 = st.columns(5)
-    pm1.metric("Raw records", f"{len(occ_raw):,}")
-    pm2.metric("After QC exclusion", f"{sdm_n_after_qc:,}")
-    pm3.metric("After exact dedup", f"{sdm_n_after_dedup:,}")
-    pm4.metric("After thinning", f"{sdm_n_after_thinning:,}")
-    pm5.metric("Final SDM presence pts", f"{sdm_n_final:,}")
+    pm1.metric("Fetched records (SDM source)", f"{len(occ_raw):,}", help="All GBIF records fetched — independent from Step 2 survey area.")
+    pm2.metric("After SDM QC exclusion", f"{sdm_n_after_qc:,}", delta=f"{sdm_n_after_qc - len(occ_raw):,}" if sdm_n_after_qc < len(occ_raw) else None)
+    pm3.metric("After deduplication", f"{sdm_n_after_dedup:,}", delta=f"{sdm_n_after_dedup - sdm_n_after_qc:,}" if sdm_n_after_dedup < sdm_n_after_qc else None)
+    pm4.metric("After spatial thinning", f"{sdm_n_after_thinning:,}", delta=f"{sdm_n_after_thinning - sdm_n_after_dedup:,}" if sdm_n_after_thinning < sdm_n_after_dedup else None)
+    pm5.metric("Final SDM presence points", f"{sdm_n_final:,}", delta=f"{sdm_n_final - sdm_n_after_thinning:,}" if sdm_n_final < sdm_n_after_thinning else None)
     if sdm_n_final == 0 and not occ_raw.empty:
         st.warning("SDM preprocessing removed all records. Reduce grid/distance thinning or increase the max presence cap.")
 
@@ -3670,7 +3694,7 @@ def main() -> None:
 
     st.subheader("Performance summary")
     c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("Raw valid records", f"{len(occ_raw):,}")
+    c1.metric("GBIF fetched records", f"{len(occ_raw):,}")
     c2.metric("After exclusion", f"{len(occ_after_exclusion):,}")
     c3.metric("Inside rectangle", f"{target_counts['records_inside_rectangle']:,}")
     c4.metric("Active target set", f"{target_counts['active_target_records']:,}")
@@ -3684,7 +3708,9 @@ def main() -> None:
     p5.metric("Exact dedupe removed", f"{exact_dedup_removed:,}")
     p6.metric("Grid thinning removed", f"{grid_thinning_removed:,}")
 
-    fmap = build_map(occ_map_display, all_candidates, overlay, route_plan, 0.0, float(survey_range_m), layers, bool(show_occurrence_images))
+    # Show all occ_candidate_input points (actual analysis points, uncapped) on the main map.
+    # It is acceptable not to show every unused GBIF record.
+    fmap = build_map(occ_candidate_input, all_candidates, overlay, route_plan, 0.0, float(survey_range_m), layers, bool(show_occurrence_images))
     st_folium(fmap, width=None, height=720, returned_objects=[], key="main_map")
 
     html_bytes = fmap.get_root().render().encode("utf-8")

@@ -4,6 +4,37 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-04 - Claude (claude-sonnet-4-6) — SURVEY_PLANNING_POLICY: transparency, consolidated SDM map, label clarity, country filter
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+
+**1. Show all analysis points (no cap)**
+- Main candidate map now uses `occ_candidate_input` (all analysis points, uncapped) instead of `occ_map_display` (capped display subset).
+- SDM setup map shows all `occ_sdm_train` final presence points (blue) without cap. Only unused excluded QC records are capped at 500.
+
+**2. Clarify record-count labels**
+- SDM preprocessing metrics: "Raw records" → "Fetched records (SDM source)"; "After QC exclusion" → "After SDM QC exclusion"; "After exact dedup" → "After deduplication"; "After thinning" → "After spatial thinning"; "Final SDM presence pts" → "Final SDM presence points". Delta values added showing reduction at each stage.
+- Target-occurrence panel metric: "Raw records" → "Active survey-area records"; "Active target records" → "Selected for candidates".
+- Performance summary: "Raw valid records" → "GBIF fetched records". Genus: "Raw records" → "Active survey-area records".
+
+**3. Consolidated SDM setup map**
+- Added `make_sdm_setup_map(occ_sdm_final, excluded_raw, extent_geom, area_mode)` function that combines: SDM prediction extent outline (orange), included analysis points (blue, all shown), excluded QC points (red), and rectangle draw tool for bulk SDM QC exclusion.
+- Replaced three separate SDM maps (`sdm_rectangle_qc_panel`, `make_sdm_extent_preview_map`, `make_exclusion_review_map` inside SDM expander) with this single map.
+- Reorganized SDM expander: preprocessing controls → extent controls → consolidated setup map → environmental variables → run.
+- Removed duplicate "SDM bias-reduction preprocessing" section left over from previous edits.
+
+**4. Remove "Advanced country filter" expander**
+- Species and genus GBIF fetch: removed `with st.sidebar.expander("Advanced country filter")` and custom_country text_input.
+- Kept only the compact country-code dropdown selectbox.
+
+Features preserved:
+- Step 2 survey area for observed candidates only; independent SDM QC and extent; representative GBIF fetch; SDM bias reduction; VIF stepwise threshold 10; block/checkerboard/random/jackknife validation; weighted observed + model scoring; downloads and selected survey site lists.
+
+
 ## 2026-06-04 - Codex (OpenAI) - Apply lightweight survey-planning policy UI
 
 Changed files:
