@@ -394,16 +394,22 @@ def fetch_gbif_occurrences_cached(scientific_name: str, max_records: int, countr
     usage_key = payload.get("usageKey")
     records, retrieval = fetch_gbif_records_representative(params_base, int(max_records), int(total_count), timeout=60)
 
-    df = pd.DataFrame([gbif_record_to_species_row(rec) for rec in records])
-    if not df.empty:
-        with_id = df[df["gbifID"].notna() & df["gbifID"].astype(str).ne("")]
-        without_id = df[~(df["gbifID"].notna() & df["gbifID"].astype(str).ne(""))]
-        df = pd.concat([with_id.drop_duplicates(subset=["gbifID"], keep="first"), without_id], ignore_index=True, sort=False)
-        df = df.drop_duplicates(subset=["decimalLatitude", "decimalLongitude", "year"], keep="first")
-        df = representative_row_cap(df, int(max_records))
+    df = _dedup_and_cap(pd.DataFrame([gbif_record_to_species_row(rec) for rec in records]), int(max_records))
     msg = f"GBIF match: {payload.get('scientificName', scientific_name)} / usageKey={usage_key} / confidence={payload.get('confidence')}. GBIF total coordinate records={total_count:,}; requested fetch cap={int(max_records):,}; actual fetched records={len(df):,}; retrieval={retrieval}."
     rows = df.to_dict("records") if not df.empty else []
     return msg, pd.DataFrame(rows)
+
+
+def _dedup_and_cap(df: pd.DataFrame, max_records: int, extra_dedup_keys: Optional[list[str]] = None) -> pd.DataFrame:
+    """Shared post-fetch deduplication and representative cap for GBIF DataFrames."""
+    if df.empty:
+        return df
+    with_id = df[df["gbifID"].notna() & df["gbifID"].astype(str).ne("")]
+    without_id = df[~(df["gbifID"].notna() & df["gbifID"].astype(str).ne(""))]
+    df = pd.concat([with_id.drop_duplicates(subset=["gbifID"], keep="first"), without_id], ignore_index=True, sort=False)
+    coord_keys = ["decimalLatitude", "decimalLongitude", "year"] + (extra_dedup_keys or [])
+    df = df.drop_duplicates(subset=coord_keys, keep="first")
+    return representative_row_cap(df, int(max_records))
 
 
 def _species_name_from_genus_record(rec: dict[str, Any]) -> str:
@@ -474,13 +480,7 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
         "gbifID",
         "media_url",
     ]
-    df = pd.DataFrame([gbif_record_to_genus_row(rec) for rec in records], columns=genus_columns)
-    if not df.empty:
-        with_id = df[df["gbifID"].notna() & df["gbifID"].astype(str).ne("")]
-        without_id = df[~(df["gbifID"].notna() & df["gbifID"].astype(str).ne(""))]
-        df = pd.concat([with_id.drop_duplicates(subset=["gbifID"], keep="first"), without_id], ignore_index=True, sort=False)
-        df = df.drop_duplicates(subset=["decimalLatitude", "decimalLongitude", "year", "species"], keep="first")
-        df = representative_row_cap(df, int(max_records))
+    df = _dedup_and_cap(pd.DataFrame([gbif_record_to_genus_row(rec) for rec in records], columns=genus_columns), int(max_records), extra_dedup_keys=["species"])
     matched_name = payload.get("scientificName") or payload.get("canonicalName") or genus_name
     msg = f"GBIF genus match: {matched_name} / GBIF backbone taxonKey={usage_key} / rank={payload.get('rank', 'GENUS')}. GBIF total coordinate records={total_count:,}; requested fetch cap={int(max_records):,}; actual fetched records={len(df):,}; retrieval={retrieval}."
     return msg, pd.DataFrame(df.to_dict("records") if not df.empty else [], columns=genus_columns)
@@ -696,6 +696,7 @@ def range_fits_land(lat: float, lon: float, radius_m: float, land_geom=None) -> 
     return True
 
 
+@st.cache_data(show_spinner=False)
 def filter_to_land(df: pd.DataFrame, lat_col: str = "latitude", lon_col: str = "longitude", range_radius_m: float = 0) -> pd.DataFrame:
     if df.empty:
         return df.copy()
@@ -1322,6 +1323,7 @@ def make_sdm_setup_map(
     return fmap
 
 
+@st.cache_data(show_spinner=False)
 def make_macro_cluster_map(occ: pd.DataFrame) -> folium.Map:
     """National-scale MarkerCluster map for macro distribution overview.
 
@@ -2263,6 +2265,7 @@ def make_ssdm_overlay(grid: pd.DataFrame, value_col: str, shape: tuple[int, int]
     }
 
 
+@st.cache_data(show_spinner=False)
 def make_ssdm_map(grid: pd.DataFrame, hotspots: pd.DataFrame, value_col: str, title: str, shape: tuple[int, int], bounds: list[list[float]]) -> folium.Map:
     center = (float(grid["latitude"].mean()), float(grid["longitude"].mean())) if not grid.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
