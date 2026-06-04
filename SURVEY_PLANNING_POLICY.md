@@ -41,7 +41,6 @@ Recommended fixed defaults:
 
 - Species fetch cap: about 1,000 records.
 - Genus fetch cap: about 3,000 records.
-- Map display cap: about 500 records.
 - Candidate input cap: about 800 records.
 - SDM presence cap: about 300 records.
 - SSDM presence cap: about 150 records per species.
@@ -62,14 +61,15 @@ Preferred UI:
 
 Do not replace this with a full English country-name selector.
 
-A separate custom country-code field may remain optional, but it should not dominate the UI.
+Remove any separate `Advanced country filter` section from the UI.
 
 ## Required data separation
 
 Keep these concepts separate in code and UI:
 
 - GBIF total count: number reported by GBIF before download.
-- Fetched records: the representative subset actually downloaded.
+- Requested fetch cap: maximum number requested from GBIF.
+- Actual fetched records: records remaining after representative retrieval and fetch-stage deduplication.
 - `occ_fetched`: cleaned fetched occurrence records.
 - `occ_survey_selected`: records selected in Step 2 for observed-data candidate generation only.
 - `occ_candidate_input`: spatially representative records used for observed-data candidates.
@@ -79,6 +79,35 @@ Keep these concepts separate in code and UI:
 Do not use `occ_survey_selected` as the default SDM input.
 
 For genus mode, use analogous working sets for observed richness hotspots and optional SSDM.
+
+## Count transparency
+
+The app must explain why counts decrease between stages.
+
+For example:
+
+- GBIF total coordinate records: 2,772
+- Requested fetch cap: 1,000
+- Actual fetched records after representative retrieval and fetch-stage deduplication: 883
+- Active survey-area records: 883
+- Records used for observed candidates after exact-coordinate deduplication and grid thinning: 515
+- Records available as the SDM source before SDM QC/thinning: 883
+- Final SDM presence points after SDM QC and bias reduction: 300
+
+Do not label 883 as `Raw records` if it is already a deduplicated fetched subset. Use precise labels such as `Actual fetched records` or `Fetched records after deduplication`.
+
+## Maps must show all analysis points
+
+The app does not need to show every GBIF record that was not used, but every point actually used in an analysis must be visible on a corresponding map.
+
+Required behavior:
+
+- The observed-candidate map must show all `occ_candidate_input` points used to generate observed-data candidates.
+- The SDM input / QC map must show all records that will actually be passed into SDM after SDM-specific QC and bias-reduction preprocessing.
+- If points are excluded from analysis, they may be hidden or shown separately, but the user must be able to verify the full set of included analysis points.
+- Do not cap the displayed analysis-point layer below the number of points actually used in that analysis.
+
+This rule applies even when the app fetches more records than it ultimately analyzes.
 
 ## Step 2 survey-area selection
 
@@ -100,6 +129,8 @@ Observed occurrence data must generate base survey candidates before any model i
 
 The Step 2 selected survey-area records should be converted into a spatially representative candidate-input subset and used to generate observed-data survey candidates.
 
+The map for this step should display all candidate-input points used in the clustering / candidate-generation analysis.
+
 These candidates are the core output of the app.
 
 ## Optional SDM workflow
@@ -115,6 +146,24 @@ The SDM workflow should be independent from Step 2 and should contain, in this o
 5. Spatial validation / partitioning.
 6. SDM fitting and prediction.
 7. Add SDM predicted probability to observed-data candidates as model support.
+
+### Simplify SDM maps
+
+Do not show separate maps for `SDM coordinate QC`, `SDM prediction extent — macro scale`, and `SDM occurrence input` when they serve overlapping purposes.
+
+Use one consolidated SDM setup map whose purpose is only:
+
+- remove suspicious SDM source records by rectangle
+- confirm the final SDM occurrence input
+- confirm the chosen SDM prediction extent
+
+The consolidated map should support layers or visual distinctions for:
+
+- included SDM analysis points
+- excluded QC records, if shown
+- SDM prediction extent outline
+
+The user should not have to scroll through multiple nearly identical SDM maps.
 
 ### SDM coordinate QC
 
@@ -133,6 +182,8 @@ Account for GBIF observer/access bias using sensible defaults such as:
 - distance thinning
 - presence-point caps
 
+The consolidated SDM setup map should show all final included SDM presence points after bias reduction.
+
 ### SDM prediction extent
 
 The SDM prediction extent is independent from the Step 2 survey-area rectangle.
@@ -142,6 +193,8 @@ Inside `Optional: Build SDM`, allow the user to define the SDM extent from the S
 - buffer
 - convex hull
 - bounding box
+
+Show the extent outline on the same consolidated SDM setup map.
 
 ### Environmental variables and collinearity
 
@@ -217,8 +270,12 @@ Do not reintroduce an all-record-first workflow as the default.
 
 Do not add a main `Survey planning mode` selector.
 
+Do not add an `Advanced country filter` section.
+
 Do not place coordinate QC in Step 2.
 
 Do not automatically send the Step 2 survey-area selection into SDM.
+
+Do not show multiple redundant SDM setup maps.
 
 Do not make the app depend on downloading, rendering, or modeling all available GBIF records before the user can access occurrence-based survey candidates.
