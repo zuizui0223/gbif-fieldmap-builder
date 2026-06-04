@@ -115,7 +115,7 @@ FAST_CANDIDATE_RECORDS = 800
 FAST_SDM_RECORDS = 300
 FAST_SSDM_RECORDS_PER_SPECIES = 150
 FAST_SPECIES_GBIF_FETCH_CAP = 10_000   # fetch all records for most species (GBIF paginates 300/request)
-FAST_GENUS_GBIF_FETCH_CAP = 10_000
+FAST_GENUS_GBIF_FETCH_CAP = 3_000
 
 
 @dataclass(frozen=True)
@@ -484,6 +484,95 @@ def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, count
     matched_name = payload.get("scientificName") or payload.get("canonicalName") or genus_name
     msg = f"GBIF genus match: {matched_name} / GBIF backbone taxonKey={usage_key} / rank={payload.get('rank', 'GENUS')}. GBIF total coordinate records={total_count:,}; requested fetch cap={int(max_records):,}; actual fetched records={len(df):,}; retrieval={retrieval}."
     return msg, pd.DataFrame(df.to_dict("records") if not df.empty else [], columns=genus_columns)
+
+
+def fetch_gbif_genus_occurrences_with_progress(genus_name: str, max_records: int, country_code: str, year_from: Optional[int], year_to: Optional[int]) -> tuple[str, pd.DataFrame, Optional[str]]:
+    payload, total_count, params_base, usage_key = gbif_genus_count_cached(genus_name, country_code, year_from, year_to)
+    target = min(int(max_records), int(total_count) if total_count > 0 else int(max_records))
+    offsets = gbif_representative_offsets(int(total_count), target, 300)
+    planned_pages = len(offsets)
+    retrieval = "sequential pages" if total_count <= target else "representative evenly spaced GBIF offsets"
+    records: list[dict[str, Any]] = []
+    warning: Optional[str] = None
+
+    progress_bar = st.progress(0.0)
+    status = st.empty()
+    status.write(
+        f"Fetching genus records: planned pages {planned_pages:,}; requested fetch cap {int(max_records):,}; received 0 records"
+    )
+    completed_pages = 0
+    failed_offset: Optional[int] = None
+    failed_stage = "initializing"
+    for page_num, offset in enumerate(offsets, start=1):
+        if len(records) >= target:
+            break
+        limit = min(300, target - len(records))
+        failed_stage = f"page {page_num} / {planned_pages}"
+        status.write(
+            f"Fetching genus records: page {page_num:,} / {planned_pages:,}, "
+            f"offset {offset:,}, received {len(records):,} records, requested fetch cap {int(max_records):,}"
+        )
+        try:
+            page = gbif_get_json(
+                GBIF_OCCURRENCE_SEARCH_URL,
+                {**params_base, "offset": int(offset), "limit": int(limit)},
+                timeout=45,
+            )
+        except Exception as exc:
+            failed_offset = int(offset)
+            warning = (
+                f"GBIF genus download stopped during {failed_stage}; failed offset={failed_offset:,}; "
+                f"records fetched so far={len(records):,}; requested fetch cap={int(max_records):,}; "
+                f"partial data are being used. Error: {exc}"
+            )
+            break
+        batch = page.get("results", [])
+        if batch:
+            records.extend(batch)
+        completed_pages = page_num
+        progress_bar.progress(min(1.0, completed_pages / max(1, planned_pages)))
+        status.write(
+            f"Fetching genus records: page {page_num:,} / {planned_pages:,}, "
+            f"offset {offset:,}, received {len(records):,} records, requested fetch cap {int(max_records):,}"
+        )
+        if page.get("endOfRecords") and total_count <= target:
+            break
+
+    genus_columns = [
+        "decimalLatitude",
+        "decimalLongitude",
+        "eventDate",
+        "year",
+        "species",
+        "scientificName",
+        "genus",
+        "basisOfRecord",
+        "countryCode",
+        "locality",
+        "gbifID",
+        "media_url",
+    ]
+    raw_df = pd.DataFrame([gbif_record_to_genus_row(rec) for rec in records], columns=genus_columns)
+    df = _dedup_and_cap(raw_df, int(max_records), extra_dedup_keys=["species"])
+    matched_name = payload.get("scientificName") or payload.get("canonicalName") or genus_name
+    partial_note = "; partial subset used after page failure" if warning else ""
+    msg = (
+        f"GBIF genus match: {matched_name} / GBIF backbone taxonKey={usage_key} / "
+        f"rank={payload.get('rank', 'GENUS')}. GBIF total coordinate records={total_count:,}; "
+        f"requested fetch cap={int(max_records):,}; pages completed={completed_pages:,}/{planned_pages:,}; "
+        f"raw records received={len(records):,}; actual fetched records after deduplication={len(df):,}; "
+        f"retrieval={retrieval}{partial_note}."
+    )
+    if warning:
+        progress_bar.progress(min(1.0, completed_pages / max(1, planned_pages)))
+        status.warning(warning)
+    else:
+        progress_bar.progress(1.0)
+        status.success(
+            f"Genus fetch complete: completed {completed_pages:,} / {planned_pages:,} pages; "
+            f"received {len(records):,} records; stored {len(df):,} records after deduplication."
+        )
+    return msg, pd.DataFrame(df.to_dict("records") if not df.empty else [], columns=genus_columns), warning
 
 
 def genus_species_summary(occ: pd.DataFrame, min_records_for_sdm: int, grid_deg: float) -> pd.DataFrame:
@@ -2733,16 +2822,25 @@ def genus_diversity_panel() -> None:
             st.warning("Genus name is empty.")
         else:
             try:
-                with st.spinner("Fetching representative GBIF genus occurrence subset, 300 records per request..."):
-                    msg, df = fetch_gbif_genus_occurrences_cached(genus_name.strip(), int(max_records), country.strip().upper(), year_from, year_to)
+                msg, df, partial_warning = fetch_gbif_genus_occurrences_with_progress(
+                    genus_name.strip(),
+                    int(max_records),
+                    country.strip().upper(),
+                    year_from,
+                    year_to,
+                )
+            except Exception as exc:
+                st.error(f"GBIF genus download failed after retries: {exc}")
+                st.info("Try again in a minute, reduce the maximum record cap, or clear country/year filters. GBIF sometimes resets long paginated requests from Streamlit Cloud.")
+            else:
                 st.session_state.genus_raw_df = df
                 st.session_state.genus_source_key = f"genus::{genus_name}::{country}::{max_records}::{year_from}::{year_to}"
                 st.session_state.genus_source_message = msg
                 st.session_state.genus_target_rect_features = []
                 st.session_state.genus_target_last_draw_sig = ""
-            except Exception as exc:
-                st.error(f"GBIF genus download failed after retries: {exc}")
-                st.info("Try again in a minute, reduce the maximum record cap, or clear country/year filters. GBIF sometimes resets long paginated requests from Streamlit Cloud.")
+                if partial_warning:
+                    st.warning(partial_warning)
+                    st.info("Continuing with the successfully fetched partial genus subset.")
 
     if st.session_state.genus_raw_df is None:
         st.info(st.session_state.genus_source_message)

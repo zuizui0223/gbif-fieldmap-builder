@@ -4,6 +4,24 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-04 - Codex (OpenAI) - Add progress-aware partial genus fetch
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Lowered the interactive genus GBIF fetch default cap from 10,000 to 3,000 records.
+- Added a progress-aware genus occurrence fetch path that displays planned pages, current page, current offset, records received so far, and requested fetch cap with `st.progress` and a status placeholder.
+- Preserved successfully fetched genus pages if a later GBIF page fails, deduplicates/caps the partial subset, stores it in `st.session_state.genus_raw_df`, and warns with failed stage, offset, fetched-so-far count, requested cap, and partial-data status.
+
+Features preserved:
+- Genus occurrence richness maps, species summaries, hotspot candidates, optional SSDM, representative offset retrieval, GBIF count checks, country/year filters, downloads, and single-species mode remain available.
+
+Known risks / TODO:
+- Species-mode fetch still uses the cached one-shot fetch path; this change targets the blocking genus-mode case only.
+
 ## 2026-06-04 - Codex (OpenAI) - Add explicit download button keys
 
 Changed files:
