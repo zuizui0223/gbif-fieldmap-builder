@@ -819,6 +819,7 @@ def target_occurrence_set_panel(
     raw_record_count: int,
     key_prefix: str,
     label: str = "Survey area selection",
+    show_map: bool = True,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     st.markdown(f"**{label}**")
     st.caption(
@@ -837,32 +838,33 @@ def target_occurrence_set_panel(
         horizontal=True,
         key=survey_area_key,
     )
-    if len(occ_map_display) < len(occ_base):
-        st.caption(f"Showing {len(occ_map_display):,} of {len(occ_base):,} cleaned records on this rectangle-selection map.")
-    col_map, col_clear = st.columns([4, 1])
-    with col_clear:
-        if st.button("Clear target rectangle", key=f"{key_prefix}_clear_target_rect"):
-            st.session_state[f"{key_prefix}_rect_features"] = []
-            st.session_state[f"{key_prefix}_last_draw_sig"] = ""
-            reset_model_outputs()
-            st.rerun()
-    with col_map:
-        draw_data = st_folium(
-            make_target_selection_map(occ_map_display),
-            width=None,
-            height=420,
-            returned_objects=["all_drawings", "last_active_drawing"],
-            key=f"{key_prefix}_target_occurrence_map",
-        )
-    raw_drawings = (draw_data or {}).get("all_drawings") or (draw_data or {}).get("last_active_drawing")
-    features = extract_drawn_features(raw_drawings)
-    if features:
-        draw_sig = str(features)[:800]
-        if draw_sig != st.session_state.get(f"{key_prefix}_last_draw_sig", ""):
-            st.session_state[f"{key_prefix}_last_draw_sig"] = draw_sig
-            st.session_state[f"{key_prefix}_rect_features"] = features
-            reset_model_outputs()
-            st.rerun()
+    if show_map:
+        if len(occ_map_display) < len(occ_base):
+            st.caption(f"Showing {len(occ_map_display):,} of {len(occ_base):,} cleaned records on this rectangle-selection map.")
+        col_map, col_clear = st.columns([4, 1])
+        with col_clear:
+            if st.button("Clear target rectangle", key=f"{key_prefix}_clear_target_rect"):
+                st.session_state[f"{key_prefix}_rect_features"] = []
+                st.session_state[f"{key_prefix}_last_draw_sig"] = ""
+                reset_model_outputs()
+                st.rerun()
+        with col_map:
+            draw_data = st_folium(
+                make_target_selection_map(occ_map_display),
+                width=None,
+                height=420,
+                returned_objects=["all_drawings", "last_active_drawing"],
+                key=f"{key_prefix}_target_occurrence_map",
+            )
+        raw_drawings = (draw_data or {}).get("all_drawings") or (draw_data or {}).get("last_active_drawing")
+        features = extract_drawn_features(raw_drawings)
+        if features:
+            draw_sig = str(features)[:800]
+            if draw_sig != st.session_state.get(f"{key_prefix}_last_draw_sig", ""):
+                st.session_state[f"{key_prefix}_last_draw_sig"] = draw_sig
+                st.session_state[f"{key_prefix}_rect_features"] = features
+                reset_model_outputs()
+                st.rerun()
     stored_features = st.session_state.get(f"{key_prefix}_rect_features", []) or []
     inside_ids = set(ids_inside_drawn_rectangles(occ_base, "_row_id", "_latitude", "_longitude", stored_features)) if stored_features else set()
     has_rectangle = bool(stored_features)
@@ -1342,6 +1344,11 @@ def make_macro_cluster_map(occ: pd.DataFrame) -> folium.Map:
             popup=folium.Popup(f"{row.get('_species', '')}{year_str}", max_width=250),
         ).add_to(mc)
     mc.add_to(fmap)
+    Draw(
+        export=False,
+        draw_options={"rectangle": True, "polyline": False, "circle": False, "marker": False, "circlemarker": False, "polygon": False},
+        edit_options={"edit": False, "remove": True},
+    ).add_to(fmap)
     LayerControl(collapsed=True).add_to(fmap)
     try:
         fmap.fit_bounds([
@@ -3313,10 +3320,6 @@ def main() -> None:
     default_map_records = FAST_MAP_RECORDS
     default_candidate_records = FAST_CANDIDATE_RECORDS
     default_sdm_records = FAST_SDM_RECORDS
-    st.sidebar.caption(
-        f"Raw GBIF records are kept for summary/download. Defaults: fetch up to {default_fetch_cap:,}; map about {default_map_records:,}, "
-        f"candidate input about {default_candidate_records:,}, SDM presence about {default_sdm_records:,}."
-    )
     st.sidebar.header("Data source")
     load_input_controls(int(default_fetch_cap))
     st.sidebar.divider()
@@ -3367,24 +3370,41 @@ def main() -> None:
     effective_large_dataset_mode = bool(large_dataset_mode or auto_large_dataset_mode)
     effective_max_map_points = min(int(max_map_points), 1000) if effective_large_dataset_mode else int(max_map_points)
 
-    # ── Phase 1: Macro cluster map — national distribution overview ───────────
+    # ── Phase 1: Macro cluster map — national distribution overview + survey area rectangle ──
     st.markdown("**Phase 1 — National distribution overview**")
     st.caption(
         f"All {len(occ_raw):,} fetched records shown as auto-clustering circles. "
         "Circles shrink/expand as you zoom — click a cluster to zoom in. "
-        "Use this to identify where the species is concentrated before selecting your survey area below."
+        "Draw a rectangle on this map to select your survey area below."
     )
-    st_folium(
-        make_macro_cluster_map(occ_raw),
-        width=None, height=600,
-        returned_objects=[],
-        key="macro_cluster_map",
-    )
+    col_p1_map, col_p1_clear = st.columns([4, 1])
+    with col_p1_clear:
+        if st.button("Clear survey rectangle", key="target_clear_target_rect"):
+            st.session_state["target_rect_features"] = []
+            st.session_state["target_last_draw_sig"] = ""
+            reset_model_outputs()
+            st.rerun()
+    with col_p1_map:
+        p1_draw_data = st_folium(
+            make_macro_cluster_map(occ_raw),
+            width=None, height=600,
+            returned_objects=["all_drawings", "last_active_drawing"],
+            key="macro_cluster_map",
+        )
+    _p1_raw = (p1_draw_data or {}).get("all_drawings") or (p1_draw_data or {}).get("last_active_drawing")
+    _p1_features = extract_drawn_features(_p1_raw)
+    if _p1_features:
+        _p1_sig = str(_p1_features)[:800]
+        if _p1_sig != st.session_state.get("target_last_draw_sig", ""):
+            st.session_state["target_last_draw_sig"] = _p1_sig
+            st.session_state["target_rect_features"] = _p1_features
+            reset_model_outputs()
+            st.rerun()
 
     # ── Phase 2: Select survey area ───────────────────────────────────────────
     st.markdown("**Phase 2 — Select your fieldwork survey area**")
     st.caption(
-        "Draw a rectangle on the map below to select the area you can actually visit. "
+        "Draw a rectangle on the map above to select the area you can actually visit. "
         "Individual occurrence points and survey candidates are generated for that area only. "
         "SDM prediction extent is set separately inside Optional: Build SDM and can be wider."
     )
@@ -3394,6 +3414,7 @@ def main() -> None:
         target_map_display,
         raw_record_count=len(occ_raw),
         key_prefix="target",
+        show_map=False,
     )
     if occ_extent_selected.empty:
         st.error("The active target occurrence set is empty. Draw a rectangle or select 'Use all records'.")
