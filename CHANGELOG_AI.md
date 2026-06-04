@@ -4,6 +4,26 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-04 - Codex (OpenAI) - Prevent genus fetch stalls from old large caps
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Reset the genus fetch widget key so old Streamlit sessions cannot keep stale 4,300/10,000-record caps after the app default was lowered.
+- Capped the normal interactive genus GBIF fetch control at the survey-planning default of 3,000 representative records.
+- Avoided high-offset GBIF jumps in the interactive genus fetch because those pages can stall on Streamlit Cloud; genus fetch now uses fast low-offset pages and relies on downstream deduplication/spatial thinning for working subsets.
+- Shortened each progress-aware genus page request to one fast 8-second attempt so a single slow GBIF page does not leave the app appearing stuck for several minutes.
+- Stored a deduplicated partial genus subset in `st.session_state.genus_raw_df` after every successful page, so a later page failure can continue from records already received instead of returning to the no-data state.
+
+Features preserved:
+- Genus occurrence richness maps, species summaries, hotspot candidates, optional SSDM, representative offset retrieval, progress display, partial-data warnings, downloads, and single-species mode remain available.
+
+Known risks / TODO:
+- Large genus all-record exports remain intentionally outside the default interactive workflow; the app is optimized for field-survey planning with representative subsets.
+
 ## 2026-06-04 - Codex (OpenAI) - Add progress-aware partial genus fetch
 
 Changed files:

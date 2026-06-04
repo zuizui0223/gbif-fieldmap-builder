@@ -461,37 +461,47 @@ def gbif_genus_count_cached(genus_name: str, country_code: str, year_from: Optio
     return payload, int(first.get("count", 0)), params_base, int(usage_key)
 
 
+GENUS_OCCURRENCE_COLUMNS = [
+    "decimalLatitude",
+    "decimalLongitude",
+    "eventDate",
+    "year",
+    "species",
+    "scientificName",
+    "genus",
+    "basisOfRecord",
+    "countryCode",
+    "locality",
+    "gbifID",
+    "media_url",
+]
+
+
+def genus_records_to_dataframe(records: list[dict[str, Any]], max_records: int) -> pd.DataFrame:
+    raw_df = pd.DataFrame([gbif_record_to_genus_row(rec) for rec in records], columns=GENUS_OCCURRENCE_COLUMNS)
+    df = _dedup_and_cap(raw_df, int(max_records), extra_dedup_keys=["species"])
+    return pd.DataFrame(df.to_dict("records") if not df.empty else [], columns=GENUS_OCCURRENCE_COLUMNS)
+
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_gbif_genus_occurrences_cached(genus_name: str, max_records: int, country_code: str, year_from: Optional[int], year_to: Optional[int]) -> tuple[str, pd.DataFrame]:
     payload, total_count, params_base, usage_key = gbif_genus_count_cached(genus_name, country_code, year_from, year_to)
     records, retrieval = fetch_gbif_records_representative(params_base, int(max_records), int(total_count), timeout=45)
 
-    genus_columns = [
-        "decimalLatitude",
-        "decimalLongitude",
-        "eventDate",
-        "year",
-        "species",
-        "scientificName",
-        "genus",
-        "basisOfRecord",
-        "countryCode",
-        "locality",
-        "gbifID",
-        "media_url",
-    ]
-    df = _dedup_and_cap(pd.DataFrame([gbif_record_to_genus_row(rec) for rec in records], columns=genus_columns), int(max_records), extra_dedup_keys=["species"])
+    df = genus_records_to_dataframe(records, int(max_records))
     matched_name = payload.get("scientificName") or payload.get("canonicalName") or genus_name
     msg = f"GBIF genus match: {matched_name} / GBIF backbone taxonKey={usage_key} / rank={payload.get('rank', 'GENUS')}. GBIF total coordinate records={total_count:,}; requested fetch cap={int(max_records):,}; actual fetched records={len(df):,}; retrieval={retrieval}."
-    return msg, pd.DataFrame(df.to_dict("records") if not df.empty else [], columns=genus_columns)
+    return msg, df
 
 
 def fetch_gbif_genus_occurrences_with_progress(genus_name: str, max_records: int, country_code: str, year_from: Optional[int], year_to: Optional[int]) -> tuple[str, pd.DataFrame, Optional[str]]:
     payload, total_count, params_base, usage_key = gbif_genus_count_cached(genus_name, country_code, year_from, year_to)
     target = min(int(max_records), int(total_count) if total_count > 0 else int(max_records))
-    offsets = gbif_representative_offsets(int(total_count), target, 300)
+    # High GBIF offsets can stall on Streamlit Cloud. For interactive genus planning,
+    # keep downloads on low-offset pages, then rely on downstream spatial thinning.
+    offsets = list(range(0, target, 300))
     planned_pages = len(offsets)
-    retrieval = "sequential pages" if total_count <= target else "representative evenly spaced GBIF offsets"
+    retrieval = "fast low-offset interactive subset with downstream deduplication and spatial thinning"
     records: list[dict[str, Any]] = []
     warning: Optional[str] = None
 
@@ -516,7 +526,8 @@ def fetch_gbif_genus_occurrences_with_progress(genus_name: str, max_records: int
             page = gbif_get_json(
                 GBIF_OCCURRENCE_SEARCH_URL,
                 {**params_base, "offset": int(offset), "limit": int(limit)},
-                timeout=45,
+                timeout=8,
+                attempts=1,
             )
         except Exception as exc:
             failed_offset = int(offset)
@@ -530,6 +541,14 @@ def fetch_gbif_genus_occurrences_with_progress(genus_name: str, max_records: int
         if batch:
             records.extend(batch)
         completed_pages = page_num
+        partial_df = genus_records_to_dataframe(records, int(max_records))
+        st.session_state.genus_raw_df = partial_df
+        st.session_state.genus_source_key = f"genus::{genus_name}::{country_code}::{max_records}::{year_from}::{year_to}::partial"
+        st.session_state.genus_source_message = (
+            f"Partial GBIF genus fetch in progress: pages completed={completed_pages:,}/{planned_pages:,}; "
+            f"raw records received={len(records):,}; actual fetched records after deduplication={len(partial_df):,}; "
+            f"requested fetch cap={int(max_records):,}."
+        )
         progress_bar.progress(min(1.0, completed_pages / max(1, planned_pages)))
         status.write(
             f"Fetching genus records: page {page_num:,} / {planned_pages:,}, "
@@ -538,22 +557,7 @@ def fetch_gbif_genus_occurrences_with_progress(genus_name: str, max_records: int
         if page.get("endOfRecords") and total_count <= target:
             break
 
-    genus_columns = [
-        "decimalLatitude",
-        "decimalLongitude",
-        "eventDate",
-        "year",
-        "species",
-        "scientificName",
-        "genus",
-        "basisOfRecord",
-        "countryCode",
-        "locality",
-        "gbifID",
-        "media_url",
-    ]
-    raw_df = pd.DataFrame([gbif_record_to_genus_row(rec) for rec in records], columns=genus_columns)
-    df = _dedup_and_cap(raw_df, int(max_records), extra_dedup_keys=["species"])
+    df = genus_records_to_dataframe(records, int(max_records))
     matched_name = payload.get("scientificName") or payload.get("canonicalName") or genus_name
     partial_note = "; partial subset used after page failure" if warning else ""
     msg = (
@@ -572,7 +576,7 @@ def fetch_gbif_genus_occurrences_with_progress(genus_name: str, max_records: int
             f"Genus fetch complete: completed {completed_pages:,} / {planned_pages:,} pages; "
             f"received {len(records):,} records; stored {len(df):,} records after deduplication."
         )
-    return msg, pd.DataFrame(df.to_dict("records") if not df.empty else [], columns=genus_columns), warning
+    return msg, df, warning
 
 
 def genus_species_summary(occ: pd.DataFrame, min_records_for_sdm: int, grid_deg: float) -> pd.DataFrame:
@@ -2808,13 +2812,13 @@ def genus_diversity_panel() -> None:
     max_records = st.sidebar.number_input(
         "Maximum GBIF records to fetch",
         300,
-        50_000,
+        int(FAST_GENUS_GBIF_FETCH_CAP),
         int(genus_fetch_cap),
-        300 if int(genus_fetch_cap) <= 3000 else 1000,
-        key="genus_max_records",
-        help="The app first checks the GBIF total, then fetches only this survey-planning cap. If total records exceed the cap, pages are sampled from evenly spaced offsets across the full GBIF result range.",
+        300,
+        key="genus_max_records_fast_cap_v2",
+        help="Interactive genus fetch is capped for field-survey planning. If total records exceed the cap, pages are sampled from evenly spaced offsets across the full GBIF result range.",
     )
-    st.sidebar.caption("Representative fetch avoids simply taking the first N GBIF records.")
+    st.sidebar.caption("Fast interactive fetch avoids high GBIF offsets; downstream deduplication and spatial thinning create the working survey subset.")
     if st.sidebar.button("Clear genus data", key="clear_genus_data_button"):
         clear_genus_data()
     if st.sidebar.button("Fetch genus occurrences from GBIF", type="primary", key="fetch_genus_occurrences_button"):
