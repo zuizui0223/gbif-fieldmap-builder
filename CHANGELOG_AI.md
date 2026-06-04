@@ -4,6 +4,27 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-04 - Claude (claude-sonnet-4-6) — Add SDM record-count guidance and candidate-type labels
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+
+**SDM record-count guidance (above "Optional: Build SDM" subheader)**
+Added `st.info(...)` block using `min(len(occ_raw), sdm_working_records)` as the preview presence-point count. Four tiers: very few (<20), few (20–49), moderate (50–299), abundant (≥300/cap). Guidance helps users understand when SDM adds the most value relative to occurrence density.
+
+**Candidate-type captions**
+Added `📍 Occurrence-supported candidates` caption above the SDM-high exploration expander, and `🔭 SDM-high exploration candidates` caption inside the "Create SDM-high exploration ranges" expander, clarifying confidence levels and the need for field validation.
+
+**SDM cap explanation caption**
+Added `st.caption(...)` immediately after the `sdm_ind_max_presence` number_input explaining that SDM uses a spatially representative subset regardless of record count, and that the cap is most relevant for abundant-record species.
+
+No Phase 1 or Phase 2 logic was changed. No SDM pipeline order or `auto_sdm_partition` logic was modified.
+
+---
+
 ## 2026-06-04 - Claude (claude-sonnet-4-6) — Merge Phase 1 and Phase 2 maps; remove sidebar caption
 
 Changed files:

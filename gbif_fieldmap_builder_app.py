@@ -3601,6 +3601,31 @@ def main() -> None:
             use_container_width=True,
         )
 
+    # ── SDM record-count guidance ─────────────────────────────────────────────
+    _pre_sdm_n = min(len(occ_raw), int(sdm_working_records))
+    _raw_n = len(occ_raw)
+    if _pre_sdm_n < 20:
+        st.info(
+            f"⚠️ Known occurrence records are sparse ({_pre_sdm_n}). Optional SDM may help identify potential "
+            "unsampled survey areas, but predictions will be uncertain and require field validation. "
+            "Jackknife validation is recommended."
+        )
+    elif _pre_sdm_n < 50:
+        st.info(
+            f"Optional SDM can add model support to observed-data candidates and help identify exploratory "
+            f"potential sites ({_pre_sdm_n} presence points)."
+        )
+    elif _pre_sdm_n < 300:
+        st.info(
+            f"Optional SDM can add model support to observed-data candidates and identify exploratory "
+            f"potential sites ({_pre_sdm_n} presence points)."
+        )
+    else:
+        st.info(
+            f"ℹ️ Observed-data candidates may already be sufficient for survey planning. Optional SDM will use "
+            f"{_pre_sdm_n} spatially representative presence points (cap applied) rather than all {_raw_n:,} fetched records."
+        )
+
     st.subheader("Optional: Build SDM")
     with st.expander("Build SDM and predict map", expanded=False):
         # ── SDM presence point cap (single control) ───────────────────────────
@@ -3614,6 +3639,11 @@ def main() -> None:
                 "record per cell is kept. This handles both performance and spatial bias in one step. "
                 "When records are fewer than this cap, all records are used and a clustering check is run."
             ),
+        )
+        st.caption(
+            f"SDM uses a spatially representative subset of up to {int(sdm_working_records):,} presence points "
+            "regardless of how many records are fetched. This keeps SDM fast and reduces sampling bias — "
+            "the cap is most relevant for abundant-record species."
         )
 
         # ── Bias reduction: spatially balanced cap only ────────────────────────
@@ -3916,7 +3946,14 @@ def main() -> None:
                 )
         except Exception as exc:
             st.warning(f"Could not predict suitability for occurrence-supported ranges: {exc}")
+        st.caption(
+            "📍 Occurrence-supported candidates — based on known occurrence records, optionally re-ranked by SDM suitability."
+        )
         with st.expander("Create SDM-high exploration ranges", expanded=True):
+            st.caption(
+                "🔭 SDM-high exploration candidates — model-only potential survey areas away from known records. "
+                "These are exploratory and lower confidence; field validation is essential."
+            )
             c1, c2, c3, c4 = st.columns(4)
             min_suit = c1.number_input("Minimum suitability", 0.0, 1.0, 0.60, 0.05)
             q = c2.number_input("Predict-map quantile", 0.0, 0.99, 0.90, 0.01)
