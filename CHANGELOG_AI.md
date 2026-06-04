@@ -4,6 +4,25 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-04 - Codex (OpenAI) - Make genus fetch cap directly editable
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Rechecked the deployed genus fetch UI behavior after the user confirmed the stall was caused by high GBIF offsets rather than the record cap.
+- Removed the separate Advanced checkbox gate around larger genus fetch caps because it left the visible `Maximum GBIF records to fetch` input capped at 3,000.
+- Restored a single genus fetch cap input with default 3,000 and maximum 50,000, so values such as 10,000 can be typed directly.
+- Changed the widget key again so Streamlit sessions reset away from the previous 3,000-limited widget state while preserving low-offset page fetching.
+
+Features preserved:
+- Low-offset genus fetch stall avoidance, progress-aware partial fetch, genus richness maps, species summaries, hotspot candidates, optional SSDM, VIF diagnostics, downloads, and single-species mode remain available.
+
+Known risks / TODO:
+- Very high caps may still take many sequential GBIF pages; partial records remain preserved after each successful page if a later request fails.
+
 ## 2026-06-04 - Codex (OpenAI) - Uncap genus fetch while avoiding high offsets
 
 Changed files:

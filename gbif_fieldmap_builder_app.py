@@ -2815,33 +2815,15 @@ def genus_diversity_panel() -> None:
             st.sidebar.caption(f"Matched genus: {payload.get('scientificName') or payload.get('canonicalName') or genus_name} / taxonKey={usage_key}")
         except Exception as exc:
             st.sidebar.warning(f"GBIF genus count check failed: {exc}")
-    with st.sidebar.expander("Advanced GBIF fetch cap", expanded=False):
-        allow_large_genus_fetch = st.checkbox(
-            "Allow larger genus fetch cap",
-            value=False,
-            key="genus_allow_large_fetch_cap",
-            help="Higher caps can take many GBIF pages. Partial records are preserved if a later page fails.",
-        )
-    if allow_large_genus_fetch:
-        max_records = st.sidebar.number_input(
-            "Maximum GBIF records to fetch",
-            300,
-            int(genus_fetch_max_cap),
-            10_000,
-            1000,
-            key="genus_max_records_large_low_offset_v1",
-            help="Advanced high-cap fetch. GBIF pages are fetched sequentially from low offsets to avoid Streamlit Cloud stalls.",
-        )
-    else:
-        max_records = st.sidebar.number_input(
-            "Maximum GBIF records to fetch",
-            300,
-            int(genus_fetch_cap),
-            int(genus_fetch_cap),
-            300,
-            key="genus_max_records_low_offset_v3",
-            help="Default lightweight survey-planning cap.",
-        )
+    max_records = st.sidebar.number_input(
+        "Maximum GBIF records to fetch",
+        300,
+        int(genus_fetch_max_cap),
+        int(genus_fetch_cap),
+        300 if int(genus_fetch_cap) <= 3000 else 1000,
+        key="genus_max_records_low_offset_unlocked_v4",
+        help="Default is lightweight for survey planning, but larger caps such as 10,000 are allowed. GBIF pages are fetched sequentially from low offsets to avoid Streamlit Cloud stalls.",
+    )
     st.sidebar.caption("Fetch uses low GBIF offsets to avoid stalls; downstream deduplication and spatial thinning create the working survey subset.")
     if st.sidebar.button("Clear genus data", key="clear_genus_data_button"):
         clear_genus_data()
