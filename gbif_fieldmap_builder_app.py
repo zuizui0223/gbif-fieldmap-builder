@@ -2780,8 +2780,14 @@ def load_input_controls(default_fetch_cap: int = FAST_SPECIES_GBIF_FETCH_CAP) ->
 
 
 def genus_diversity_panel() -> None:
+    st.subheader("1 - Get genus occurrence data")
+    st.caption(
+        "Genus mode mirrors species mode: load records, choose an observed-data survey area, "
+        "generate observed richness hotspot candidates, optionally run SSDM, then use model support for re-ranking or exploration."
+    )
     st.sidebar.header("Genus data source")
     genus_fetch_cap = FAST_GENUS_GBIF_FETCH_CAP
+    genus_fetch_max_cap = 50_000
     genus_map_records = FAST_MAP_RECORDS
     genus_candidate_records = FAST_CANDIDATE_RECORDS
     genus_ssdm_records = FAST_SSDM_RECORDS_PER_SPECIES
@@ -2804,21 +2810,39 @@ def genus_diversity_panel() -> None:
             payload, total_count, _params, usage_key = gbif_genus_count_cached(genus_name.strip(), country.strip().upper(), year_from, year_to)
             st.sidebar.info(
                 f"GBIF total coordinate records: {total_count:,}. "
-                f"The app will fetch up to {int(genus_fetch_cap):,} representative records by default."
+                f"The app will fetch up to {int(genus_fetch_cap):,} survey-planning records by default."
             )
             st.sidebar.caption(f"Matched genus: {payload.get('scientificName') or payload.get('canonicalName') or genus_name} / taxonKey={usage_key}")
         except Exception as exc:
             st.sidebar.warning(f"GBIF genus count check failed: {exc}")
-    max_records = st.sidebar.number_input(
-        "Maximum GBIF records to fetch",
-        300,
-        int(FAST_GENUS_GBIF_FETCH_CAP),
-        int(genus_fetch_cap),
-        300,
-        key="genus_max_records_fast_cap_v2",
-        help="Interactive genus fetch is capped for field-survey planning. If total records exceed the cap, pages are sampled from evenly spaced offsets across the full GBIF result range.",
-    )
-    st.sidebar.caption("Fast interactive fetch avoids high GBIF offsets; downstream deduplication and spatial thinning create the working survey subset.")
+    with st.sidebar.expander("Advanced GBIF fetch cap", expanded=False):
+        allow_large_genus_fetch = st.checkbox(
+            "Allow larger genus fetch cap",
+            value=False,
+            key="genus_allow_large_fetch_cap",
+            help="Higher caps can take many GBIF pages. Partial records are preserved if a later page fails.",
+        )
+    if allow_large_genus_fetch:
+        max_records = st.sidebar.number_input(
+            "Maximum GBIF records to fetch",
+            300,
+            int(genus_fetch_max_cap),
+            10_000,
+            1000,
+            key="genus_max_records_large_low_offset_v1",
+            help="Advanced high-cap fetch. GBIF pages are fetched sequentially from low offsets to avoid Streamlit Cloud stalls.",
+        )
+    else:
+        max_records = st.sidebar.number_input(
+            "Maximum GBIF records to fetch",
+            300,
+            int(genus_fetch_cap),
+            int(genus_fetch_cap),
+            300,
+            key="genus_max_records_low_offset_v3",
+            help="Default lightweight survey-planning cap.",
+        )
+    st.sidebar.caption("Fetch uses low GBIF offsets to avoid stalls; downstream deduplication and spatial thinning create the working survey subset.")
     if st.sidebar.button("Clear genus data", key="clear_genus_data_button"):
         clear_genus_data()
     if st.sidebar.button("Fetch genus occurrences from GBIF", type="primary", key="fetch_genus_occurrences_button"):
@@ -2884,7 +2908,7 @@ def genus_diversity_panel() -> None:
         genus_candidate_records = st.number_input("Genus richness candidate records", 50, 50_000, genus_candidate_records, 50, key="genus_candidate_records")
         genus_ssdm_records = st.number_input("SSDM presence records per species", 3, 5_000, genus_ssdm_records, 25, key="genus_ssdm_records")
 
-    st.subheader("2 窶・Review records and choose survey area")
+    st.subheader("2 - Review records and choose survey area")
     st.caption("Step 2 is only for observed-data richness hotspot generation. Optional SSDM starts independently from fetched genus records.")
     genus_target_display = limit_occurrence_display(occ_cleaned, set(), int(genus_map_records))
     occ, genus_target_counts = target_occurrence_set_panel(
@@ -2904,7 +2928,7 @@ def genus_diversity_panel() -> None:
     hotspots = richness_hotspot_candidates(grid, richness_metric, int(max_hotspots)) if not grid.empty else pd.DataFrame()
     hotspots = add_priority_rank(hotspots, float(genus_observed_weight), float(genus_model_weight)) if not hotspots.empty else hotspots
 
-    # ── Step 2: Prepare records and species summary ───────────────────────────
+    # Step 2: Prepare records and species summary.
     st.caption("Counts below show the active target set used for observed richness hotspots. Optional SSDM starts independently from fetched genus records.")
     g1, g2, g3, g4, g5, g6 = st.columns(6)
     g1.metric("Active survey-area records", f"{genus_target_counts['raw_records']:,}")
@@ -2920,10 +2944,10 @@ def genus_diversity_panel() -> None:
     c4.metric("Hotspots", f"{len(hotspots):,}")
     st.dataframe(summary, width="stretch", hide_index=True)
 
-    # ── Step 3: Occurrence-based richness hotspots ────────────────────────────
-    st.subheader("3 — Occurrence-based richness hotspots")
+    # Step 3: Occurrence-based richness hotspots.
+    st.subheader("3 - Occurrence-based richness hotspots")
     st.caption(
-        "Observed species richness from GBIF occurrence records — no modeling required. "
+        "Observed species richness from GBIF occurrence records - no modeling required. "
         "Use the hotspot candidates below directly for survey planning."
     )
     if grid.empty:
@@ -2933,22 +2957,22 @@ def genus_diversity_panel() -> None:
         st_folium(fmap, width=None, height=720, returned_objects=[], key="genus_richness_map")
         html_bytes = fmap.get_root().render().encode("utf-8")
 
-        # ── Step 4: Selected hotspot sites ───────────────────────────────────
-        st.subheader("4 — Selected hotspot sites")
+        # Step 4: Selected hotspot sites.
+        st.subheader("4 - Selected hotspot sites")
         has_ssdm_support = (
             "model_support_score" in hotspots.columns
             and pd.to_numeric(hotspots["model_support_score"], errors="coerce").gt(0).any()
         )
         if not has_ssdm_support:
             st.info(
-                f"ℹ️ **Model support score: not available yet.** "
+                f"**Model support score: not available yet.** "
                 f"Hotspots are ranked by observed richness only "
                 f"(observed weight = {genus_observed_weight:.2f}). "
                 "Run optional SSDM below to add predicted richness-based model support and re-rank hotspots."
             )
         else:
             st.success(
-                f"✅ **Model support score: SSDM predicted richness active.** "
+                f"**Model support score: SSDM predicted richness active.** "
                 f"Hotspots are re-ranked with observed weight = {genus_observed_weight:.2f} and "
                 f"SSDM model weight = {genus_model_weight:.2f}."
             )
@@ -3042,7 +3066,7 @@ def genus_diversity_panel() -> None:
             index=0,
             key="ssdm_partition_method",
             help="random holdout: fit on a training split and evaluate AUC on a held-out test split. "
-                 "none (training only): fit on all data, no AUC computed — fastest option for exploratory runs. "
+                 "none (training only): fit on all data, no AUC computed - fastest option for exploratory runs. "
                  "Spatial block/checkerboard partitions are available in single-species SDM but not yet implemented for SSDM.",
         )
         ssdm_test_split = st.number_input(
@@ -3054,7 +3078,7 @@ def genus_diversity_panel() -> None:
             disabled=(ssdm_partition_method == "none (training only)"),
         )
         if ssdm_partition_method == "none (training only)":
-            st.caption("⚠️ SSDM partition: none — models are fit on all data. No AUC will be computed.")
+            st.caption("SSDM partition: none - models are fit on all data. No AUC will be computed.")
         else:
             st.caption(
                 f"SSDM partition: random holdout with test split = {ssdm_test_split:.0%}. "

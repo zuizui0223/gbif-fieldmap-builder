@@ -4,6 +4,26 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-04 - Codex (OpenAI) - Uncap genus fetch while avoiding high offsets
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Reopened genus GBIF fetch caps above 3,000 records under an Advanced GBIF fetch cap control while keeping the safe low-offset fetch path that fixed Streamlit Cloud stalls.
+- Changed the genus fetch widget key again so deployed Streamlit sessions reset away from the temporary 3,000-only control.
+- Updated genus fetch wording to explain that higher caps are allowed but fetched sequentially from low GBIF offsets, with downstream deduplication and spatial thinning creating the working survey subset.
+- Added an explicit Step 1 genus workflow caption showing the species-mode symmetry: load records, choose observed-data survey area, generate richness hotspots, optionally run SSDM, and use model support for re-ranking/exploration.
+- Fixed visible genus-mode mojibake in Step labels and SSDM status/help text, replacing broken dash/emoji rendering with plain ASCII UI text.
+
+Features preserved:
+- Genus richness maps, species summaries, hotspot candidates, optional SSDM, VIF diagnostics, progress-aware partial fetch, low-offset stall avoidance, downloads, and single-species mode remain available.
+
+Known risks / TODO:
+- Very high genus fetch caps can still take many GBIF pages; partial records are still preserved after each successful page if a later request fails.
+
 ## 2026-06-04 - Codex (OpenAI) - Prevent genus fetch stalls from old large caps
 
 Changed files:
