@@ -4,6 +4,29 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-04 - Codex (OpenAI) - Separate Step 2 observed candidates from optional SDM QC/extent
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read `AGENTS.md`, the latest `SURVEY_PLANNING_POLICY.md`, and `CHANGELOG_AI.md`; fast-forwarded to the latest GitHub `main` (`fc0bc00`) before editing.
+- Removed coordinate QC from the species Step 2 workflow so Step 2 now selects only the observed-data survey area for candidate generation.
+- Changed species SDM to start independently from fetched occurrence records, then apply SDM-only rectangle QC, SDM-only bias-reduction preprocessing, and SDM-only prediction extent generation inside `Optional: Build SDM`.
+- Prevented the Step 2 survey-area selection from automatically becoming the SDM training set or prediction extent.
+- Removed genus Step 2 coordinate QC and kept genus Step 2 as observed richness hotspot area selection only.
+- Changed optional SSDM fitting to start from fetched genus records instead of the Step 2 observed-richness target set.
+
+Features preserved:
+- Count-first representative GBIF fetching, full-name country selector, observed-data candidates, optional SDM/SSDM, weighted model support, prediction maps, VIF/variable diagnostics, and downloads remain available.
+- Step 2 survey-area rectangle remains available for observed-data candidate/hotspot generation.
+- SDM rectangle QC remains available, but now inside the optional SDM workflow.
+
+Known risks / TODO:
+- The older rectangle QC helper remains in code for compatibility but is no longer called from Step 2.
+- SSDM has been decoupled from Step 2 selection, but a fuller SSDM-specific rectangle QC UI can still be added later if needed.
+
 ## 2026-06-04 - Codex (OpenAI) - Count-first representative GBIF fetching and rectangle QC workflow
 
 Changed files:
