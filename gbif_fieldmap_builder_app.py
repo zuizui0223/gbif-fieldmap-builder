@@ -1708,6 +1708,54 @@ def compute_vif_table(df: pd.DataFrame, variables: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("vif", ascending=False).reset_index(drop=True)
 
 
+def auto_sdm_partition(n_occ: int, extent_geom) -> tuple[str, str]:
+    """Choose the best SDM validation method based on record count and geographic spread.
+
+    Returns (partition_method, reason_text).
+    """
+    geo_spread_deg: Optional[float] = None
+    if extent_geom is not None and not extent_geom.is_empty:
+        minx, miny, maxx, maxy = extent_geom.bounds
+        geo_spread_deg = min(maxx - minx, maxy - miny)
+
+    if n_occ < 15:
+        return (
+            "jackknife",
+            f"**Jackknife** (leave-one-out) — {n_occ} records is very few. "
+            "Each record is held out once as a test point; the model is retrained n times. "
+            "This squeezes the most information out of a tiny dataset.",
+        )
+    if n_occ < 30 or (geo_spread_deg is not None and geo_spread_deg < 2.0):
+        spread_note = f" Geographic spread is also narrow ({geo_spread_deg:.1f}°)." if geo_spread_deg is not None and geo_spread_deg < 2.0 else ""
+        return (
+            "random holdout",
+            f"**Random holdout** (75 % train / 25 % test) — {n_occ} records.{spread_note} "
+            "Spatial block partitioning needs enough records on both sides of each block boundary; "
+            "with few records or a small extent, a random split avoids empty test folds.",
+        )
+    if n_occ < 50:
+        return (
+            "random k-fold",
+            f"**Random 5-fold cross-validation** — {n_occ} records. "
+            "Enough records for k-fold but not yet enough to fill spatial blocks reliably. "
+            "Five-fold CV gives a stable AUC estimate without wasting too much training data.",
+        )
+    if n_occ >= 200:
+        return (
+            "checkerboard1",
+            f"**Checkerboard** spatial cross-validation — {n_occ} records over a wide area. "
+            "With many records the checkerboard creates fine-grained spatial test sets that "
+            "detect overfitting to local clusters better than coarse blocks.",
+        )
+    return (
+        "block",
+        f"**Spatial block** cross-validation — {n_occ} records. "
+        "Records are split into geographically separated blocks so the model is tested on "
+        "areas it has never seen. This is the standard rigorous approach for SDM and "
+        "best simulates real-world transferability.",
+    )
+
+
 def vif_step(df: pd.DataFrame, variables: list[str], threshold: float) -> tuple[list[str], pd.DataFrame]:
     if extreme_environment_sentinel_present(df, variables):
         raise RuntimeError("Extreme raster NoData/fill values remain in environmental variables; VIF was stopped.")
@@ -3661,18 +3709,31 @@ def main() -> None:
                 custom_variables = st.multiselect("Custom final variables", variables, default=variables, key="sdm_custom_final_variables")
 
         algorithms = st.multiselect("Ensemble algorithms", ALGORITHMS, default=[])
-        partition_method = st.selectbox(
-            "Validation method",
-            PARTITION_METHODS,
-            index=PARTITION_METHODS.index("block"),
-            key="sdm_partition_method",
-        )
+
+        # Auto-select validation method based on record count + geographic extent
+        _auto_partition, _auto_reason = auto_sdm_partition(len(occ_sdm_train), extent_geom)
+        st.markdown("**Validation method** — auto-selected")
+        st.info(_auto_reason)
         k_folds = 5
         checkerboard_deg = 0.05
-        if partition_method == "random k-fold":
-            k_folds = st.number_input("k for random k-fold", min_value=2, max_value=20, value=5, step=1)
-        if partition_method in ["checkerboard1", "checkerboard2"]:
-            checkerboard_deg = st.number_input("Checkerboard cell size (degrees)", min_value=0.001, max_value=5.0, value=0.05, step=0.01, format="%.3f")
+        partition_method = _auto_partition
+        with st.expander("Override validation method (advanced)", expanded=False):
+            st.caption(
+                "block: spatially separated folds — best general-purpose SDM validation. "
+                "checkerboard: fine-grained spatial folds for dense datasets. "
+                "random holdout/k-fold: ignores spatial structure — use only when records are few or extent is small. "
+                "jackknife: leave-one-out — for very small datasets (< 15 records)."
+            )
+            partition_method = st.selectbox(
+                "Validation method",
+                PARTITION_METHODS,
+                index=PARTITION_METHODS.index(_auto_partition),
+                key="sdm_partition_method",
+            )
+            if partition_method == "random k-fold":
+                k_folds = st.number_input("k for random k-fold", min_value=2, max_value=20, value=5, step=1)
+            if partition_method in ["checkerboard1", "checkerboard2"]:
+                checkerboard_deg = st.number_input("Checkerboard cell size (degrees)", min_value=0.001, max_value=5.0, value=0.05, step=0.01, format="%.3f")
         default_background = 500
         default_max_pixels = 40_000
         with st.expander("Advanced model settings", expanded=False):
