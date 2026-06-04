@@ -3588,31 +3588,29 @@ def main() -> None:
 
     st.subheader("Optional: Build SDM")
     with st.expander("Build SDM and predict map", expanded=False):
-        # ── SDM bias-reduction preprocessing controls ─────────────────────────
-        st.markdown("**SDM bias-reduction preprocessing**")
-        st.caption(
-            "Applied to SDM training only — Step 2 observed-data candidates are not affected."
+        # ── SDM presence point cap (single control) ───────────────────────────
+        sdm_ind_max_presence = st.number_input(
+            "Max SDM presence points",
+            min_value=10, max_value=50_000, value=int(sdm_working_records), step=25,
+            key="sdm_ind_prep_max_presence",
+            help=(
+                "When fetched records exceed this number, spatially balanced grid subsampling "
+                "is applied: the extent is divided into a √N × √N grid and the highest-quality "
+                "record per cell is kept. This handles both performance and spatial bias in one step. "
+                "When records are fewer than this cap, all records are used and a clustering check is run."
+            ),
         )
-        sp1, sp2 = st.columns(2)
-        sdm_ind_exact_dedup = sp1.checkbox("Exact coordinate deduplication", value=True, key="sdm_ind_prep_exact_dedup", help="Keep one representative record per unique lat/lon coordinate.")
-        sdm_ind_grid_deg = sp1.number_input("Grid thinning (degrees, 0 = off)", min_value=0.0, max_value=5.0, value=0.05, step=0.01, format="%.2f", key="sdm_ind_prep_grid_deg", help="Keep one record per grid cell. Reduces spatial autocorrelation.")
-        sdm_ind_distance_m = sp2.number_input("Distance thinning — spThin-like (m, 0 = off)", min_value=0, max_value=100_000, value=1000, step=500, key="sdm_ind_prep_distance_m", help="Minimum nearest-neighbour distance between retained presence points.")
-        sdm_ind_max_presence = sp2.number_input("Maximum SDM presence points", min_value=1, max_value=50_000, value=int(sdm_working_records), step=25, key="sdm_ind_prep_max_presence", help="Hard cap on SDM presence points. Raw GBIF records are preserved.")
 
-        # ── Step 1: Bias reduction FIRST → determines the ~N points shown on QC map ──
-        occ_sdm_bias_reduced = occ_raw.copy()
-        _sdm_br_n0 = len(occ_sdm_bias_reduced)
-        if sdm_ind_exact_dedup:
-            occ_sdm_bias_reduced = exact_coordinate_deduplicate(occ_sdm_bias_reduced)
-        _sdm_br_n1 = len(occ_sdm_bias_reduced)
-        occ_sdm_bias_reduced = grid_thin(occ_sdm_bias_reduced, float(sdm_ind_grid_deg))
-        _sdm_br_n2 = len(occ_sdm_bias_reduced)
-        if float(sdm_ind_distance_m) > 0 and not occ_sdm_bias_reduced.empty:
-            occ_sdm_bias_reduced = spatial_thin(occ_sdm_bias_reduced, float(sdm_ind_distance_m))
-        _sdm_br_n3 = len(occ_sdm_bias_reduced)
-        if len(occ_sdm_bias_reduced) > int(sdm_ind_max_presence):
-            occ_sdm_bias_reduced = spatially_balanced_cap(occ_sdm_bias_reduced, int(sdm_ind_max_presence))
+        # ── Bias reduction: spatially balanced cap only ────────────────────────
+        _sdm_br_n0 = len(occ_raw)
+        if _sdm_br_n0 > int(sdm_ind_max_presence):
+            occ_sdm_bias_reduced = spatially_balanced_cap(occ_raw, int(sdm_ind_max_presence))
+        else:
+            occ_sdm_bias_reduced = occ_raw.copy()
         _sdm_br_n4 = len(occ_sdm_bias_reduced)
+        # Keep intermediate aliases for metrics (dedup/thinning no longer separate steps)
+        _sdm_br_n1 = _sdm_br_n0
+        _sdm_br_n3 = _sdm_br_n0
 
         # ── Step 2: QC exclusion on the bias-reduced set (map only shows ~N pts) ─
         _sdm_excl_ids = set(map(int, st.session_state.sdm_excluded_row_ids))
@@ -3747,23 +3745,41 @@ def main() -> None:
     sdm_excluded_ids = set(map(int, st.session_state.sdm_excluded_row_ids))
     sdm_n_final = len(occ_for_sdm)
 
-    # Preprocessing metrics display (bias reduction → QC order)
-    st.caption("**SDM preprocessing summary** — bias reduction first, then QC exclusion:")
-    pm1, pm2, pm3, pm4, pm5 = st.columns(5)
-    pm1.metric("Fetched records (SDM source)", f"{_sdm_br_n0:,}", help="All GBIF records fetched — independent from Step 2 survey area.")
-    pm2.metric("After exact dedup", f"{_sdm_br_n1:,}", delta=f"{_sdm_br_n1 - _sdm_br_n0:,}" if _sdm_br_n1 < _sdm_br_n0 else None, help="Duplicate lat/lon coordinates removed — one record kept per unique coordinate.")
-    pm3.metric("After distance thinning", f"{_sdm_br_n3:,}", delta=f"{_sdm_br_n3 - _sdm_br_n1:,}" if _sdm_br_n3 < _sdm_br_n1 else None, help="Grid thinning (1 record per grid cell) + optional minimum-distance thinning to reduce spatial autocorrelation.")
+    # Preprocessing metrics display
+    st.caption("**SDM training point summary:**")
+    pm1, pm2, pm3 = st.columns(3)
+    pm1.metric("Fetched records (SDM source)", f"{_sdm_br_n0:,}", help="All GBIF records — independent from Step 2 survey area.")
     _cap_help = (
-        f"Spatially balanced grid subsampling down to {int(sdm_ind_max_presence):,} points: "
-        f"the extent is divided into roughly √{int(sdm_ind_max_presence)} × √{int(sdm_ind_max_presence)} ≈ "
-        f"{int(math.sqrt(int(sdm_ind_max_presence))):d} × {int(math.sqrt(int(sdm_ind_max_presence))):d} geographic cells, "
-        "and the highest-quality record (photo > recent year) is kept per cell. "
-        "Ensures the training set is spatially representative rather than random."
+        f"Spatially balanced grid subsampling to {int(sdm_ind_max_presence):,} points: "
+        f"extent divided into ≈{int(math.sqrt(int(sdm_ind_max_presence))):d}×{int(math.sqrt(int(sdm_ind_max_presence))):d} grid cells; "
+        "highest-quality record per cell kept (photo → recent year). "
+        "Handles performance and spatial bias in one step."
+    ) if _sdm_br_n4 < _sdm_br_n0 else "Records are fewer than the cap — all used without subsampling."
+    pm2.metric(
+        "After spatial balancing", f"{_sdm_br_n4:,}",
+        delta=f"{_sdm_br_n4 - _sdm_br_n0:,}" if _sdm_br_n4 < _sdm_br_n0 else None,
+        help=_cap_help,
     )
-    pm4.metric("After spatial cap", f"{_sdm_br_n4:,}", delta=f"{_sdm_br_n4 - _sdm_br_n3:,}" if _sdm_br_n4 < _sdm_br_n3 else None, help=_cap_help)
-    pm5.metric("Final SDM presence points", f"{sdm_n_final:,}", delta=f"{sdm_n_final - _sdm_br_n4:,}" if sdm_n_final < _sdm_br_n4 else None, help="After SDM QC rectangle exclusions on the map above.")
+    pm3.metric(
+        "Final SDM presence points", f"{sdm_n_final:,}",
+        delta=f"{sdm_n_final - _sdm_br_n4:,}" if sdm_n_final < _sdm_br_n4 else None,
+        help="After QC rectangle exclusions on the setup map.",
+    )
     if sdm_n_final == 0 and not occ_raw.empty:
-        st.warning("SDM preprocessing / QC removed all records. Reduce thinning, increase the cap, or clear SDM QC exclusions.")
+        st.warning("All records removed by cap or QC exclusions. Increase the cap or clear SDM QC exclusions.")
+    # Spatial clustering check for small datasets (all records used, no subsampling)
+    if 0 < sdm_n_final <= _sdm_br_n0 and _sdm_br_n4 == _sdm_br_n0 and not occ_for_sdm.empty:
+        _coords = occ_for_sdm[["_latitude", "_longitude"]].values
+        _centroid = _coords.mean(axis=0)
+        _dists_deg = np.sqrt(((_coords - _centroid) ** 2).sum(axis=1))
+        _median_dist = float(np.median(_dists_deg))
+        if _median_dist < 1.5:
+            st.warning(
+                f"⚠️ **Possible spatial bias**: {sdm_n_final} records with median spread {_median_dist:.2f}° from centroid. "
+                "Records appear geographically clustered — SDM may overfit to this area. "
+                "Use the QC rectangle on the setup map to exclude suspicious clusters, "
+                "or collect records from a broader area for more reliable predictions."
+            )
 
     current_sdm_occurrence_row_ids = tuple(sorted(occ_for_sdm["_row_id"].astype(int).tolist())) if not occ_for_sdm.empty else ()
     if st.session_state.sdm_occurrence_row_ids is not None and st.session_state.sdm_occurrence_row_ids != current_sdm_occurrence_row_ids:
