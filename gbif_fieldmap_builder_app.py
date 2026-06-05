@@ -2510,7 +2510,7 @@ def fit_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str],
                 model_loo = make_model(alg); model_loo.fit(X_tr, y_tr)
                 prob = float(model_loo.predict_proba(X_all.loc[[test_i]])[:, 1][0])
                 fold_aucs.append(prob)
-                metrics.append({"algorithm": alg, "partition_method": partition_method, "fold": fold_num, "auc": round(prob, 3), "warning": ""})
+                metrics.append({"algorithm": alg, "partition_method": partition_method, "fold": str(fold_num), "auc": round(prob, 3), "warning": ""})
             # For LOO the AUC is computed across all held-out presence predictions vs a random background sample.
             if fold_aucs:
                 bg_idx_loo = list(data.index[y_all == 0])
@@ -2544,7 +2544,7 @@ def fit_sdm(train_df: pd.DataFrame, variables: list[str], algorithms: list[str],
                 model = make_model(alg); model.fit(X_all.loc[train_mask], y_all.loc[train_mask])
                 auc = float(roc_auc_score(y_all.loc[test_mask], model.predict_proba(X_all.loc[test_mask])[:, 1]))
                 fold_aucs.append(auc)
-                metrics.append({"algorithm": alg, "partition_method": partition_method, "fold": int(fold), "auc": round(auc, 3), "warning": auc_warning(auc, partition_method)})
+                metrics.append({"algorithm": alg, "partition_method": partition_method, "fold": str(int(fold)), "auc": round(auc, 3), "warning": auc_warning(auc, partition_method)})
             mean_auc = float(np.mean(fold_aucs)) if fold_aucs else np.nan
             metrics.append({"algorithm": alg, "partition_method": partition_method, "fold": "mean", "auc": round(mean_auc, 3) if np.isfinite(mean_auc) else np.nan, "warning": auc_warning(mean_auc, partition_method) if np.isfinite(mean_auc) else "no valid folds"})
             final_model = make_model(alg); final_model.fit(X_all, y_all); models[alg] = final_model
@@ -4645,7 +4645,10 @@ def main() -> None:
         if overlay is not None:
             st.caption(f"Predict map: R/terra-style raster grid prediction using {overlay.get('method', 'ensemble raster prediction')}; array={overlay.get('shape')} cells; stride={overlay.get('source_stride')}; suitability min/mean/max={overlay.get('min')}/{overlay.get('mean')}/{overlay.get('max')}")
         st.write("SDM metrics")
-        st.dataframe(sdm_result["metrics"], width="stretch", hide_index=True)
+        _metrics_display = sdm_result["metrics"].copy()
+        if "fold" in _metrics_display.columns:
+            _metrics_display["fold"] = _metrics_display["fold"].astype(str)
+        st.dataframe(_metrics_display, width="stretch", hide_index=True)
         try:
             tmp = all_candidates.rename(columns={"latitude": "lat_tmp", "longitude": "lon_tmp"})
             tmp = extract_environment(tmp, sdm_result["variables"], "lat_tmp", "lon_tmp", resolution, status)
