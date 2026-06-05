@@ -773,7 +773,8 @@ def make_richness_map(grid: pd.DataFrame, hotspots: pd.DataFrame, metric: str) -
     return fmap
 
 
-def make_genus_candidate_selection_map(grid: pd.DataFrame, candidates: pd.DataFrame, metric: str, selected_ids: Optional[list[int]] = None, add_draw: bool = True) -> folium.Map:
+@st.cache_data(show_spinner=False)
+def make_genus_candidate_selection_map(grid: pd.DataFrame, candidates: pd.DataFrame, metric: str, selected_ids: Optional[tuple] = None, add_draw: bool = True) -> folium.Map:
     center = (float(grid["latitude"].mean()), float(grid["longitude"].mean())) if grid is not None and not grid.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
     metric_col = {"Species richness": "species_richness", "Record count": "record_count", "Species with minimum records": "species_with_min_records"}.get(metric, "species_richness")
@@ -1425,20 +1426,27 @@ def haversine_dbscan(df: pd.DataFrame, lat_col: str, lon_col: str, threshold_m: 
 
 
 def prediction_area_geometry(occ: pd.DataFrame, mode: str, buffer_km: float, rectangle_margin_km: float, excluded_occ: Optional[pd.DataFrame] = None, exclusion_buffer_km: float = 0.0):
-    points = [Point(float(row["_longitude"]), float(row["_latitude"])) for _, row in occ.iterrows()]
-    if not points:
+    if occ.empty:
         return None
+    lons = occ["_longitude"].to_numpy(dtype=float)
+    lats = occ["_latitude"].to_numpy(dtype=float)
     buffer_deg = max(km_to_deg(buffer_km), 0.0001)
     if mode == "buffer":
+        points = [Point(lo, la) for lo, la in zip(lons, lats)]
         geom = unary_union([p.buffer(buffer_deg) for p in points])
     elif mode == "convex hull":
-        geom = points[0].buffer(buffer_deg) if len(points) == 1 else MultiPoint(points).convex_hull.buffer(buffer_deg)
+        if len(lons) == 1:
+            geom = Point(lons[0], lats[0]).buffer(buffer_deg)
+        else:
+            geom = MultiPoint(list(zip(lons, lats))).convex_hull.buffer(buffer_deg)
     else:
         margin = km_to_deg(rectangle_margin_km)
-        geom = box(float(occ["_longitude"].min()) - margin, float(occ["_latitude"].min()) - margin, float(occ["_longitude"].max()) + margin, float(occ["_latitude"].max()) + margin)
+        geom = box(lons.min() - margin, lats.min() - margin, lons.max() + margin, lats.max() + margin)
     if excluded_occ is not None and not excluded_occ.empty and exclusion_buffer_km > 0:
         cutout_deg = max(km_to_deg(exclusion_buffer_km), 0.0001)
-        cutouts = unary_union([Point(float(row["_longitude"]), float(row["_latitude"])).buffer(cutout_deg) for _, row in excluded_occ.iterrows()])
+        exc_lons = excluded_occ["_longitude"].to_numpy(dtype=float)
+        exc_lats = excluded_occ["_latitude"].to_numpy(dtype=float)
+        cutouts = unary_union([Point(lo, la).buffer(cutout_deg) for lo, la in zip(exc_lons, exc_lats)])
         geom = geom.difference(cutouts)
     return geom
 
@@ -2544,32 +2552,35 @@ def make_ssdm_map(grid: pd.DataFrame, hotspots: pd.DataFrame, value_col: str, ti
     fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
     overlay = make_ssdm_overlay(grid, value_col, shape, bounds)
     folium.raster_layers.ImageOverlay(image=overlay["image"], bounds=overlay["bounds"], opacity=0.70, name=title, interactive=True).add_to(fmap)
-    # Coverage layer: n_species_evaluated per cell (greyscale dot markers, hidden by default)
-    if show_coverage_layer and "n_species_evaluated" in grid.columns:
-        fg_cov = FeatureGroup(name="Species model coverage (n evaluated)", show=False)
-        max_cov = int(grid["n_species_evaluated"].max()) if not grid.empty else 1
-        for _, row in grid[grid["n_species_evaluated"] > 0].iterrows():
-            n = int(row["n_species_evaluated"])
-            intensity = int(80 + 160 * n / max(max_cov, 1))
-            col = f"#{intensity:02x}{intensity:02x}ff"
-            folium.CircleMarker(
-                (row["latitude"], row["longitude"]),
-                radius=3, color=col, fill=True, fill_color=col, fill_opacity=0.6, weight=0,
-                tooltip=f"{n} species modeled here",
-            ).add_to(fg_cov)
-        fg_cov.add_to(fmap)
+    # Coverage layer: n_species_evaluated as raster overlay (fast — no per-cell Python loop)
+    if show_coverage_layer and "n_species_evaluated" in grid.columns and not grid.empty:
+        _cov_arr = np.full(int(shape[0]) * int(shape[1]), np.nan, dtype=float)
+        _cov_arr[grid["cell_index"].astype(int).to_numpy()] = grid["n_species_evaluated"].to_numpy(dtype=float)
+        _cov_arr = _cov_arr.reshape(shape)
+        _cov_max = float(np.nanmax(_cov_arr)) if np.isfinite(_cov_arr).any() else 1.0
+        _norm = np.where(np.isfinite(_cov_arr) & (_cov_arr > 0), _cov_arr / max(_cov_max, 1.0), np.nan)
+        _rgba_cov = np.zeros((shape[0], shape[1], 4), dtype=np.uint8)
+        _v = np.isfinite(_norm) & (_norm > 0)
+        _rgba_cov[_v, 0] = 60
+        _rgba_cov[_v, 1] = 120
+        _rgba_cov[_v, 2] = 200
+        _rgba_cov[_v, 3] = (180 * _norm[_v]).astype(np.uint8)
+        folium.raster_layers.ImageOverlay(
+            image=_rgba_cov, bounds=bounds, opacity=1.0,
+            name="Species model coverage (n evaluated)", show=False, interactive=False,
+        ).add_to(fmap)
     if hotspots is not None and not hotspots.empty:
         fg = FeatureGroup(name="SSDM hotspot candidates", show=True)
-        for _, row in hotspots.iterrows():
+        for row in hotspots.itertuples(index=False):
             folium.CircleMarker(
-                (row["latitude"], row["longitude"]),
+                (row.latitude, row.longitude),
                 radius=7,
                 color="#d73027",
                 fill=True,
                 fill_color="#d73027",
                 fill_opacity=0.9,
-                popup=folium.Popup(f"Hotspot rank {int(row['hotspot_rank'])}<br>Continuous richness: {row.get('ssdm_continuous_richness', '')}<br>Binary richness: {row.get('ssdm_binary_richness', '')}<br><a href='{row.get('google_maps_url', '')}' target='_blank'>Open in Google Maps</a>", max_width=360),
-                tooltip=f"SSDM hotspot {int(row['hotspot_rank'])}",
+                popup=folium.Popup(f"Hotspot rank {int(row.hotspot_rank)}<br>Continuous richness: {getattr(row, 'ssdm_continuous_richness', '')}<br>Binary richness: {getattr(row, 'ssdm_binary_richness', '')}<br><a href='{getattr(row, 'google_maps_url', '')}' target='_blank'>Open in Google Maps</a>", max_width=360),
+                tooltip=f"SSDM hotspot {int(row.hotspot_rank)}",
             ).add_to(fg)
         fg.add_to(fmap)
     _min_v = float(grid[value_col].min()) if not grid.empty and value_col in grid.columns else 0.0
@@ -2918,7 +2929,8 @@ def _priority_marker_style(row: Any) -> tuple[int, str]:
         return 7, "#7f7f7f"
 
 
-def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str, Any]], route_plan: Optional[pd.DataFrame], occurrence_buffer_m: float, survey_range_m: float, layers: dict[str, bool], show_images: bool = True, selected_ids: Optional[list] = None, add_draw: bool = False) -> folium.Map:
+@st.cache_data(show_spinner=False)
+def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str, Any]], route_plan: Optional[pd.DataFrame], occurrence_buffer_m: float, survey_range_m: float, layers: dict[str, bool], show_images: bool = True, selected_ids: Optional[tuple] = None, add_draw: bool = False) -> folium.Map:
     center = (float(occ["_latitude"].mean()), float(occ["_longitude"].mean())) if not occ.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=8, tiles="OpenStreetMap", control_scale=True)
     if layers.get("predict") and overlay is not None:
@@ -3278,7 +3290,7 @@ def genus_diversity_panel() -> None:
         if not selected_rows_for_map.empty:
             map_hotspots = pd.concat([map_hotspots, selected_rows_for_map], ignore_index=True, sort=False).drop_duplicates(subset=["site_id"], keep="first")
 
-        genus_map = make_genus_candidate_selection_map(grid, map_hotspots, richness_metric, selected_ids=list(st.session_state.genus_selected_site_ids), add_draw=True)
+        genus_map = make_genus_candidate_selection_map(grid, map_hotspots, richness_metric, selected_ids=tuple(sorted(st.session_state.genus_selected_site_ids)), add_draw=True)
         genus_map_data = st_folium(
             genus_map,
             width=None,
@@ -4430,7 +4442,7 @@ def main() -> None:
     # ── Priority-aware candidate map ─────────────────────────────────────────
     # Marker legend: red (rank 1-3) | orange (rank 4-10) | green (rank 11-20) | grey (rank >20) | purple dashed (SDM-high)
     # Selected sites show a green outer ring.
-    _sel_ids_for_map = list(st.session_state.get("sl_selected_site_ids", []))
+    _sel_ids_for_map = tuple(sorted(st.session_state.get("sl_selected_site_ids", [])))
     _sites_for_map = map_candidates if not all_candidates.empty else all_candidates
     fmap = build_map(occ_candidate_input, _sites_for_map, overlay, None, 0.0, float(survey_range_m), layers, bool(show_occurrence_images), selected_ids=_sel_ids_for_map, add_draw=not all_candidates.empty)
     main_map_data = st_folium(

@@ -4,6 +4,22 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-05 - Claude (claude-sonnet-4-6) - Global lag reduction: cache main maps, vectorize geometry, raster coverage layer
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+
+- **`build_map` cached** (`@st.cache_data`): the main candidate map (occurrence clusters + priority markers + selected-site rings) was rebuilt on every Streamlit widget interaction. Now cached; only rebuilt when input DataFrames, selected_ids, or layers change. Call site converts `selected_ids` list → sorted tuple for hashability.
+- **`make_genus_candidate_selection_map` cached** (`@st.cache_data`): same issue in genus mode — grid rectangles + hotspot markers rebuilt on every rerun. Now cached; `selected_ids` list → sorted tuple at call site.
+- **`make_ssdm_map` coverage layer** replaced: the per-cell `iterrows()` CircleMarker loop over up to 80,000 grid cells was replaced with a numpy-vectorized RGBA array and `ImageOverlay`. Eliminates 80k Python-level marker object creations.
+- **`prediction_area_geometry` vectorized**: removed `iterrows()` for Points creation; replaced with `occ["_longitude"].to_numpy()` + zip array. Also vectorized the excluded_occ cutout loop.
+- **`make_ssdm_map` hotspot loop** changed from `iterrows()` → `itertuples()` (faster attribute access).
+
+No UI, session-state, or feature-behavior changes.
+
 ## 2026-06-05 - Claude (claude-sonnet-4-6) - Performance: vectorize SSDM extent masking, cache maps, deduplicate per-species geometry
 
 Changed files:
