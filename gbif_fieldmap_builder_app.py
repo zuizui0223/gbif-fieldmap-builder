@@ -3339,10 +3339,10 @@ def genus_diversity_panel() -> None:
         genus_candidate_records = st.number_input("Genus richness candidate records", 50, 50_000, genus_candidate_records, 50, key="genus_candidate_records")
         genus_ssdm_records = st.number_input("SSDM presence records per species", 3, 5_000, genus_ssdm_records, 25, key="genus_ssdm_records")
 
-    st.subheader("2 — Choose your survey area")
+    st.subheader("🗺️ Known distribution")
     st.caption(
-        "Draw a rectangle around the area you can actually visit. "
-        "Richness hotspots are generated from records inside this rectangle."
+        f"{len(occ_cleaned):,} fetched records. "
+        "Draw a rectangle to define your fieldwork area."
     )
     genus_target_display = limit_occurrence_display(occ_cleaned, set(), int(genus_map_records))
     occ, genus_target_counts = target_occurrence_set_panel(
@@ -3350,7 +3350,7 @@ def genus_diversity_panel() -> None:
         genus_target_display,
         raw_record_count=len(occ_cleaned),
         key_prefix="genus_target",
-        label="Survey area for richness hotspots",
+        label="Survey area",
         show_map=True,
         model_label="SSDM",
         allow_advanced_modes=False,
@@ -3358,6 +3358,35 @@ def genus_diversity_panel() -> None:
     if occ.empty:
         st.error("The active genus target occurrence set is empty. Change the rectangle target option or clear the target rectangle.")
         return
+
+    # ── Best time to visit (shown right after distribution map) ──────────────
+    if "_obs_month" in occ_cleaned.columns:
+        _gc_ph_dated = occ_cleaned.dropna(subset=["_obs_month"])
+        if not _gc_ph_dated.empty:
+            st.subheader("📅 Best time to visit")
+            _gc_ph_fl = _gc_ph_dated[_gc_ph_dated["_phenology_state"] == "flowering"] if "_phenology_state" in _gc_ph_dated.columns else pd.DataFrame()
+            _gc_ph_all_m = sorted(_gc_ph_dated["_obs_month"].dropna().astype(int).unique().tolist())
+            _gc_ph_fl_m = sorted(_gc_ph_fl["_obs_month"].dropna().astype(int).unique().tolist()) if not _gc_ph_fl.empty else []
+            _gc_ph_window = _months_to_window_str(_gc_ph_fl_m if _gc_ph_fl_m else _gc_ph_all_m)
+            _gc_pc1, _gc_pc2 = st.columns([3, 1])
+            with _gc_pc1:
+                _gc_month_counts = _gc_ph_dated["_obs_month"].value_counts().sort_index()
+                if not _gc_ph_fl.empty:
+                    _gc_chart = pd.DataFrame({
+                        "All records": _gc_month_counts,
+                        "Flowering": _gc_ph_fl["_obs_month"].value_counts().sort_index(),
+                    }).fillna(0).astype(int)
+                else:
+                    _gc_chart = _gc_month_counts.rename("All records").to_frame()
+                st.bar_chart(_gc_chart, height=160)
+            with _gc_pc2:
+                st.metric("Recommended window", _gc_ph_window)
+                if _gc_ph_fl.empty:
+                    st.caption(f"Based on {len(_gc_ph_dated):,} dated records (date-inferred, no flowering evidence).")
+                else:
+                    _gc_conf = "high" if len(_gc_ph_fl) >= 5 else "medium" if len(_gc_ph_fl) >= 2 else "low"
+                    st.caption(f"Flowering evidence: {len(_gc_ph_fl):,} records (confidence: {_gc_conf}).")
+            st.caption("⚠️ Observation dates reflect when specimens were collected, not guaranteed flowering dates.")
 
     genus_candidate_input = spatially_balanced_cap(grid_thin(exact_coordinate_deduplicate(occ), 0.05), int(genus_candidate_records))
     summary = genus_species_summary(occ, int(min_records_for_sdm), float(grid_deg))
@@ -3387,11 +3416,11 @@ def genus_diversity_panel() -> None:
     st.dataframe(summary, width="stretch", hide_index=True)
     genus_ssdm_slot = st.container()
 
-    # Step 4: Richness hotspot suggestions and selection.
-    st.subheader("4 - Richness hotspot suggestions and selection")
+    # Richness hotspot suggestions and selection.
+    st.subheader("🌿 Richness hotspots")
     st.caption(
-        "Observed richness hotspot candidates are generated from records in the Step 2 survey area and work without SSDM. "
-        "Optional SSDM can add predicted-richness model support for re-ranking and exploratory model-only hotspots."
+        "Observed richness hotspot candidates — no SSDM required. "
+        "Optional SSDM below can re-rank candidates and add exploratory model-only hotspots."
     )
     has_ssdm_support = (
         "model_support_score" in hotspots.columns
@@ -3533,55 +3562,6 @@ def genus_diversity_panel() -> None:
             d3.download_button("All hotspots CSV", genus_all_candidates.to_csv(index=False).encode("utf-8"), "genus_all_hotspot_candidates.csv", "text/csv", width="stretch", key="genus_all_hotspots_csv_download")
             d4.download_button("Richness HTML map", html_bytes, "genus_hotspot_selection_map.html", "text/html", width="stretch", key="genus_richness_html_map_download")
             d5.download_button("All hotspots KML", make_export_kml(genus_all_candidates).encode("utf-8"), "genus_all_hotspot_candidates.kml", "application/vnd.google-earth.kml+xml", width="stretch", key="genus_all_hotspots_kml_download")
-
-    # ── Optional: Field season / flowering timing (genus mode) ───────────────
-    with st.expander("Optional: Field season / flowering timing", expanded=False):
-        st.caption(
-            "⚠️ Occurrence dates reflect when specimens were observed or collected, "
-            "not guaranteed flowering dates. Flowering windows labeled 'confirmed' require "
-            "flowering-state evidence (lifeStage, reproductiveCondition, or remarks). "
-            "Windows derived from date distributions alone are inferred, not confirmed."
-        )
-        if "_obs_month" in occ_cleaned.columns:
-            _gc_dated = occ_cleaned.dropna(subset=["_obs_month"])
-            if not _gc_dated.empty:
-                _gc_month_counts = _gc_dated["_obs_month"].value_counts().sort_index()
-                _gc_fl = _gc_dated[_gc_dated["_phenology_state"] == "flowering"] if "_phenology_state" in _gc_dated.columns else pd.DataFrame()
-                _pc1, _pc2 = st.columns(2)
-                with _pc1:
-                    st.markdown("**Observation months — all genus records**")
-                    st.bar_chart(_gc_month_counts.rename("records"))
-                with _pc2:
-                    if not _gc_fl.empty:
-                        st.markdown(f"**Flowering-state records ({len(_gc_fl):,})**")
-                        st.bar_chart(_gc_fl["_obs_month"].value_counts().sort_index().rename("flowering records"))
-                    else:
-                        st.markdown("**Flowering-state records**")
-                        st.info("No flowering-state evidence found in occurrence text fields.")
-                st.caption(f"Dated records: {len(_gc_dated):,} / {len(occ_cleaned):,}. Flowering-state confirmed: {len(_gc_fl):,}.")
-                # Per-species phenology table
-                if "_species_clean" in occ_cleaned.columns:
-                    _sp_ph_rows = []
-                    for _sp, _grp in occ_cleaned.groupby("_species_clean"):
-                        _sp_dated = _grp.dropna(subset=["_obs_month"])
-                        _sp_fl = _sp_dated[_sp_dated["_phenology_state"] == "flowering"] if "_phenology_state" in _sp_dated.columns else pd.DataFrame()
-                        _obs_m = sorted(_sp_dated["_obs_month"].dropna().astype(int).unique().tolist())
-                        _fl_m = sorted(_sp_fl["_obs_month"].dropna().astype(int).unique().tolist()) if not _sp_fl.empty else []
-                        _sp_ph_rows.append({
-                            "species": _sp,
-                            "records": len(_grp),
-                            "dated_records": len(_sp_dated),
-                            "flowering_records": len(_sp_fl),
-                            "observation_months": ", ".join(str(m) for m in _obs_m),
-                            "flowering_months": ", ".join(str(m) for m in _fl_m),
-                            "recommended_window": _months_to_window_str(_fl_m if _fl_m else _obs_m),
-                        })
-                    if _sp_ph_rows:
-                        _sp_ph_df = pd.DataFrame(_sp_ph_rows).sort_values("flowering_records", ascending=False).reset_index(drop=True)
-                        with st.expander("Per-species phenology summary", expanded=False):
-                            st.dataframe(_sp_ph_df, hide_index=True, width="stretch")
-        else:
-            st.info("No date information available in genus occurrence records.")
 
     # ── Auto-generated Methods text (genus) ───────────────────────────────────
     st.subheader("Methods (auto-generated)")
@@ -4179,16 +4159,15 @@ def main() -> None:
     effective_large_dataset_mode = bool(large_dataset_mode or auto_large_dataset_mode)
     effective_max_map_points = min(int(max_map_points), 1000) if effective_large_dataset_mode else int(max_map_points)
 
-    # ── Phase 1: Macro cluster map — national distribution overview + survey area rectangle ──
-    st.markdown("**Phase 1 — National distribution overview**")
+    # ── Known distribution map ────────────────────────────────────────────────
+    st.subheader("🗺️ Known distribution")
     st.caption(
-        f"All {len(occ_raw):,} fetched records shown as auto-clustering circles. "
-        "Circles shrink/expand as you zoom — click a cluster to zoom in. "
-        "Draw a rectangle on this map to select your survey area below."
+        f"{len(occ_raw):,} fetched records shown as clusters. "
+        "Draw a rectangle to define your fieldwork area."
     )
     col_p1_map, col_p1_clear = st.columns([4, 1])
     with col_p1_clear:
-        if st.button("Clear survey rectangle", key="target_clear_target_rect"):
+        if st.button("Clear rectangle", key="target_clear_target_rect"):
             st.session_state["target_rect_features"] = []
             st.session_state["target_last_draw_sig"] = ""
             reset_model_outputs()
@@ -4210,12 +4189,38 @@ def main() -> None:
             reset_model_outputs()
             st.rerun()
 
-    # ── Phase 2: Select survey area ───────────────────────────────────────────
-    st.markdown("**2 — Choose your survey area**")
-    st.caption(
-        "Draw a rectangle around the area you can actually visit. "
-        "Candidates are generated from records inside this rectangle."
-    )
+    # ── Best time to visit (shown right after fetch) ──────────────────────────
+    if "_obs_month" in occ_raw.columns:
+        _ph_dated = occ_raw.dropna(subset=["_obs_month"])
+        if not _ph_dated.empty:
+            st.subheader("📅 Best time to visit")
+            _ph_fl = _ph_dated[_ph_dated["_phenology_state"] == "flowering"] if "_phenology_state" in _ph_dated.columns else pd.DataFrame()
+            _ph_all_months = sorted(_ph_dated["_obs_month"].dropna().astype(int).unique().tolist())
+            _ph_fl_months = sorted(_ph_fl["_obs_month"].dropna().astype(int).unique().tolist()) if not _ph_fl.empty else []
+            _ph_window = _months_to_window_str(_ph_fl_months if _ph_fl_months else _ph_all_months)
+            _ph_col1, _ph_col2 = st.columns([3, 1])
+            with _ph_col1:
+                _ph_month_counts = _ph_dated["_obs_month"].value_counts().sort_index()
+                if not _ph_fl.empty:
+                    _ph_chart = pd.DataFrame({
+                        "All records": _ph_month_counts,
+                        "Flowering": _ph_fl["_obs_month"].value_counts().sort_index(),
+                    }).fillna(0).astype(int)
+                else:
+                    _ph_chart = _ph_month_counts.rename("All records").to_frame()
+                st.bar_chart(_ph_chart, height=160)
+            with _ph_col2:
+                st.metric("Recommended window", _ph_window)
+                if _ph_fl.empty:
+                    st.caption(f"Based on {len(_ph_dated):,} dated records (no flowering evidence — date-inferred).")
+                else:
+                    _ph_conf = "high" if len(_ph_fl) >= 5 else "medium" if len(_ph_fl) >= 2 else "low"
+                    st.caption(f"Flowering evidence: {len(_ph_fl):,} records (confidence: {_ph_conf}). Based on {len(_ph_dated):,} dated records.")
+            st.caption("⚠️ Observation dates reflect when specimens were collected, not guaranteed flowering dates.")
+
+    # ── Survey area ───────────────────────────────────────────────────────────
+    st.subheader("📍 Survey area")
+    st.caption("Draw a rectangle on the map above to set your fieldwork area. Candidates are generated from records inside.")
     target_map_display = limit_occurrence_display(occ_raw, set(), int(effective_max_map_points))
     occ_extent_selected, target_counts = target_occurrence_set_panel(
         occ_raw,
@@ -4685,43 +4690,12 @@ def main() -> None:
     all_candidates = add_priority_rank(all_candidates, float(observed_weight), float(model_weight))
     all_candidates = order_sites(all_candidates, "Nearest-neighbor route")
 
-    # ── Optional: Field season / flowering timing ─────────────────────────────
-    with st.expander("Optional: Field season / flowering timing", expanded=False):
-        st.caption(
-            "Warning: Occurrence dates reflect when specimens were observed or collected, "
-            "not guaranteed flowering dates. Flowering windows labeled 'confirmed' require "
-            "flowering-state evidence in lifeStage, reproductiveCondition, or remarks fields. "
-            "Windows derived from date distributions alone are labeled 'inferred'."
-        )
-        if "_obs_month" in occ_raw.columns:
-            dated_occ = occ_raw.dropna(subset=["_obs_month"])
-            if not dated_occ.empty:
-                month_counts = dated_occ["_obs_month"].value_counts().sort_index()
-                fl_occ = dated_occ[dated_occ["_phenology_state"] == "flowering"]
-                col_hist1, col_hist2 = st.columns(2)
-                with col_hist1:
-                    st.markdown("**Observation months (all records)**")
-                    st.bar_chart(month_counts.rename("records"))
-                with col_hist2:
-                    if not fl_occ.empty:
-                        fl_month_counts = fl_occ["_obs_month"].value_counts().sort_index()
-                        st.markdown(f"**Flowering-state records ({len(fl_occ):,})**")
-                        st.bar_chart(fl_month_counts.rename("flowering records"))
-                    else:
-                        st.markdown("**Flowering-state records**")
-                        st.info("No flowering-state evidence found in occurrence text fields (lifeStage, reproductiveCondition, remarks).")
-                st.caption(f"Dated records: {len(dated_occ):,} / {len(occ_raw):,}. Flowering-state confirmed: {len(fl_occ):,}.")
-        else:
-            st.info("No date information available in occurrence records.")
-
-    # ── 3 — Survey site suggestions and selection (merged) ───────────────────
-    st.subheader("3 — Survey site suggestions and selection")
+    # ── Survey candidates ─────────────────────────────────────────────────────
+    st.subheader("🎯 Survey candidates")
     st.caption(
-        "Candidate survey sites generated from occurrence clusters within your Step 2 survey area. "
-        "Ready to use immediately — no SDM required. "
-        "Optional SDM above predicts suitability at macro scale and can re-rank or add new exploration candidates. "
-        "⚠️ Google Maps verification is required. "
-        "This app does not guarantee road, ferry, mountain, cliff, or restricted-access feasibility."
+        "Candidate sites generated from occurrence clusters in your survey area. "
+        "Optional SDM below can re-rank or add exploratory sites. "
+        "⚠️ Google Maps verification required — road/access not guaranteed."
     )
     if st.session_state.sdm_result is None:
         st.info(
