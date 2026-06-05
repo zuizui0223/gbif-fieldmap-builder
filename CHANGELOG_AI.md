@@ -4,6 +4,27 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-05 - Claude (claude-sonnet-4-6) - SSDM species-specific prediction extents with NA-aware richness accumulation
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+
+- **Fixed critical accumulation bug**: `richness_cont` / `richness_binary` were undefined (referenced before assignment). Replaced with the already-initialized `richness_sum` / `binary_sum` / `n_evaluated` arrays throughout the loop and output construction.
+- **Fixed undefined `grid` reference**: `predict_suitability(grid, ...)` and output construction used `grid` which was out of scope; corrected to `shared_grid`.
+- **Implemented species-specific extent masking** (`ssdm_extent_mode="species_specific"`, default): for each species, a per-species bounding-box extent is computed from its presence points; the shared grid is masked to that extent; suitability is predicted only within the mask; cells outside are NaN (unevaluated, not absence).
+- **NA-aware richness accumulation**: richness is summed only where each species-level model was evaluated (`n_evaluated > 0`). Cells where no species was evaluated remain NaN in `ssdm_continuous_richness` and `ssdm_binary_richness`.
+- **Added `n_species_evaluated` and `mean_suitability` columns** to the SSDM output grid.
+- **Updated `ssdm_hotspot_candidates`**: added `min_species_evaluated` parameter (default 2); candidates are filtered to cells where at least this many species were modeled, avoiding high-richness artifacts from single-species cells.
+- **Coverage layer in `make_ssdm_map`**: optional `n_species_evaluated` dot layer (hidden by default, toggleable via LayerControl) showing how many species were evaluated per cell.
+- **SSDM UI**: added "SSDM prediction extent strategy" section with Advanced expander exposing `ssdm_extent_mode` radio and `ssdm_min_coverage` number_input; defaults visible as caption without requiring user interaction.
+- **Shared genus mode preserved**: `ssdm_extent_mode="shared_genus"` replicates previous behavior (all species predicted across full genus extent).
+
+Features preserved:
+- Species SDM validation unaffected. All SSDM outputs (richness maps, hotspot candidates, model summary CSV, VIF diagnostics, downloads) preserved. Partial SSDM completion and progress reporting preserved.
+
 ## 2026-06-05 - Claude (claude-sonnet-4-6) - Unify Step 2 survey-area panel: simple rectangle-include default for both species and genus
 
 Changed files:

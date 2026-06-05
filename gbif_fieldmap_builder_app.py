@@ -2538,11 +2538,25 @@ def make_ssdm_overlay(grid: pd.DataFrame, value_col: str, shape: tuple[int, int]
 
 
 @st.cache_data(show_spinner=False)
-def make_ssdm_map(grid: pd.DataFrame, hotspots: pd.DataFrame, value_col: str, title: str, shape: tuple[int, int], bounds: list[list[float]]) -> folium.Map:
+def make_ssdm_map(grid: pd.DataFrame, hotspots: pd.DataFrame, value_col: str, title: str, shape: tuple[int, int], bounds: list[list[float]], show_coverage_layer: bool = True) -> folium.Map:
     center = (float(grid["latitude"].mean()), float(grid["longitude"].mean())) if not grid.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
     overlay = make_ssdm_overlay(grid, value_col, shape, bounds)
     folium.raster_layers.ImageOverlay(image=overlay["image"], bounds=overlay["bounds"], opacity=0.70, name=title, interactive=True).add_to(fmap)
+    # Coverage layer: n_species_evaluated per cell (greyscale dot markers, hidden by default)
+    if show_coverage_layer and "n_species_evaluated" in grid.columns:
+        fg_cov = FeatureGroup(name="Species model coverage (n evaluated)", show=False)
+        max_cov = int(grid["n_species_evaluated"].max()) if not grid.empty else 1
+        for _, row in grid[grid["n_species_evaluated"] > 0].iterrows():
+            n = int(row["n_species_evaluated"])
+            intensity = int(80 + 160 * n / max(max_cov, 1))
+            col = f"#{intensity:02x}{intensity:02x}ff"
+            folium.CircleMarker(
+                (row["latitude"], row["longitude"]),
+                radius=3, color=col, fill=True, fill_color=col, fill_opacity=0.6, weight=0,
+                tooltip=f"{n} species modeled here",
+            ).add_to(fg_cov)
+        fg_cov.add_to(fmap)
     if hotspots is not None and not hotspots.empty:
         fg = FeatureGroup(name="SSDM hotspot candidates", show=True)
         for _, row in hotspots.iterrows():
@@ -2568,10 +2582,18 @@ def make_ssdm_map(grid: pd.DataFrame, hotspots: pd.DataFrame, value_col: str, ti
     return fmap
 
 
-def ssdm_hotspot_candidates(grid: pd.DataFrame, max_candidates: int) -> pd.DataFrame:
+def ssdm_hotspot_candidates(grid: pd.DataFrame, max_candidates: int, min_species_evaluated: int = 2) -> pd.DataFrame:
     if grid.empty:
         return pd.DataFrame()
-    out = grid.sort_values(["ssdm_continuous_richness", "ssdm_binary_richness"], ascending=False).head(int(max_candidates)).copy()
+    filtered = grid.dropna(subset=["ssdm_continuous_richness"])
+    # Apply minimum model-coverage filter when n_species_evaluated is available
+    if "n_species_evaluated" in filtered.columns and int(min_species_evaluated) > 1:
+        coverage_filtered = filtered[filtered["n_species_evaluated"] >= int(min_species_evaluated)]
+        if coverage_filtered.empty:
+            # Fall back to lower threshold if no cells pass
+            coverage_filtered = filtered[filtered["n_species_evaluated"] >= 1]
+        filtered = coverage_filtered if not coverage_filtered.empty else filtered
+    out = filtered.sort_values(["ssdm_continuous_richness", "ssdm_binary_richness"], ascending=False).head(int(max_candidates)).copy()
     max_richness = float(out["ssdm_continuous_richness"].max()) if not out.empty and float(out["ssdm_continuous_richness"].max()) > 0 else 1.0
     out.insert(0, "hotspot_rank", range(1, len(out) + 1))
     out["site_id"] = out["hotspot_rank"].astype(int)
@@ -2638,6 +2660,8 @@ def fit_stacked_species_sdms(
     ssdm_holdout_split: float = 0.20,
     per_species_grid_thin_deg: float = 0.0,
     per_species_distance_thin_m: float = 0.0,
+    ssdm_extent_mode: str = "species_specific",
+    ssdm_min_coverage: int = 2,
     status=None,
     progress=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, tuple[int, int], list[list[float]], pd.DataFrame]:
@@ -2647,6 +2671,14 @@ def fit_stacked_species_sdms(
     variables are used for every species model.  Per-species VIF is intentionally
     avoided to prevent inconsistent variable sets and BIO-variable loss on small
     species samples.
+
+    When ssdm_extent_mode == "species_specific" (default), each species is predicted
+    only within its own occurrence-based spatial extent; cells outside are treated as
+    NA (unevaluated), not zero absence. Richness is summed only where species-level
+    models were evaluated, tracked via n_species_evaluated per cell.
+
+    When ssdm_extent_mode == "shared_genus", all species are predicted across the
+    full genus-wide shared grid (legacy exploratory behaviour).
 
     Returns (summary_df, richness_grid, hotspots, shape, bounds, vif_diag_df).
     """
@@ -2659,16 +2691,20 @@ def fit_stacked_species_sdms(
     if eligible.empty:
         raise RuntimeError("No species had enough records for SSDM.")
 
-    grid, shape, bounds, stride = build_environment_prediction_grid(
+    # Build shared output grid once before the species loop (genus-wide extent).
+    shared_grid, shape, bounds, stride = build_environment_prediction_grid(
         work, variables, resolution, area_mode, buffer_km, rectangle_margin_km, max_pixels, status=status
     )
-    richness_cont = np.zeros(len(grid), dtype=float)
-    richness_binary = np.zeros(len(grid), dtype=int)
+    # NA-aware richness accumulators (per Step 2D specification)
+    richness_sum = np.zeros(len(shared_grid), dtype=float)   # continuous richness
+    binary_sum = np.zeros(len(shared_grid), dtype=float)     # binary richness
+    n_evaluated = np.zeros(len(shared_grid), dtype=int)      # species evaluated per cell
+
     summary_rows = []
     rng = np.random.default_rng(42)
-    background_n = min(int(n_background), len(grid))
-    bg_idx = rng.choice(len(grid), size=background_n, replace=False)
-    bg_base = grid.iloc[bg_idx][["latitude", "longitude"] + variables].copy()
+    background_n = min(int(n_background), len(shared_grid))
+    bg_idx = rng.choice(len(shared_grid), size=background_n, replace=False)
+    bg_base = shared_grid.iloc[bg_idx][["latitude", "longitude"] + variables].copy()
     bg_base["presence"] = 0
     bg_base["occurrence_row_id"] = np.nan
 
@@ -2684,7 +2720,7 @@ def fit_stacked_species_sdms(
         if len(all_pres) > 1000:
             all_pres = all_pres.sample(1000, random_state=42).reset_index(drop=True)
         all_pres_env = extract_environment(all_pres, variables, "latitude", "longitude", resolution, status=None)
-        pooled = pd.concat([all_pres_env, bg_base[all_pres_env.columns]], ignore_index=True, sort=False)
+        pooled = pd.concat([all_pres_env, bg_base[[c for c in all_pres_env.columns if c in bg_base.columns]]], ignore_index=True, sort=False)
         pooled, pooled_dropped = clean_environment_table(pooled, variables, "SSDM shared variable-selection environment", status)
         if pooled.empty or pooled["presence"].nunique() < 2:
             raise RuntimeError("SSDM shared variable-selection data had too few valid rows after raster NoData cleaning.")
@@ -2752,10 +2788,29 @@ def fit_stacked_species_sdms(
                 species_partition_method, int(sp_k), float(sp_checker),
                 holdout_test_size=float(sp_holdout),
             )
-            pred = predict_suitability(grid, sdm_result)["sdm_suitability"].to_numpy(dtype=float)
-            pred = np.nan_to_num(pred, nan=0.0)
-            richness_cont += pred
-            richness_binary += (pred >= float(binary_threshold)).astype(int)
+            # Build species-specific extent mask (or full grid for shared_genus mode)
+            if ssdm_extent_mode == "species_specific":
+                sp_extent_geom = prediction_area_geometry(sp_occ, area_mode, buffer_km, rectangle_margin_km)
+                if sp_extent_geom is not None and not sp_extent_geom.is_empty:
+                    sp_mask = np.array([
+                        sp_extent_geom.covers(Point(float(lo), float(la)))
+                        for lo, la in zip(shared_grid["longitude"].values, shared_grid["latitude"].values)
+                    ])
+                else:
+                    sp_mask = np.ones(len(shared_grid), dtype=bool)
+            else:
+                sp_mask = np.ones(len(shared_grid), dtype=bool)
+            # Predict only within masked cells; NA outside
+            sp_suitability = np.full(len(shared_grid), np.nan, dtype=float)
+            if sp_mask.sum() > 0:
+                sp_subset = shared_grid.iloc[np.where(sp_mask)[0]].copy()
+                sp_pred_df = predict_suitability(sp_subset, sdm_result)
+                sp_suitability[sp_mask] = sp_pred_df["sdm_suitability"].to_numpy(dtype=float)
+            # NA-aware accumulation: only count cells where species was evaluated
+            _valid = ~np.isnan(sp_suitability)
+            richness_sum[_valid] += sp_suitability[_valid]
+            binary_sum[_valid] += (sp_suitability[_valid] >= float(binary_threshold)).astype(float)
+            n_evaluated[_valid] += 1
             metrics_df = sdm_result["metrics"]
             auc_vals = pd.to_numeric(metrics_df.get("auc", pd.Series(dtype=float)), errors="coerce")
             mean_auc_val = float(auc_vals.mean()) if auc_vals.notna().any() else np.nan
@@ -2779,10 +2834,18 @@ def fit_stacked_species_sdms(
             _skip_reason = f"Forced override: {_eff_ov2}"
         summary_rows.append({"species": species, "status": "skipped_too_few_records", "n_records": int(n_records), "n_presence_used": 0, "n_background": int(background_n), "environment_rows_dropped": np.nan, "mean_auc": np.nan, "algorithms": "", "shared_vif_applied": variable_selection_strategy == "VIF stepwise", "variable_selection_strategy": variable_selection_strategy, "vif_threshold": float(vif_threshold) if variable_selection_strategy == "VIF stepwise" else np.nan, "variables_kept": "", "variables_removed_by_vif": "", "variables_removed_by_selection": "", "partition_method": _skip_method, "partition_reason": _skip_reason, "test_split": np.nan, "n_folds": np.nan, "valid_folds": 0, "auc_warning": "skipped"})
 
-    out_grid = grid[["raster_row", "raster_col", "cell_index", "latitude", "longitude"]].copy()
-    out_grid["ssdm_continuous_richness"] = np.round(richness_cont, 4)
-    out_grid["ssdm_binary_richness"] = richness_binary.astype(int)
-    hotspots = ssdm_hotspot_candidates(out_grid, max_hotspots)
+    out_grid = shared_grid[["raster_row", "raster_col", "cell_index", "latitude", "longitude"]].copy()
+    # Cells where no species was evaluated → NaN (not zero — these are unevaluated, not absence)
+    out_grid["ssdm_continuous_richness"] = np.where(n_evaluated > 0, np.round(richness_sum, 4), np.nan)
+    out_grid["ssdm_binary_richness"] = np.where(n_evaluated > 0, binary_sum.astype(float), np.nan)
+    out_grid["n_species_evaluated"] = n_evaluated
+    with np.errstate(invalid="ignore"):
+        out_grid["mean_suitability"] = np.where(
+            n_evaluated > 0,
+            np.round(richness_sum / np.maximum(n_evaluated, 1), 4),
+            np.nan,
+        )
+    hotspots = ssdm_hotspot_candidates(out_grid, max_hotspots, min_species_evaluated=int(ssdm_min_coverage))
     return pd.DataFrame(summary_rows), out_grid, hotspots, shape, bounds, vif_diag
 
 
@@ -3393,6 +3456,33 @@ def genus_diversity_panel() -> None:
         # Legacy variables kept for backward compatibility in call site
         ssdm_partition_method = ssdm_partition_override
         ssdm_test_split = ssdm_holdout_split
+
+        st.markdown("**SSDM prediction extent strategy**")
+        st.caption(
+            "Species-specific extents (default): each species is predicted only within its own "
+            "occurrence-based spatial extent. Cells outside are NA (unevaluated), not absence. "
+            "Richness is summed only where each species-level model was evaluated."
+        )
+        ssdm_extent_mode = "species_specific"
+        ssdm_min_coverage = 2
+        with st.expander("Advanced: prediction extent strategy", expanded=False):
+            ssdm_extent_mode = st.radio(
+                "SSDM prediction extent",
+                ["species_specific", "shared_genus"],
+                index=0,
+                format_func=lambda x: {
+                    "species_specific": "Species-specific extents (recommended) — NA outside each species' range",
+                    "shared_genus": "Shared genus-wide extent (exploratory) — may overpredict narrow-range species",
+                }[x],
+                key="ssdm_extent_mode",
+            )
+            ssdm_min_coverage = st.number_input(
+                "Minimum species evaluated per candidate cell",
+                min_value=1, max_value=20, value=2, step=1,
+                key="ssdm_min_coverage",
+                help="SSDM-high exploration candidates require this many species to have been modeled in the cell.",
+            )
+
         run_ssdm = st.button("Run SSDM", type="primary", key="run_ssdm_button")
 
     if run_ssdm:
@@ -3432,6 +3522,8 @@ def genus_diversity_panel() -> None:
                     ssdm_holdout_split=float(ssdm_holdout_split),
                     per_species_grid_thin_deg=float(ssdm_per_species_grid_deg),
                     per_species_distance_thin_m=float(ssdm_per_species_distance_m),
+                    ssdm_extent_mode=ssdm_extent_mode,
+                    ssdm_min_coverage=int(ssdm_min_coverage),
                     status=status,
                     progress=progress,
                 )
