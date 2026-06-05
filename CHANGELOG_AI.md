@@ -4,6 +4,37 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-05 - Claude (claude-sonnet-4-6) - Add phenology/flowering-season support to fieldwork planning workflow
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+
+- **`parse_occurrence_month_doy`**: new helper that extracts (month, day_of_year) from occurrence row fields — tries eventDate/_event_date, then month/day/year fields, then startDayOfYear.
+- **`infer_phenology_state`**: new helper that classifies each record as 'flowering', 'fruiting', 'vegetative_or_nonreproductive', or 'unknown' by scanning lifeStage, reproductiveCondition, occurrenceRemarks, fieldNotes, and dynamicProperties text fields against keyword sets (_FLOWERING_KW, _FRUITING_KW, _VEG_KW).
+- **`enrich_occurrences_with_phenology`**: new function that adds _obs_month, _obs_doy, _phenology_state columns to a cleaned occurrence DataFrame; called immediately after clean_occurrences() in the main species workflow.
+- **`candidate_season_summary`**: new function that summarises flowering/phenology season for occurrence records belonging to one candidate cluster; returns observation_months, observation_doy_median/iqr, flowering_record_count, flowering_months, flowering_doy_median, recommended_survey_window, season_confidence.
+- **`_months_to_window_str`**: new helper that converts a list of month integers to a compact string like 'Apr-Jun'.
+- **`make_candidate_sites`**: phenology default columns (observation_months, flowering_record_count, flowering_months, recommended_survey_window, season_confidence) added to returned DataFrame so columns are always present.
+- **Phenology enrichment at call site**: after make_candidate_sites, per-cluster occurrence subsets are summarised via candidate_season_summary and written back into occurrence_candidates before add_priority_rank.
+- **Phenology UI expander** ("Optional: Field season / flowering timing"): shows observation-month bar chart for all dated records and a separate flowering-state bar chart; placed before the Step 3 survey site suggestions section; includes caveat caption about observation vs flowering dates.
+- **Candidate details table**: recommended_survey_window, season_confidence, flowering_record_count added to displayed columns when present.
+- **`popup_html_site`**: phenology_line added to candidate popup HTML showing recommended visit window, confidence, and flowering evidence count when a valid window is available.
+- **`make_validation_template`**: added recommended_survey_window, season_confidence, flowering_record_count from phenology summary; added new field-entry columns visit_date, flowering_observed, fruiting_observed, vegetative_only, phenology_notes.
+- **`EXPORT_CSV_COLS`**: recommended_survey_window, season_confidence, flowering_record_count added to candidate CSV exports.
+
+Features preserved:
+- All existing species SDM, VIF, spatial partition, predict map, exclusion/QC, route planner, and download features unchanged.
+- Genus/SSDM workflows unchanged.
+- Phenology section is optional (expander, collapsed by default); missing dates/fields are handled gracefully and never crash the app.
+
+Known risks / TODO:
+- Phenology state inference is keyword-based; rare or non-English phenology terms may not be captured.
+- Flowering windows derived from all dated records (not confirmed flowering records) are labeled 'inferred' via the season_confidence field.
+- GBIF occurrence records may not include lifeStage or reproductiveCondition; flowering_record_count may be 0 for most species.
+
 ## 2026-06-05 - Claude (claude-sonnet-4-6) - Global lag reduction: cache main maps, vectorize geometry, raster coverage layer
 
 Changed files:

@@ -148,6 +148,158 @@ def detect_column(columns: list[str], candidates: list[str]) -> Optional[str]:
     return None
 
 
+# ── Phenology / flowering-season helpers ──────────────────────────────────────
+
+def parse_occurrence_month_doy(row: dict) -> tuple[Optional[int], Optional[int]]:
+    """Return (month, day_of_year) from occurrence row fields. Returns (None, None) if unparseable."""
+    # Try eventDate first
+    for date_field in ["eventDate", "_event_date", "event_date"]:
+        val = row.get(date_field)
+        if val and str(val) not in ("", "nan", "NaT"):
+            try:
+                dt = pd.to_datetime(str(val), errors="coerce")
+                if pd.notna(dt):
+                    return int(dt.month), int(dt.day_of_year)
+            except Exception:
+                pass
+    # Fallback: year/month/day fields
+    try:
+        m = row.get("month") or row.get("_month")
+        if m and str(m) not in ("", "nan"):
+            month = int(float(str(m)))
+            if 1 <= month <= 12:
+                d = row.get("day") or row.get("_day")
+                if d and str(d) not in ("", "nan"):
+                    try:
+                        import datetime
+                        day = int(float(str(d)))
+                        y = int(row.get("year") or row.get("_year") or 2000)
+                        doy = datetime.date(y, month, day).timetuple().tm_yday
+                        return month, doy
+                    except Exception:
+                        pass
+                # month known, day unknown: estimate mid-month
+                return month, (month - 1) * 30 + 15
+    except Exception:
+        pass
+    # startDayOfYear
+    try:
+        sdoy = row.get("startDayOfYear")
+        if sdoy and str(sdoy) not in ("", "nan"):
+            doy = int(float(str(sdoy)))
+            if 1 <= doy <= 366:
+                import datetime
+                dt2 = datetime.datetime(2000, 1, 1) + datetime.timedelta(days=doy - 1)
+                return dt2.month, doy
+    except Exception:
+        pass
+    return None, None
+
+
+_FLOWERING_KW = {"flowering", "flower", "in bloom", "bloom", "floral", "anthesis", "開花", "花"}
+_FRUITING_KW = {"fruiting", "fruit-bearing", "fruit", "seed", "結実", "果実"}
+_VEG_KW = {"vegetative", "sterile", "non-reproductive", "seedling"}
+
+
+def infer_phenology_state(row: dict) -> str:
+    """Return 'flowering' | 'fruiting' | 'vegetative_or_nonreproductive' | 'unknown'."""
+    text_fields = ["lifeStage", "reproductiveCondition", "occurrenceRemarks",
+                   "fieldNotes", "dynamicProperties"]
+    combined = " ".join(str(row.get(f, "")) for f in text_fields).lower()
+    if not combined.strip():
+        return "unknown"
+    for kw in _FLOWERING_KW:
+        if kw in combined:
+            return "flowering"
+    for kw in _FRUITING_KW:
+        if kw in combined:
+            return "fruiting"
+    for kw in _VEG_KW:
+        if kw in combined:
+            return "vegetative_or_nonreproductive"
+    return "unknown"
+
+
+def enrich_occurrences_with_phenology(occ: pd.DataFrame) -> pd.DataFrame:
+    """Add _month, _doy, _phenology_state columns to occurrence DataFrame in-place copy."""
+    if occ.empty:
+        return occ.copy()
+    out = occ.copy()
+    months, doys, states = [], [], []
+    for row in out.to_dict("records"):
+        m, d = parse_occurrence_month_doy(row)
+        months.append(m)
+        doys.append(d)
+        states.append(infer_phenology_state(row))
+    out["_obs_month"] = months
+    out["_obs_doy"] = doys
+    out["_phenology_state"] = states
+    return out
+
+
+def candidate_season_summary(candidate_occ: pd.DataFrame) -> dict:
+    """Summarise flowering/phenology season for occurrences belonging to one candidate cluster.
+
+    candidate_occ must have _obs_month, _obs_doy, _phenology_state columns.
+    Returns a dict of summary fields.
+    """
+    result = {
+        "observation_months": "",
+        "observation_doy_median": np.nan,
+        "observation_doy_iqr": np.nan,
+        "flowering_record_count": 0,
+        "flowering_months": "",
+        "flowering_doy_median": np.nan,
+        "recommended_survey_window": "unknown",
+        "season_confidence": "low",
+    }
+    if candidate_occ.empty:
+        return result
+    # All records with known month
+    dated = candidate_occ.dropna(subset=["_obs_month"])
+    if dated.empty:
+        return result
+    months = sorted(dated["_obs_month"].dropna().astype(int).unique().tolist())
+    result["observation_months"] = ", ".join(str(m) for m in months)
+    doys = dated["_obs_doy"].dropna().astype(float).tolist()
+    if doys:
+        result["observation_doy_median"] = round(float(np.median(doys)), 1)
+        result["observation_doy_iqr"] = round(float(np.percentile(doys, 75) - np.percentile(doys, 25)), 1)
+    # Flowering records
+    fl = dated[dated["_phenology_state"] == "flowering"]
+    fl_count = len(fl)
+    result["flowering_record_count"] = fl_count
+    if fl_count > 0:
+        fl_months = sorted(fl["_obs_month"].dropna().astype(int).unique().tolist())
+        result["flowering_months"] = ", ".join(str(m) for m in fl_months)
+        fl_doys = fl["_obs_doy"].dropna().astype(float).tolist()
+        if fl_doys:
+            result["flowering_doy_median"] = round(float(np.median(fl_doys)), 1)
+        # Recommend window from flowering records
+        window_months = fl_months
+        confidence = "high" if fl_count >= 5 else "medium" if fl_count >= 2 else "low"
+    else:
+        # Fallback to all dated records
+        window_months = months
+        confidence = "medium" if len(dated) >= 5 else "low"
+        result["flowering_months"] = ""
+    if window_months:
+        result["recommended_survey_window"] = _months_to_window_str(window_months)
+    result["season_confidence"] = confidence
+    return result
+
+
+def _months_to_window_str(months: list) -> str:
+    """Convert list of month ints to a compact human-readable window like 'Apr-Jun'."""
+    _MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    if not months:
+        return "unknown"
+    months_s = sorted(set(int(m) for m in months if 1 <= int(m) <= 12))
+    if len(months_s) == 1:
+        return _MONTH_ABBR[months_s[0] - 1]
+    return f"{_MONTH_ABBR[months_s[0] - 1]}-{_MONTH_ABBR[months_s[-1] - 1]}"
+
+
 def init_session_state() -> None:
     defaults = {
         "raw_df": None,
@@ -1637,7 +1789,13 @@ def make_candidate_sites(df: pd.DataFrame, method: str, occurrence_weight: float
         photo_bonus = 0.15 if str(rep.get("_media_url", "")) else 0
         priority = round(min(1.0, 0.35 + occurrence_weight * occurrence_support + 0.15 * recent_bonus + photo_bonus), 3)
         rows.append({"site_id": site_id, "candidate_type": "Occurrence-supported survey range", "cluster_id": int(cluster_id), "latitude": lat, "longitude": lon, "n_occurrences": n, "occurrence_support_score": occurrence_support, "year_min": year_min, "year_max": year_max, "representative_gbif_id": str(rep.get("_gbif_id", "")), "representative_media_url": str(rep.get("_media_url", "")), "representative_locality": str(rep.get("_locality", "")), "candidate_method": method, "selection_reason": reason, "bias_warning": "Record density is useful but may reflect GBIF observer/access bias.", "priority_score": priority})
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    # Phenology: default empty columns (filled later by caller with full occ_candidate_input)
+    for col in ["observation_months", "flowering_record_count", "flowering_months",
+                "recommended_survey_window", "season_confidence"]:
+        if col not in out.columns:
+            out[col] = "" if col != "flowering_record_count" else 0
+    return out
 
 
 def available_sort_cols(df: pd.DataFrame, desired: list[str]) -> list[str]:
@@ -2894,6 +3052,12 @@ def make_sdm_exploration_candidates(pred_table: pd.DataFrame, known_occ: pd.Data
 
 
 def popup_html_site(row: pd.Series) -> str:
+    survey_window = row.get('recommended_survey_window', '')
+    fl_count = row.get('flowering_record_count', 0)
+    season_conf = row.get('season_confidence', '')
+    phenology_line = ""
+    if survey_window and str(survey_window) not in ("", "nan", "unknown"):
+        phenology_line = f"Recommended visit: {survey_window} (confidence: {season_conf}, flowering evidence: {fl_count})<br>"
     return f"""
     <b>Survey range {int(row.get('site_id', 0))}</b><br>
     Type: {row.get('candidate_type', '')}<br>
@@ -2907,7 +3071,7 @@ def popup_html_site(row: pd.Series) -> str:
     Latitude: {float(row['latitude']):.6f}<br>
     Longitude: {float(row['longitude']):.6f}<br>
     Note: {row.get('bias_warning', '')}<br>
-    <a href='{make_google_maps_point_url(float(row['latitude']), float(row['longitude']))}' target='_blank'>Open in Google Maps</a>
+    {phenology_line}<a href='{make_google_maps_point_url(float(row['latitude']), float(row['longitude']))}' target='_blank'>Open in Google Maps</a>
     {image_html(row.get('representative_media_url', ''))}
     """
 
@@ -3660,7 +3824,7 @@ def make_survey_day_html(day_lists: dict, sites: pd.DataFrame) -> str:
             f"{body}</body></html>")
 
 
-EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "selection_reason", "access_note", "google_maps_url"]
+EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "selection_reason", "access_note", "recommended_survey_window", "season_confidence", "flowering_record_count", "google_maps_url"]
 
 
 def make_export_csv(sites: pd.DataFrame) -> str:
@@ -3760,6 +3924,7 @@ def make_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
         "site_id", "candidate_type", "priority_rank", "priority_score",
         "occurrence_support_score", "model_support_score", "sdm_suitability", "ssdm_predicted_richness",
         "observed_species_richness", "species_richness", "species_list",
+        "recommended_survey_window", "season_confidence", "flowering_record_count",
         "latitude", "longitude", "google_maps_url",
         "google_maps_checked", "accessible", "access_mode", "access_note",
         "visited", "survey_date", "observer", "survey_effort_minutes", "search_area_m2",
@@ -3767,6 +3932,7 @@ def make_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
         "flowering_status", "number_of_species_detected", "newly_confirmed_population",
         "photographs_taken", "photo_file", "specimen_collected", "specimens_collected", "specimen_id",
         "dna_sample_collected", "dna_samples_collected", "dna_sample_id", "habitat_note", "notes", "comments",
+        "visit_date", "flowering_observed", "fruiting_observed", "vegetative_only", "phenology_notes",
     ]
     base = sites.copy()
     if not base.empty and {"latitude", "longitude"}.issubset(base.columns):
@@ -3859,6 +4025,8 @@ def main() -> None:
     if occ_raw.empty:
         st.error("No valid coordinate records found.")
         return
+    # Enrich with phenology (adds _obs_month, _obs_doy, _phenology_state)
+    occ_raw = enrich_occurrences_with_phenology(occ_raw)
 
     auto_large_dataset_mode = len(occ_raw) > 1000
     effective_large_dataset_mode = bool(large_dataset_mode or auto_large_dataset_mode)
@@ -3984,6 +4152,19 @@ def main() -> None:
     occ_candidate_input["cluster_id"] = haversine_dbscan(occ_candidate_input, "_latitude", "_longitude", float(cluster_m), int(min_samples))
     occ_map_display = limit_occurrence_display(occ_extent_selected, set(), int(effective_max_map_points))
     occurrence_candidates = make_candidate_sites(occ_candidate_input, center_method, float(occurrence_weight))
+    # Enrich candidates with phenology season summary
+    if "_obs_month" in occ_candidate_input.columns and not occurrence_candidates.empty:
+        for idx, cand_row in occurrence_candidates.iterrows():
+            cluster_id = cand_row.get("cluster_id", -999)
+            if "cluster_id" in occ_candidate_input.columns:
+                cluster_occ = occ_candidate_input[occ_candidate_input["cluster_id"] == cluster_id]
+            else:
+                cluster_occ = pd.DataFrame()
+            if cluster_occ.empty:
+                continue
+            summary = candidate_season_summary(cluster_occ)
+            for k, v in summary.items():
+                occurrence_candidates.at[idx, k] = v
     occurrence_candidates = add_priority_rank(occurrence_candidates, float(observed_weight), float(model_weight))
     occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")
 
@@ -4354,6 +4535,35 @@ def main() -> None:
     all_candidates = add_priority_rank(all_candidates, float(observed_weight), float(model_weight))
     all_candidates = order_sites(all_candidates, "Nearest-neighbor route")
 
+    # ── Optional: Field season / flowering timing ─────────────────────────────
+    with st.expander("Optional: Field season / flowering timing", expanded=False):
+        st.caption(
+            "Warning: Occurrence dates reflect when specimens were observed or collected, "
+            "not guaranteed flowering dates. Flowering windows labeled 'confirmed' require "
+            "flowering-state evidence in lifeStage, reproductiveCondition, or remarks fields. "
+            "Windows derived from date distributions alone are labeled 'inferred'."
+        )
+        if "_obs_month" in occ_raw.columns:
+            dated_occ = occ_raw.dropna(subset=["_obs_month"])
+            if not dated_occ.empty:
+                month_counts = dated_occ["_obs_month"].value_counts().sort_index()
+                fl_occ = dated_occ[dated_occ["_phenology_state"] == "flowering"]
+                col_hist1, col_hist2 = st.columns(2)
+                with col_hist1:
+                    st.markdown("**Observation months (all records)**")
+                    st.bar_chart(month_counts.rename("records"))
+                with col_hist2:
+                    if not fl_occ.empty:
+                        fl_month_counts = fl_occ["_obs_month"].value_counts().sort_index()
+                        st.markdown(f"**Flowering-state records ({len(fl_occ):,})**")
+                        st.bar_chart(fl_month_counts.rename("flowering records"))
+                    else:
+                        st.markdown("**Flowering-state records**")
+                        st.info("No flowering-state evidence found in occurrence text fields (lifeStage, reproductiveCondition, remarks).")
+                st.caption(f"Dated records: {len(dated_occ):,} / {len(occ_raw):,}. Flowering-state confirmed: {len(fl_occ):,}.")
+        else:
+            st.info("No date information available in occurrence records.")
+
     # ── 3 — Survey site suggestions and selection (merged) ───────────────────
     st.subheader("3 — Survey site suggestions and selection")
     st.caption(
@@ -4534,7 +4744,7 @@ def main() -> None:
         if all_candidates.empty:
             st.info("No candidates generated yet.")
         else:
-            all_cand_show_cols = [c for c in ["site_id", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "candidate_type", "n_occurrences", "latitude", "longitude", "score_explanation"] if c in all_candidates.columns]
+            all_cand_show_cols = [c for c in ["site_id", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "candidate_type", "n_occurrences", "latitude", "longitude", "score_explanation", "recommended_survey_window", "season_confidence", "flowering_record_count"] if c in all_candidates.columns]
             st.dataframe(all_candidates[all_cand_show_cols], width="stretch", hide_index=True)
             oc1, oc2 = st.columns(2)
             oc1.download_button(
