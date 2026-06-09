@@ -4919,49 +4919,6 @@ def main() -> None:
             st.rerun()
         route_plan = _sel_df_summary.copy()
 
-    # ── Best time to visit (selected candidate sites) ────────────────────────
-    st.subheader("📅 Best time to visit (selected candidates)")
-    _final_sel_ids = st.session_state.get("sl_selected_site_ids", [])
-    if not _final_sel_ids or all_candidates.empty:
-        st.info("Select candidate sites on the map above to see the recommended survey timing for your chosen locations.")
-    elif "_obs_month" not in occ_candidate_input.columns:
-        st.info("No date information available to calculate survey timing.")
-    else:
-        _sel_cluster_ids = all_candidates[all_candidates["site_id"].astype(int).isin(_final_sel_ids)]["cluster_id"].dropna().tolist()
-        _sel_occ = occ_candidate_input[occ_candidate_input["cluster_id"].isin(_sel_cluster_ids)] if _sel_cluster_ids and "cluster_id" in occ_candidate_input.columns else pd.DataFrame()
-        _sel_ph_dated = _sel_occ.dropna(subset=["_obs_month"]) if not _sel_occ.empty else pd.DataFrame()
-        if _sel_ph_dated.empty:
-            st.info("No dated occurrence records associated with the selected candidate sites.")
-        else:
-            _sel_ph_fl = _sel_ph_dated[_sel_ph_dated["_phenology_state"] == "flowering"] if "_phenology_state" in _sel_ph_dated.columns else pd.DataFrame()
-            _sel_all_months = sorted(_sel_ph_dated["_obs_month"].dropna().astype(int).unique().tolist())
-            _sel_fl_months = sorted(_sel_ph_fl["_obs_month"].dropna().astype(int).unique().tolist()) if not _sel_ph_fl.empty else []
-            _sel_all_counts_d = _sel_ph_dated["_obs_month"].value_counts().to_dict()
-            if _sel_fl_months:
-                _sel_fl_counts_d = _sel_ph_fl["_obs_month"].value_counts().to_dict()
-                _sel_ph_window = _months_to_window_str(_sel_fl_months, counts=_sel_fl_counts_d)
-            else:
-                _sel_ph_window = _months_to_window_str(_sel_all_months, counts=_sel_all_counts_d)
-            _sel_pc1, _sel_pc2 = st.columns([3, 1])
-            with _sel_pc1:
-                _sel_month_counts = _sel_ph_dated["_obs_month"].value_counts().sort_index()
-                if not _sel_ph_fl.empty:
-                    _sel_chart = pd.DataFrame({
-                        "All records": _sel_month_counts,
-                        "Flowering": _sel_ph_fl["_obs_month"].value_counts().sort_index(),
-                    }).fillna(0).astype(int)
-                else:
-                    _sel_chart = _sel_month_counts.rename("All records").to_frame()
-                st.bar_chart(_sel_chart, height=160)
-            with _sel_pc2:
-                st.metric("Recommended window", _sel_ph_window)
-                if _sel_ph_fl.empty:
-                    st.caption(f"Based on {len(_sel_ph_dated):,} records at {len(_final_sel_ids)} selected sites (no flowering evidence).")
-                else:
-                    _sel_conf = "high" if len(_sel_ph_fl) >= 5 else "medium" if len(_sel_ph_fl) >= 2 else "low"
-                    st.caption(f"Flowering evidence: {len(_sel_ph_fl):,} records at {len(_final_sel_ids)} selected sites (confidence: {_sel_conf}).")
-            st.caption("⚠️ Based on occurrence records from clusters corresponding to your selected candidate sites.")
-
     # ── Optional: full candidate details table ────────────────────────────────
     with st.expander("Optional: candidate details table", expanded=False):
         if all_candidates.empty:

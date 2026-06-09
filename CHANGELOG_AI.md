@@ -4,6 +4,23 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-09 - Codex (OpenAI) - Remove selected-candidate best-time panel
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Removed the separate `Best time to visit (selected candidates)` panel below the selected survey-site summary.
+- Kept the main occurrence-level `Best time to visit` section and preserved per-candidate phenology fields in candidate details, CSV exports, popups, and field-validation templates.
+
+Features preserved:
+- Candidate selection, selected-site summaries, Google Maps/CSV/HTML/KML/validation exports, optional SDM/SSDM, VIF diagnostics, spatial validation, and existing phenology export columns remain available.
+
+Known risks / TODO:
+- Users should rely on the main Best time to visit panel and candidate-level exported phenology fields instead of a separate selected-candidate chart.
+
 ## 2026-06-09 - Codex (OpenAI) - Reduce survey-area rectangle lag
 
 Changed files:
