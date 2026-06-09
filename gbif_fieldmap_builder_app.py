@@ -1776,9 +1776,22 @@ def make_macro_cluster_map(occ: pd.DataFrame) -> folium.Map:
 def representative_medoid(group: pd.DataFrame) -> pd.Series:
     if len(group) == 1:
         return group.iloc[0]
-    coords = [(float(r["_latitude"]), float(r["_longitude"])) for _, r in group.iterrows()]
-    scores = [sum(geodesic(coord, other).m for other in coords) for coord in coords]
-    return group.iloc[int(np.argmin(scores))]
+    lats = group["_latitude"].to_numpy(dtype=float)
+    lons = group["_longitude"].to_numpy(dtype=float)
+    if len(group) <= 75:
+        lat_rad = np.radians(lats)
+        lon_rad = np.radians(lons)
+        dlat = lat_rad[:, None] - lat_rad[None, :]
+        dlon = lon_rad[:, None] - lon_rad[None, :]
+        a = np.sin(dlat / 2) ** 2 + np.cos(lat_rad[:, None]) * np.cos(lat_rad[None, :]) * np.sin(dlon / 2) ** 2
+        d = 2 * EARTH_RADIUS_M * np.arcsin(np.sqrt(a.clip(0, 1)))
+        return group.iloc[int(np.argmin(d.sum(axis=1)))]
+
+    lat0 = math.radians(float(np.nanmean(lats)))
+    lon0 = math.radians(float(np.nanmean(lons)))
+    x = (np.radians(lons) - lon0) * math.cos(lat0)
+    y = np.radians(lats) - lat0
+    return group.iloc[int(np.argmin((x * x) + (y * y)))]
 
 
 def make_candidate_sites(df: pd.DataFrame, method: str, occurrence_weight: float) -> pd.DataFrame:
@@ -1810,6 +1823,38 @@ def make_candidate_sites(df: pd.DataFrame, method: str, occurrence_weight: float
         if col not in out.columns:
             out[col] = "" if col != "flowering_record_count" else 0
     return out
+
+
+@st.cache_data(show_spinner=False)
+def build_occurrence_candidates_cached(
+    occ_candidate_input: pd.DataFrame,
+    cluster_m: float,
+    min_samples: int,
+    center_method: str,
+    occurrence_weight: float,
+    observed_weight: float,
+    model_weight: float,
+) -> pd.DataFrame:
+    if occ_candidate_input.empty:
+        return pd.DataFrame()
+    work = occ_candidate_input.copy()
+    work["cluster_id"] = haversine_dbscan(work, "_latitude", "_longitude", float(cluster_m), int(min_samples))
+    candidates = make_candidate_sites(work, center_method, float(occurrence_weight))
+    if "_obs_month" in work.columns and not candidates.empty:
+        grouped = {int(cid): group for cid, group in work.groupby("cluster_id", sort=False) if int(cid) >= 0}
+        for idx, cand_row in candidates.iterrows():
+            try:
+                cluster_id = int(cand_row.get("cluster_id", -999))
+            except Exception:
+                continue
+            cluster_occ = grouped.get(cluster_id)
+            if cluster_occ is None or cluster_occ.empty:
+                continue
+            summary = candidate_season_summary(cluster_occ)
+            for k, v in summary.items():
+                candidates.at[idx, k] = v
+    candidates = add_priority_rank(candidates, float(observed_weight), float(model_weight))
+    return order_sites(candidates, "Nearest-neighbor route")
 
 
 def available_sort_cols(df: pd.DataFrame, desired: list[str]) -> list[str]:
@@ -4355,24 +4400,16 @@ def main() -> None:
         "See 'Optional: Build SDM' for the SDM-specific record pipeline."
     )
 
-    occ_candidate_input["cluster_id"] = haversine_dbscan(occ_candidate_input, "_latitude", "_longitude", float(cluster_m), int(min_samples))
     occ_map_display = limit_occurrence_display(occ_extent_selected, set(), int(effective_max_map_points))
-    occurrence_candidates = make_candidate_sites(occ_candidate_input, center_method, float(occurrence_weight))
-    # Enrich candidates with phenology season summary
-    if "_obs_month" in occ_candidate_input.columns and not occurrence_candidates.empty:
-        for idx, cand_row in occurrence_candidates.iterrows():
-            cluster_id = cand_row.get("cluster_id", -999)
-            if "cluster_id" in occ_candidate_input.columns:
-                cluster_occ = occ_candidate_input[occ_candidate_input["cluster_id"] == cluster_id]
-            else:
-                cluster_occ = pd.DataFrame()
-            if cluster_occ.empty:
-                continue
-            summary = candidate_season_summary(cluster_occ)
-            for k, v in summary.items():
-                occurrence_candidates.at[idx, k] = v
-    occurrence_candidates = add_priority_rank(occurrence_candidates, float(observed_weight), float(model_weight))
-    occurrence_candidates = order_sites(occurrence_candidates, "Nearest-neighbor route")
+    occurrence_candidates = build_occurrence_candidates_cached(
+        occ_candidate_input,
+        float(cluster_m),
+        int(min_samples),
+        center_method,
+        float(occurrence_weight),
+        float(observed_weight),
+        float(model_weight),
+    )
 
     # ── SDM record-count guidance (before SDM expander) ──────────────────────
     _pre_sdm_n = min(len(occ_raw), int(sdm_working_records))

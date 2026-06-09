@@ -4,6 +4,24 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-09 - Codex (OpenAI) - Speed up candidate generation before SDM
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Optimized candidate medoid selection so small clusters still use exact vectorized pairwise haversine distances, while large clusters use the occurrence point nearest the cluster centroid instead of a slow all-pairs geodesic loop.
+- Added a cached occurrence-candidate generation helper covering DBSCAN clustering, candidate-site construction, phenology summaries, priority ranking, and ordering.
+- Replaced the always-inline species candidate-generation block with the cached helper so SDM setup interactions do not repeatedly rebuild identical occurrence-supported candidates before the user can proceed.
+
+Features preserved:
+- Step 2 survey-area selection, occurrence-supported candidates, candidate phenology fields, priority scoring, candidate map selection, optional SDM, SDM-high exploration candidates, VIF diagnostics, spatial validation, genus/SSDM workflows, and downloads remain available.
+
+Known risks / TODO:
+- Large-cluster medoids are now practical centroid-nearest representatives rather than exact all-pairs medoids; this preserves field-planning behavior while avoiding severe lag for dense occurrence clusters.
+
 ## 2026-06-09 - Codex (OpenAI) - Reduce candidate-map click lag
 
 Changed files:
