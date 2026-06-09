@@ -4,6 +4,24 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-09 - Codex (OpenAI) - Add bulk top-ranked candidate selection
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Added a species-mode `Add top-ranked shown sites` button that adds the currently filtered top-ranked candidate sites on the map to the selected survey-site set.
+- Added the mirrored genus-mode `Add top-ranked shown hotspots` button for richness hotspot candidates.
+- Kept the unified map-based workflow: top-ranked sites are displayed first, then users can bulk-add shown candidates, draw rectangles for nearby groups, or click individual markers to adjust the selection.
+
+Features preserved:
+- Manual marker click selection, rectangle group selection, selected-site session state, selected-site summaries, selected green outlines, Google Maps links, CSV/HTML/KML/validation downloads, species mode, genus mode, optional SDM/SSDM, and exploratory candidate labels remain available.
+
+Known risks / TODO:
+- Bulk-add uses the current display filters and `Top-ranked sites shown` count; users should adjust those controls first when they want a broader or narrower batch.
+
 ## 2026-06-09 - Codex (OpenAI) - Keep candidate map cached during selection
 
 Changed files:

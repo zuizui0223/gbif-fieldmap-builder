@@ -3576,6 +3576,16 @@ def genus_diversity_panel() -> None:
         map_sort_cols = available_sort_cols(map_hotspots, ["priority_score", "model_support_score", "occurrence_support_score"])
         map_hotspots = map_hotspots.sort_values(map_sort_cols, ascending=False, na_position="last") if map_sort_cols else map_hotspots
         map_hotspots = map_hotspots.head(int(genus_top_sites_shown)).copy()
+        if not map_hotspots.empty:
+            add_ids = set(map_hotspots["site_id"].astype(int).tolist())
+            if st.button(
+                f"Add top-ranked shown hotspots ({len(add_ids)})",
+                key="genus_add_top_ranked_shown_hotspots",
+                use_container_width=True,
+            ):
+                existing = set(map(int, st.session_state.get("genus_selected_site_ids", [])))
+                st.session_state.genus_selected_site_ids = sorted(existing | add_ids)
+
         selected_rows_for_map = genus_all_candidates[genus_all_candidates["site_id"].astype(int).isin(st.session_state.genus_selected_site_ids)].copy()
         if not selected_rows_for_map.empty:
             map_hotspots = pd.concat([map_hotspots, selected_rows_for_map], ignore_index=True, sort=False).drop_duplicates(subset=["site_id"], keep="first")
@@ -4893,6 +4903,15 @@ def main() -> None:
         sort_cols = available_sort_cols(map_candidates, ["priority_score", "sdm_suitability", "occurrence_support_score"])
         map_candidates = map_candidates.sort_values(sort_cols, ascending=False, na_position="last") if sort_cols else map_candidates
         map_candidates = map_candidates.head(int(top_sites_shown)).copy()
+        if not map_candidates.empty:
+            add_ids = set(map_candidates["site_id"].astype(int).tolist())
+            if st.button(
+                f"Add top-ranked shown sites ({len(add_ids)})",
+                key="sl_add_top_ranked_shown_sites",
+                use_container_width=True,
+            ):
+                existing = set(map(int, st.session_state.get("sl_selected_site_ids", [])))
+                st.session_state.sl_selected_site_ids = sorted(existing | add_ids)
 
         selected_rows_for_map = all_candidates[all_candidates["site_id"].astype(int).isin(st.session_state.sl_selected_site_ids)].copy()
         if not selected_rows_for_map.empty:
