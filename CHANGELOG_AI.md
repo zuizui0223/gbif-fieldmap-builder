@@ -4,6 +4,25 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-09 - Codex (OpenAI) - Restore visible candidate maps and prioritize ranked output
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` policy files before editing, including `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, and `CHANGELOG_AI.md`; refreshed `origin/main` before editing.
+- Reverted the closed-by-default candidate/hotspot map behavior so species and genus candidate maps are visible again by default.
+- Kept the lightweight map defaults: only the currently filtered top-ranked candidates/hotspots are shown, with occurrence points and richness grid layers still opt-in because they are slower.
+- Added prominent top-ranked output tables and direct CSV/KML/field-validation CSV downloads for species candidates and genus hotspots, so the app can be used primarily as a priority-ranking output tool without requiring marker clicks or rectangle selection.
+- Preserved click-to-toggle, rectangle selection, selected-site summaries, and selected-site exports as optional user customization after the ranked output is generated.
+
+Features preserved:
+- Map-first candidate inspection, top-ranked bulk add, click-to-toggle and rectangle selection, selected green outlines, Google Maps links, CSV/HTML/KML/validation downloads, Step 2 survey-area selection, observed-data candidates, genus observed richness hotspots, optional SDM/SSDM, SDM-high/SSDM-high exploratory candidates, VIF diagnostics, and spatial validation remain available.
+
+Known risks / TODO:
+- Clicking candidate markers still triggers a Streamlit/Folium rerun and can feel slower than using the top-ranked output downloads or bulk-add button; the main workflow now no longer depends on marker-click selection.
+
 ## 2026-06-09 - Codex (OpenAI) - Defer candidate maps after survey-area selection
 
 Changed files:
