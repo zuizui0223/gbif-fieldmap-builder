@@ -4,6 +4,25 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-09 - Codex (OpenAI) - Further reduce genus and selection lag
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Confirmed that genus mode already had the recent map-selection fixes: lightweight selected overlays, click/rectangle selection, and bulk top-ranked hotspot selection.
+- Added cached genus observed-output generation for the spatially balanced genus candidate input, species summary table, observed richness grid, and observed hotspot candidates.
+- Removed selected-site row merging into the species and genus base candidate maps so selecting sites no longer changes the heavy cached map input.
+- Selected-site green outlines now use all current candidates through the lightweight overlay, while the base map remains limited to the currently displayed top-ranked candidates.
+
+Features preserved:
+- Species and genus map-first selection, click-to-toggle, rectangle selection, bulk top-ranked selection, selected-site summaries, selected green outlines, Google Maps links, CSV/HTML/KML/validation downloads, observed candidates, optional SDM/SSDM, and exploratory candidate labels remain available.
+
+Known risks / TODO:
+- Selected candidates outside the current top-ranked display may appear as green overlay rings without their full base candidate popup until display filters are broadened; the selected-site summary and exports still include them.
+
 ## 2026-06-09 - Codex (OpenAI) - Add bulk top-ranked candidate selection
 
 Changed files:

@@ -842,6 +842,25 @@ def richness_hotspot_candidates(grid: pd.DataFrame, metric: str, max_candidates:
     return out.reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
+def build_genus_observed_outputs_cached(
+    occ: pd.DataFrame,
+    genus_candidate_records: int,
+    min_records_for_sdm: int,
+    grid_deg: float,
+    min_records_cell: int,
+    richness_metric: str,
+    max_hotspots: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if occ.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    candidate_input = spatially_balanced_cap(grid_thin(exact_coordinate_deduplicate(occ), 0.05), int(genus_candidate_records))
+    summary = genus_species_summary(occ, int(min_records_for_sdm), float(grid_deg))
+    grid = occurrence_richness_grid(candidate_input, float(grid_deg), int(min_records_cell))
+    hotspots = richness_hotspot_candidates(grid, richness_metric, int(max_hotspots)) if not grid.empty else pd.DataFrame()
+    return candidate_input, summary, grid, hotspots
+
+
 def richness_color(value: float, max_value: float) -> str:
     if max_value <= 0:
         return "#ffffcc"
@@ -3484,10 +3503,15 @@ def genus_diversity_panel() -> None:
                     st.caption(f"Flowering evidence: {len(_gc_ph_fl):,} records (confidence: {_gc_conf}).")
             st.caption("⚠️ Observation dates reflect when specimens were collected, not guaranteed flowering dates.")
 
-    genus_candidate_input = spatially_balanced_cap(grid_thin(exact_coordinate_deduplicate(occ), 0.05), int(genus_candidate_records))
-    summary = genus_species_summary(occ, int(min_records_for_sdm), float(grid_deg))
-    grid = occurrence_richness_grid(genus_candidate_input, float(grid_deg), int(min_records_cell))
-    hotspots = richness_hotspot_candidates(grid, richness_metric, int(max_hotspots)) if not grid.empty else pd.DataFrame()
+    genus_candidate_input, summary, grid, hotspots = build_genus_observed_outputs_cached(
+        occ,
+        int(genus_candidate_records),
+        int(min_records_for_sdm),
+        float(grid_deg),
+        int(min_records_cell),
+        richness_metric,
+        int(max_hotspots),
+    )
     genus_ssdm_grid = st.session_state.get("genus_ssdm_grid")
     genus_ssdm_hotspots = st.session_state.get("genus_ssdm_hotspots")
     if genus_ssdm_grid is not None and isinstance(genus_ssdm_grid, pd.DataFrame) and not genus_ssdm_grid.empty and not hotspots.empty:
@@ -3586,13 +3610,9 @@ def genus_diversity_panel() -> None:
                 existing = set(map(int, st.session_state.get("genus_selected_site_ids", [])))
                 st.session_state.genus_selected_site_ids = sorted(existing | add_ids)
 
-        selected_rows_for_map = genus_all_candidates[genus_all_candidates["site_id"].astype(int).isin(st.session_state.genus_selected_site_ids)].copy()
-        if not selected_rows_for_map.empty:
-            map_hotspots = pd.concat([map_hotspots, selected_rows_for_map], ignore_index=True, sort=False).drop_duplicates(subset=["site_id"], keep="first")
-
         _genus_sel_ids_for_map = tuple(sorted(st.session_state.genus_selected_site_ids))
         genus_map = make_genus_candidate_selection_map(grid, map_hotspots, richness_metric, selected_ids=(), add_draw=True)
-        genus_selected_overlay = make_selected_site_overlay(map_hotspots, _genus_sel_ids_for_map, name="selected hotspot sites")
+        genus_selected_overlay = make_selected_site_overlay(genus_all_candidates, _genus_sel_ids_for_map, name="selected hotspot sites")
         genus_map_data = st_folium_with_overlay(
             genus_map,
             genus_selected_overlay,
@@ -4913,10 +4933,6 @@ def main() -> None:
                 existing = set(map(int, st.session_state.get("sl_selected_site_ids", [])))
                 st.session_state.sl_selected_site_ids = sorted(existing | add_ids)
 
-        selected_rows_for_map = all_candidates[all_candidates["site_id"].astype(int).isin(st.session_state.sl_selected_site_ids)].copy()
-        if not selected_rows_for_map.empty:
-            map_candidates = pd.concat([map_candidates, selected_rows_for_map], ignore_index=True, sort=False)
-            map_candidates = map_candidates.drop_duplicates(subset=["site_id"], keep="first")
         route_plan = pd.DataFrame()
 
     # ── Priority-aware candidate map ─────────────────────────────────────────
@@ -4925,7 +4941,7 @@ def main() -> None:
     _sel_ids_for_map = tuple(sorted(st.session_state.get("sl_selected_site_ids", [])))
     _sites_for_map = map_candidates if not all_candidates.empty else all_candidates
     fmap = build_map(occ_candidate_input, _sites_for_map, overlay, None, 0.0, float(survey_range_m), layers, bool(show_occurrence_images), selected_ids=(), add_draw=not all_candidates.empty)
-    selected_overlay = make_selected_site_overlay(_sites_for_map, _sel_ids_for_map)
+    selected_overlay = make_selected_site_overlay(all_candidates, _sel_ids_for_map)
     main_map_data = st_folium_with_overlay(
         fmap,
         selected_overlay,
