@@ -4,6 +4,25 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-09 - Codex (OpenAI) - Make selection maps lightweight by default
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` versions of `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, `CHANGELOG_AI.md`, and `gbif_fieldmap_builder_app.py` before editing.
+- Made the species candidate-selection map hide candidate-input occurrence points by default, with a `Show candidate-input occurrence points on selection map (slower)` checkbox for verification.
+- Made the genus hotspot-selection map hide the observed richness grid by default, with a `Show richness grid on selection map (slower)` checkbox for inspection.
+- Kept candidate/hotspot markers, selected green outlines, click-to-toggle, rectangle selection, and bulk top-ranked selection on the lightweight default maps.
+- This targets the remaining lag from Streamlit/Folium re-rendering large occurrence/grid layers after bulk add, marker clicks, double-clicks, and rectangle drawings.
+
+Features preserved:
+- Species and genus occurrence-supported candidates, observed richness hotspots, optional SDM/SSDM, SDM/SSDM-supported re-ranking, exploratory candidates, selected-site summaries, map selection, rectangle selection, top-ranked bulk add, Google Maps links, CSV/HTML/KML/validation downloads, and analysis-point/grid verification toggles remain available.
+
+Known risks / TODO:
+- Users who need to inspect all analysis points or richness cells on the same selection map must turn on the slower verification checkbox; the default prioritizes responsive site selection.
+
 ## 2026-06-09 - Codex (OpenAI) - Further reduce genus and selection lag
 
 Changed files:

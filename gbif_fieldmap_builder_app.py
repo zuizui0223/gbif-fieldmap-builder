@@ -960,12 +960,12 @@ def make_richness_map(grid: pd.DataFrame, hotspots: pd.DataFrame, metric: str) -
 
 
 @st.cache_data(show_spinner=False)
-def make_genus_candidate_selection_map(grid: pd.DataFrame, candidates: pd.DataFrame, metric: str, selected_ids: Optional[tuple] = None, add_draw: bool = True) -> folium.Map:
+def make_genus_candidate_selection_map(grid: pd.DataFrame, candidates: pd.DataFrame, metric: str, selected_ids: Optional[tuple] = None, add_draw: bool = True, show_grid: bool = True) -> folium.Map:
     center = (float(grid["latitude"].mean()), float(grid["longitude"].mean())) if grid is not None and not grid.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
     metric_col = {"Species richness": "species_richness", "Record count": "record_count", "Species with minimum records": "species_with_min_records"}.get(metric, "species_richness")
     max_value = float(grid[metric_col].max()) if grid is not None and not grid.empty and metric_col in grid.columns else 0.0
-    if grid is not None and not grid.empty:
+    if show_grid and grid is not None and not grid.empty:
         fg_grid = FeatureGroup(name=f"observed richness grid: {metric}", show=True)
         for _, row in grid.iterrows():
             value = float(row.get(metric_col, 0.0))
@@ -3584,6 +3584,12 @@ def genus_diversity_panel() -> None:
             st.session_state.genus_last_click_signature = ""
             st.session_state.genus_last_draw_sig = ""
             st.rerun()
+        genus_show_grid_on_selection_map = st.checkbox(
+            "Show richness grid on selection map (slower)",
+            value=False,
+            key="genus_show_grid_on_selection_map",
+            help="Off keeps hotspot selection responsive. Turn on when you want to inspect observed richness cells behind the candidates.",
+        )
 
         map_hotspots = genus_all_candidates.copy()
         type_mask = pd.Series(False, index=map_hotspots.index)
@@ -3611,7 +3617,14 @@ def genus_diversity_panel() -> None:
                 st.session_state.genus_selected_site_ids = sorted(existing | add_ids)
 
         _genus_sel_ids_for_map = tuple(sorted(st.session_state.genus_selected_site_ids))
-        genus_map = make_genus_candidate_selection_map(grid, map_hotspots, richness_metric, selected_ids=(), add_draw=True)
+        genus_map = make_genus_candidate_selection_map(
+            grid,
+            map_hotspots,
+            richness_metric,
+            selected_ids=(),
+            add_draw=True,
+            show_grid=bool(genus_show_grid_on_selection_map),
+        )
         genus_selected_overlay = make_selected_site_overlay(genus_all_candidates, _genus_sel_ids_for_map, name="selected hotspot sites")
         genus_map_data = st_folium_with_overlay(
             genus_map,
@@ -4906,6 +4919,12 @@ def main() -> None:
             st.session_state.last_route_click_signature = ""
             st.session_state.sl_last_draw_sig = ""
             st.rerun()
+        show_occurrences_on_selection_map = st.checkbox(
+            "Show candidate-input occurrence points on selection map (slower)",
+            value=False,
+            key="sl_show_occurrences_on_selection_map",
+            help="Off keeps map selection responsive. Turn on to verify all occurrence points used for candidate generation on this same map.",
+        )
 
         map_candidates = all_candidates.copy()
         type_mask = pd.Series(False, index=map_candidates.index)
@@ -4940,7 +4959,9 @@ def main() -> None:
     # Selected sites show a green outer ring.
     _sel_ids_for_map = tuple(sorted(st.session_state.get("sl_selected_site_ids", [])))
     _sites_for_map = map_candidates if not all_candidates.empty else all_candidates
-    fmap = build_map(occ_candidate_input, _sites_for_map, overlay, None, 0.0, float(survey_range_m), layers, bool(show_occurrence_images), selected_ids=(), add_draw=not all_candidates.empty)
+    selection_layers = dict(layers)
+    selection_layers["occ"] = bool(st.session_state.get("sl_show_occurrences_on_selection_map", False))
+    fmap = build_map(occ_candidate_input, _sites_for_map, overlay, None, 0.0, float(survey_range_m), selection_layers, bool(show_occurrence_images), selected_ids=(), add_draw=not all_candidates.empty)
     selected_overlay = make_selected_site_overlay(all_candidates, _sel_ids_for_map)
     main_map_data = st_folium_with_overlay(
         fmap,
