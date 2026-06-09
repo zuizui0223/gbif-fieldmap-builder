@@ -4,6 +4,26 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-09 - Codex (OpenAI) - Defer candidate maps after survey-area selection
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Read the latest GitHub `main` policy files before editing, including `AGENTS.md`, `SURVEY_PLANNING_POLICY.md`, `RESEARCH_POSITIONING.md`, and `CHANGELOG_AI.md`.
+- Cached the large-dataset working-set preparation helper so unchanged occurrence subsets are not rebuilt across downstream reruns.
+- Made the species candidate-selection map closed by default after Step 2 survey-area confirmation, with explicit open/close buttons for click and rectangle selection.
+- Made the genus hotspot-selection map use the same closed-by-default pattern.
+- Kept bulk top-ranked site/hotspot addition, selected-site summaries, and exports available without forcing the heavy Folium candidate map to render immediately.
+- Enabled HTML map downloads after the corresponding candidate/hotspot map is opened, avoiding automatic map HTML generation during normal post-survey-area navigation.
+
+Features preserved:
+- Step 2 survey-area selection, observed-data candidates, genus observed richness hotspots, bulk top-ranked selection, click-to-toggle and rectangle selection when the map is opened, selected-site summaries, Google Maps links, CSV/HTML/KML/validation downloads, optional SDM/SSDM, SDM-high/SSDM-high exploratory candidates, VIF diagnostics, and spatial validation remain available.
+
+Known risks / TODO:
+- Users must open the candidate or hotspot map before using click/rectangle site selection or downloading that HTML map; this is intentional to keep Survey area confirmation and movement toward SDM responsive.
+
 ## 2026-06-09 - Codex (OpenAI) - Fix rectangle clearing on survey-site maps
 
 Changed files:

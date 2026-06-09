@@ -336,6 +336,7 @@ def init_session_state() -> None:
         "sl_selected_site_ids": [],
         "sl_last_draw_sig": "",
         "sl_reset_token": 0,
+        "sl_show_candidate_selection_map": False,
         "target_map_reset_token": 0,
         "qc_rect_selected_ids": [],
         "qc_rect_features": [],
@@ -353,6 +354,7 @@ def init_session_state() -> None:
         "genus_last_click_signature": "",
         "genus_last_draw_sig": "",
         "genus_selection_map_reset_token": 0,
+        "genus_show_hotspot_selection_map": False,
         "genus_ssdm_grid": None,
         "genus_ssdm_hotspots": None,
         "genus_ssdm_shape": None,
@@ -377,6 +379,7 @@ def clear_loaded_data() -> None:
     st.session_state.sl_selected_site_ids = []
     st.session_state.sl_last_draw_sig = ""
     st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
+    st.session_state.sl_show_candidate_selection_map = False
     st.session_state.qc_rect_selected_ids = []
     st.session_state.qc_rect_features = []
     st.session_state.qc_last_draw_sig = ""
@@ -394,6 +397,7 @@ def clear_genus_data() -> None:
     st.session_state.genus_last_click_signature = ""
     st.session_state.genus_last_draw_sig = ""
     st.session_state.genus_selection_map_reset_token = st.session_state.get("genus_selection_map_reset_token", 0) + 1
+    st.session_state.genus_show_hotspot_selection_map = False
     st.session_state.genus_target_map_reset_token = st.session_state.get("genus_target_map_reset_token", 0) + 1
     st.session_state.genus_ssdm_grid = None
     st.session_state.genus_ssdm_hotspots = None
@@ -1553,6 +1557,7 @@ def spatially_balanced_cap(df: pd.DataFrame, max_points: int) -> pd.DataFrame:
     return balanced.drop(columns=drop_cols).reset_index(drop=True)
 
 
+@st.cache_data(show_spinner=False)
 def prepare_large_dataset_inputs(
     occ_after_exclusion: pd.DataFrame,
     use_exact_dedup: bool,
@@ -3291,6 +3296,7 @@ def load_input_controls(default_fetch_cap: int = FAST_SPECIES_GBIF_FETCH_CAP) ->
                 st.session_state.target_map_reset_token = st.session_state.get("target_map_reset_token", 0) + 1
                 st.session_state.sl_last_draw_sig = ""
                 st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
+                st.session_state.sl_show_candidate_selection_map = False
                 reset_model_outputs()
         return
     name = st.sidebar.text_input("Taxon scientific name", value="", placeholder="e.g. Campanula punctata", key="gbif_taxon_scientific_name_input")
@@ -3346,6 +3352,7 @@ def load_input_controls(default_fetch_cap: int = FAST_SPECIES_GBIF_FETCH_CAP) ->
         st.session_state.target_map_reset_token = st.session_state.get("target_map_reset_token", 0) + 1
         st.session_state.sl_last_draw_sig = ""
         st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
+        st.session_state.sl_show_candidate_selection_map = False
         reset_model_outputs()
 
 
@@ -3419,6 +3426,7 @@ def genus_diversity_panel() -> None:
                 st.session_state.genus_last_click_signature = ""
                 st.session_state.genus_last_draw_sig = ""
                 st.session_state.genus_selection_map_reset_token = st.session_state.get("genus_selection_map_reset_token", 0) + 1
+                st.session_state.genus_show_hotspot_selection_map = False
                 st.session_state.genus_ssdm_grid = None
                 st.session_state.genus_ssdm_hotspots = None
                 st.session_state.genus_ssdm_shape = None
@@ -3638,54 +3646,69 @@ def genus_diversity_panel() -> None:
                 st.session_state.genus_selected_site_ids = sorted(existing | add_ids)
 
         _genus_sel_ids_for_map = tuple(sorted(st.session_state.genus_selected_site_ids))
-        genus_map = make_genus_candidate_selection_map(
-            grid,
-            map_hotspots,
-            richness_metric,
-            selected_ids=(),
-            add_draw=True,
-            show_grid=bool(genus_show_grid_on_selection_map),
-        )
-        genus_selected_overlay = make_selected_site_overlay(genus_all_candidates, _genus_sel_ids_for_map, name="selected hotspot sites")
-        genus_map_data = st_folium_with_overlay(
-            genus_map,
-            genus_selected_overlay,
-            width=None,
-            height=720,
-            returned_objects=["last_object_clicked", "last_object_clicked_tooltip", "all_drawings", "last_active_drawing"],
-            key=f"genus_hotspot_selection_map_{st.session_state.get('genus_selection_map_reset_token', 0)}",
-        )
-        clicked = (genus_map_data or {}).get("last_object_clicked")
-        clicked_tooltip = (genus_map_data or {}).get("last_object_clicked_tooltip") or ""
-        if clicked:
-            sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f},{clicked_tooltip}"
-            if sig != st.session_state.get("genus_last_click_signature", ""):
-                st.session_state.genus_last_click_signature = sig
-                sid = None
-                match = re.search(r"site\s+(\d+)", str(clicked_tooltip), flags=re.IGNORECASE)
-                if match:
-                    sid = int(match.group(1))
-                else:
-                    sid = nearest_site_id_from_click(map_hotspots, clicked)
-                if sid is not None and sid in valid_genus_site_ids:
-                    selected = list(st.session_state.genus_selected_site_ids)
-                    if sid in selected:
-                        selected.remove(sid)
-                    else:
-                        selected.append(sid)
-                    st.session_state.genus_selected_site_ids = selected
-        raw_drawings = (genus_map_data or {}).get("all_drawings") or (genus_map_data or {}).get("last_active_drawing")
-        features = extract_drawn_features(raw_drawings)
-        if features:
-            draw_sig = str(features)[:800]
-            if draw_sig != st.session_state.get("genus_last_draw_sig", ""):
-                st.session_state.genus_last_draw_sig = draw_sig
-                rect_ids = ids_inside_drawn_rectangles(genus_all_candidates, "site_id", "latitude", "longitude", features)
-                if rect_ids:
-                    existing = set(st.session_state.genus_selected_site_ids)
-                    st.session_state.genus_selected_site_ids = sorted(existing | set(map(int, rect_ids)))
+        html_bytes: Optional[bytes] = None
+        genus_map_is_open = bool(st.session_state.get("genus_show_hotspot_selection_map", False))
+        gm_open, gm_close = st.columns([3, 1])
+        if gm_open.button("Open hotspot selection map", key="genus_open_hotspot_selection_map", disabled=genus_map_is_open or genus_all_candidates.empty, use_container_width=True):
+            st.session_state.genus_show_hotspot_selection_map = True
+            genus_map_is_open = True
+        if gm_close.button("Close hotspot map", key="genus_close_hotspot_selection_map", disabled=not genus_map_is_open, use_container_width=True):
+            st.session_state.genus_show_hotspot_selection_map = False
+            st.session_state.genus_last_draw_sig = ""
+            st.session_state.genus_selection_map_reset_token = st.session_state.get("genus_selection_map_reset_token", 0) + 1
+            st.rerun()
 
-        html_bytes = genus_map.get_root().render().encode("utf-8")
+        if not genus_map_is_open:
+            st.info("Hotspot selection map is closed to keep this step fast. Use the bulk-add button above, or open the map when you need click/rectangle selection.")
+        else:
+            genus_map = make_genus_candidate_selection_map(
+                grid,
+                map_hotspots,
+                richness_metric,
+                selected_ids=(),
+                add_draw=True,
+                show_grid=bool(genus_show_grid_on_selection_map),
+            )
+            genus_selected_overlay = make_selected_site_overlay(genus_all_candidates, _genus_sel_ids_for_map, name="selected hotspot sites")
+            genus_map_data = st_folium_with_overlay(
+                genus_map,
+                genus_selected_overlay,
+                width=None,
+                height=720,
+                returned_objects=["last_object_clicked", "last_object_clicked_tooltip", "all_drawings", "last_active_drawing"],
+                key=f"genus_hotspot_selection_map_{st.session_state.get('genus_selection_map_reset_token', 0)}",
+            )
+            clicked = (genus_map_data or {}).get("last_object_clicked")
+            clicked_tooltip = (genus_map_data or {}).get("last_object_clicked_tooltip") or ""
+            if clicked:
+                sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f},{clicked_tooltip}"
+                if sig != st.session_state.get("genus_last_click_signature", ""):
+                    st.session_state.genus_last_click_signature = sig
+                    sid = None
+                    match = re.search(r"site\s+(\d+)", str(clicked_tooltip), flags=re.IGNORECASE)
+                    if match:
+                        sid = int(match.group(1))
+                    else:
+                        sid = nearest_site_id_from_click(map_hotspots, clicked)
+                    if sid is not None and sid in valid_genus_site_ids:
+                        selected = list(st.session_state.genus_selected_site_ids)
+                        if sid in selected:
+                            selected.remove(sid)
+                        else:
+                            selected.append(sid)
+                        st.session_state.genus_selected_site_ids = selected
+            raw_drawings = (genus_map_data or {}).get("all_drawings") or (genus_map_data or {}).get("last_active_drawing")
+            features = extract_drawn_features(raw_drawings)
+            if features:
+                draw_sig = str(features)[:800]
+                if draw_sig != st.session_state.get("genus_last_draw_sig", ""):
+                    st.session_state.genus_last_draw_sig = draw_sig
+                    rect_ids = ids_inside_drawn_rectangles(genus_all_candidates, "site_id", "latitude", "longitude", features)
+                    if rect_ids:
+                        existing = set(st.session_state.genus_selected_site_ids)
+                        st.session_state.genus_selected_site_ids = sorted(existing | set(map(int, rect_ids)))
+
+            html_bytes = genus_map.get_root().render().encode("utf-8")
         selected_ids_now = list(st.session_state.get("genus_selected_site_ids", []))
         selected_hotspots = genus_all_candidates[genus_all_candidates["site_id"].astype(int).isin(selected_ids_now)].copy()
         if not selected_hotspots.empty and selected_ids_now:
@@ -3721,7 +3744,10 @@ def genus_diversity_panel() -> None:
             d1.download_button("Species summary CSV", summary.to_csv(index=False).encode("utf-8"), "genus_species_summary.csv", "text/csv", width="stretch", key="genus_species_summary_csv_download")
             d2.download_button("Richness grid CSV", grid.to_csv(index=False).encode("utf-8"), "genus_richness_grid.csv", "text/csv", width="stretch", key="genus_richness_grid_csv_download")
             d3.download_button("All hotspots CSV", genus_all_candidates.to_csv(index=False).encode("utf-8"), "genus_all_hotspot_candidates.csv", "text/csv", width="stretch", key="genus_all_hotspots_csv_download")
-            d4.download_button("Richness HTML map", html_bytes, "genus_hotspot_selection_map.html", "text/html", width="stretch", key="genus_richness_html_map_download")
+            if html_bytes is not None:
+                d4.download_button("Richness HTML map", html_bytes, "genus_hotspot_selection_map.html", "text/html", width="stretch", key="genus_richness_html_map_download")
+            else:
+                d4.caption("Open the hotspot map to enable HTML map download.")
             d5.download_button("All hotspots KML", make_export_kml(genus_all_candidates).encode("utf-8"), "genus_all_hotspot_candidates.kml", "application/vnd.google-earth.kml+xml", width="stretch", key="genus_all_hotspots_kml_download")
 
     # ── Best time to visit (genus survey area) ────────────────────────────────
@@ -4281,6 +4307,7 @@ def main() -> None:
         st.session_state.sl_selected_site_ids = []
         st.session_state.sl_last_draw_sig = ""
         st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
+        st.session_state.sl_show_candidate_selection_map = False
         st.session_state.last_route_click_signature = ""
         st.session_state.last_exclude_click_signature = ""
         st.session_state.excluded_row_ids = set()
@@ -4297,6 +4324,7 @@ def main() -> None:
         st.session_state.genus_last_click_signature = ""
         st.session_state.genus_last_draw_sig = ""
         st.session_state.genus_selection_map_reset_token = st.session_state.get("genus_selection_map_reset_token", 0) + 1
+        st.session_state.genus_show_hotspot_selection_map = False
     st.session_state["_last_analysis_mode"] = analysis_mode
 
     if analysis_mode == "Genus diversity / SSDM":
@@ -4989,51 +5017,66 @@ def main() -> None:
     # Selected sites show a green outer ring.
     _sel_ids_for_map = tuple(sorted(st.session_state.get("sl_selected_site_ids", [])))
     _sites_for_map = map_candidates if not all_candidates.empty else all_candidates
-    selection_layers = dict(layers)
-    selection_layers["occ"] = bool(st.session_state.get("sl_show_occurrences_on_selection_map", False))
-    fmap = build_map(occ_candidate_input, _sites_for_map, overlay, None, 0.0, float(survey_range_m), selection_layers, bool(show_occurrence_images), selected_ids=(), add_draw=not all_candidates.empty)
-    selected_overlay = make_selected_site_overlay(all_candidates, _sel_ids_for_map)
-    main_map_data = st_folium_with_overlay(
-        fmap,
-        selected_overlay,
-        width=None,
-        height=720,
-        returned_objects=["last_object_clicked", "last_object_clicked_tooltip", "all_drawings", "last_active_drawing"],
-        key=f"main_map_{st.session_state.get('sl_reset_token', 0)}",
-    )
+    html_bytes: Optional[bytes] = None
+    map_is_open = bool(st.session_state.get("sl_show_candidate_selection_map", False))
+    mc_open, mc_close = st.columns([3, 1])
+    if mc_open.button("Open candidate selection map", key="sl_open_candidate_selection_map", disabled=map_is_open or all_candidates.empty, use_container_width=True):
+        st.session_state.sl_show_candidate_selection_map = True
+        map_is_open = True
+    if mc_close.button("Close candidate map", key="sl_close_candidate_selection_map", disabled=not map_is_open, use_container_width=True):
+        st.session_state.sl_show_candidate_selection_map = False
+        st.session_state.sl_last_draw_sig = ""
+        st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
+        st.rerun()
 
-    if not all_candidates.empty:
-        clicked = (main_map_data or {}).get("last_object_clicked")
-        clicked_tooltip = (main_map_data or {}).get("last_object_clicked_tooltip") or ""
-        if clicked:
-            sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f},{clicked_tooltip}"
-            if sig != st.session_state.last_route_click_signature:
-                st.session_state.last_route_click_signature = sig
-                sid = None
-                match = re.search(r"site\s+(\d+)", str(clicked_tooltip), flags=re.IGNORECASE)
-                if match:
-                    sid = int(match.group(1))
-                elif _sites_for_map is not None and not _sites_for_map.empty:
-                    sid = nearest_site_id_from_click(_sites_for_map, clicked)
-                if sid is not None and sid in valid_site_ids:
-                    selected = list(st.session_state.sl_selected_site_ids)
-                    if sid in selected:
-                        selected.remove(sid)
-                    else:
-                        selected.append(sid)
-                    st.session_state.sl_selected_site_ids = selected
-        raw_drawings = (main_map_data or {}).get("all_drawings") or (main_map_data or {}).get("last_active_drawing")
-        features = extract_drawn_features(raw_drawings)
-        if features:
-            draw_sig = str(features)[:800]
-            if draw_sig != st.session_state.get("sl_last_draw_sig", ""):
-                st.session_state.sl_last_draw_sig = draw_sig
-                rect_ids = ids_inside_drawn_rectangles(all_candidates, "site_id", "latitude", "longitude", features)
-                if rect_ids:
-                    existing = set(st.session_state.sl_selected_site_ids)
-                    st.session_state.sl_selected_site_ids = sorted(existing | set(map(int, rect_ids)))
+    if not map_is_open:
+        st.info("Candidate selection map is closed to keep this step fast. Use the bulk-add button above, or open the map when you need click/rectangle selection.")
+    else:
+        selection_layers = dict(layers)
+        selection_layers["occ"] = bool(st.session_state.get("sl_show_occurrences_on_selection_map", False))
+        fmap = build_map(occ_candidate_input, _sites_for_map, overlay, None, 0.0, float(survey_range_m), selection_layers, bool(show_occurrence_images), selected_ids=(), add_draw=not all_candidates.empty)
+        selected_overlay = make_selected_site_overlay(all_candidates, _sel_ids_for_map)
+        main_map_data = st_folium_with_overlay(
+            fmap,
+            selected_overlay,
+            width=None,
+            height=720,
+            returned_objects=["last_object_clicked", "last_object_clicked_tooltip", "all_drawings", "last_active_drawing"],
+            key=f"main_map_{st.session_state.get('sl_reset_token', 0)}",
+        )
 
-    html_bytes = fmap.get_root().render().encode("utf-8")
+        if not all_candidates.empty:
+            clicked = (main_map_data or {}).get("last_object_clicked")
+            clicked_tooltip = (main_map_data or {}).get("last_object_clicked_tooltip") or ""
+            if clicked:
+                sig = f"{clicked.get('lat'):.6f},{clicked.get('lng'):.6f},{clicked_tooltip}"
+                if sig != st.session_state.last_route_click_signature:
+                    st.session_state.last_route_click_signature = sig
+                    sid = None
+                    match = re.search(r"site\s+(\d+)", str(clicked_tooltip), flags=re.IGNORECASE)
+                    if match:
+                        sid = int(match.group(1))
+                    elif _sites_for_map is not None and not _sites_for_map.empty:
+                        sid = nearest_site_id_from_click(_sites_for_map, clicked)
+                    if sid is not None and sid in valid_site_ids:
+                        selected = list(st.session_state.sl_selected_site_ids)
+                        if sid in selected:
+                            selected.remove(sid)
+                        else:
+                            selected.append(sid)
+                        st.session_state.sl_selected_site_ids = selected
+            raw_drawings = (main_map_data or {}).get("all_drawings") or (main_map_data or {}).get("last_active_drawing")
+            features = extract_drawn_features(raw_drawings)
+            if features:
+                draw_sig = str(features)[:800]
+                if draw_sig != st.session_state.get("sl_last_draw_sig", ""):
+                    st.session_state.sl_last_draw_sig = draw_sig
+                    rect_ids = ids_inside_drawn_rectangles(all_candidates, "site_id", "latitude", "longitude", features)
+                    if rect_ids:
+                        existing = set(st.session_state.sl_selected_site_ids)
+                        st.session_state.sl_selected_site_ids = sorted(existing | set(map(int, rect_ids)))
+
+        html_bytes = fmap.get_root().render().encode("utf-8")
 
     # ── Selected-sites compact summary (replaces Step 4) ─────────────────────
     _sel_ids_now = list(st.session_state.get("sl_selected_site_ids", []))
@@ -5157,7 +5200,10 @@ def main() -> None:
     st.code(_methods_text, language=None)
 
     st.subheader("Downloads")
-    st.download_button("Download sampling HTML map", html_bytes, "fieldmap.html", "text/html", width="stretch", key="sampling_html_map_download")
+    if html_bytes is not None:
+        st.download_button("Download sampling HTML map", html_bytes, "fieldmap.html", "text/html", width="stretch", key="sampling_html_map_download")
+    else:
+        st.caption("Open the candidate selection map to enable the sampling HTML map download.")
 
 
 if __name__ == "__main__":
