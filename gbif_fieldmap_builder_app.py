@@ -44,6 +44,7 @@ from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.neighbors import BallTree
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from streamlit_folium import st_folium
@@ -2373,18 +2374,24 @@ def make_google_maps_route_url(sites: pd.DataFrame, travelmode: str = "driving",
 def nearest_neighbor_order(sites: pd.DataFrame, start_idx: int = 0) -> pd.DataFrame:
     if sites.empty:
         return sites.copy()
-    remaining = sites.copy().reset_index(drop=True)
-    start_idx = int(max(0, min(start_idx, len(remaining) - 1)))
-    rows = [remaining.loc[start_idx]]
-    remaining = remaining.drop(index=start_idx).reset_index(drop=True)
-    while not remaining.empty:
-        current = rows[-1]
-        current_xy = (float(current["latitude"]), float(current["longitude"]))
-        distances = remaining.apply(lambda row: geodesic(current_xy, (float(row["latitude"]), float(row["longitude"]))).km, axis=1)
-        next_idx = int(distances.idxmin())
-        rows.append(remaining.loc[next_idx])
-        remaining = remaining.drop(index=next_idx).reset_index(drop=True)
-    return pd.DataFrame(rows).reset_index(drop=True)
+    # Vectorised greedy nearest-neighbour ordering. Uses numpy haversine instead of the
+    # previous per-row geopy geodesic, which was O(n²) geodesic calls on every rerun.
+    work = sites.copy().reset_index(drop=True)
+    n = len(work)
+    start_idx = int(max(0, min(start_idx, n - 1)))
+    lats = pd.to_numeric(work["latitude"], errors="coerce").to_numpy(dtype=float)
+    lons = pd.to_numeric(work["longitude"], errors="coerce").to_numpy(dtype=float)
+    visited = np.zeros(n, dtype=bool)
+    visited[start_idx] = True
+    order = [start_idx]
+    for _ in range(n - 1):
+        cur = order[-1]
+        dists = _acsp_point_distances_m(lats[cur], lons[cur], lats, lons)
+        dists[visited] = np.inf
+        nxt = int(np.argmin(dists))
+        order.append(nxt)
+        visited[nxt] = True
+    return work.iloc[order].reset_index(drop=True)
 
 
 def order_sites(sites: pd.DataFrame, mode: str) -> pd.DataFrame:
@@ -3510,13 +3517,22 @@ def make_sdm_exploration_candidates(pred_table: pd.DataFrame, known_occ: pd.Data
     if pred.empty:
         return pd.DataFrame()
     known = pd.concat([known_occ[["_latitude", "_longitude"]].rename(columns={"_latitude": "latitude", "_longitude": "longitude"}), occurrence_candidates[["latitude", "longitude"]]], ignore_index=True)
-    keep = []; dists = []
-    for _, row in pred.iterrows():
-        coord = (float(row["latitude"]), float(row["longitude"]))
-        d = min([geodesic(coord, (float(r["latitude"]), float(r["longitude"]))).m for _, r in known.iterrows()] or [float("inf")])
-        keep.append(d >= min_distance_known_m); dists.append(round(d))
-    pred["distance_to_nearest_known_m"] = dists
-    pred = pred[pd.Series(keep, index=pred.index)].copy()
+    # Vectorised nearest-known-distance via BallTree (haversine). Replaces the previous
+    # O(pred × known) geopy nested loop, which recomputed millions of geodesic distances
+    # on every Streamlit rerun once SDM was active and made the app crawl.
+    known_coords = pd.concat([
+        pd.to_numeric(known["latitude"], errors="coerce"),
+        pd.to_numeric(known["longitude"], errors="coerce"),
+    ], axis=1).dropna().to_numpy(dtype=float)
+    pred_coords = pred[["latitude", "longitude"]].to_numpy(dtype=float)
+    if known_coords.shape[0] == 0:
+        dmin_m = np.full(pred_coords.shape[0], np.inf)
+    else:
+        tree = BallTree(np.radians(known_coords), metric="haversine")
+        dist_rad, _ = tree.query(np.radians(pred_coords), k=1)
+        dmin_m = dist_rad[:, 0] * EARTH_RADIUS_M
+    pred["distance_to_nearest_known_m"] = np.round(dmin_m).astype(float)
+    pred = pred[dmin_m >= float(min_distance_known_m)].copy()
     if pred.empty:
         return pd.DataFrame()
     pred["exploration_cluster"] = haversine_dbscan(pred, "latitude", "longitude", cluster_distance_m, 1)

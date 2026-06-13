@@ -4,6 +4,32 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-13 - Claude - Fix slow progression after SDM predict map (vectorise hot loops)
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Problem:
+- After "SDM predict map is available.", interacting with the candidate-selection map (every click/widget change triggers a Streamlit rerun) was extremely slow — the app appeared stuck and would not progress to subsequent steps.
+
+Root cause:
+- Two distance computations in the per-rerun hot path used Python-level geopy `geodesic` loops:
+  - `make_sdm_exploration_candidates` computed, for every high-suitability prediction cell, the minimum distance to *all* known points (occurrences + candidates) with a nested `geodesic` loop — millions of geodesic calls per rerun once SDM was active. It runs every rerun inside the always-expanded "Create SDM-high exploration ranges" panel.
+  - `nearest_neighbor_order` (called every rerun via `order_sites(all_candidates, "Nearest-neighbor route")`) did an O(n²) per-row `geodesic` greedy nearest-neighbour ordering.
+
+Fix:
+- Vectorised `make_sdm_exploration_candidates` nearest-known-distance using a scikit-learn `BallTree` with the haversine metric (added `from sklearn.neighbors import BallTree`).
+- Vectorised `nearest_neighbor_order` with the existing numpy haversine helper (`_acsp_point_distances_m`), preserving the identical greedy nearest-neighbour ordering and tie-breaking.
+
+Verification:
+- `nearest_neighbor_order` output is identical to the previous geopy implementation across multiple start points; ~445x faster for 250 sites (4.3 s -> 0.01 s per rerun).
+- BallTree haversine distances match geopy geodesic within ~0.23 % (about 80 m on multi-km distances, the expected sphere-vs-ellipsoid difference); the keep/exclude filtering decision at the distance threshold is identical. Empty-known-set edge case handled (distances -> infinity).
+- Ran `python -m py_compile gbif_fieldmap_builder_app.py` successfully.
+
+Behaviour preserved:
+- SDM-high exploration candidate output, distance-to-nearest-known reporting, route ordering, and all downstream selection/exports are unchanged — only the per-rerun compute cost is reduced.
+
 ## 2026-06-13 - Claude - Rename app/tool to ACSP
 
 Changed files:
