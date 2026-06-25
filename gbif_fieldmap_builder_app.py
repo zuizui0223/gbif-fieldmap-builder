@@ -922,7 +922,7 @@ def add_ssdm_richness_legend(fmap: folium.Map, value_col: str, min_val: float, m
     fmap.get_root().html.add_child(folium.Element(legend))
 
 
-def add_observed_richness_grid_layer(fmap: folium.Map, grid: pd.DataFrame, metric: str, *, name: Optional[str] = None, opacity: float = 0.38) -> None:
+def add_observed_richness_grid_layer(fmap: folium.Map, grid: pd.DataFrame, metric: str, *, name: Optional[str] = None, opacity: float = 0.38, show_legend: bool = True) -> None:
     """Add an observed occurrence-richness grid layer to an existing Folium map."""
     if grid is None or grid.empty:
         return
@@ -947,7 +947,8 @@ def add_observed_richness_grid_layer(fmap: folium.Map, grid: pd.DataFrame, metri
             tooltip=f"{metric}: {value:g}",
         ).add_to(fg_grid)
     fg_grid.add_to(fmap)
-    add_richness_legend(fmap, metric, max_value)
+    if show_legend:
+        add_richness_legend(fmap, metric, max_value)
 
 
 @st.cache_data(show_spinner=False)
@@ -986,7 +987,7 @@ def make_genus_candidate_selection_map(grid: pd.DataFrame, candidates: pd.DataFr
     metric_col = {"Species richness": "species_richness", "Record count": "record_count", "Species with minimum records": "species_with_min_records"}.get(metric, "species_richness")
     max_value = float(grid[metric_col].max()) if grid is not None and not grid.empty and metric_col in grid.columns else 0.0
     if show_grid and grid is not None and not grid.empty:
-        add_observed_richness_grid_layer(fmap, grid, metric, opacity=0.38)
+        add_observed_richness_grid_layer(fmap, grid, metric, opacity=0.38, show_legend=False)
     selected_set = set(int(s) for s in (selected_ids or []))
     if candidates is not None and not candidates.empty:
         fg_hot = FeatureGroup(name="richness hotspot candidates", show=True)

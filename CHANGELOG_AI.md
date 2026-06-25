@@ -4,6 +4,24 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-25 - Codex (OpenAI) - Hide richness legend on ACSP selection map
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Synchronized local `main` with GitHub using `git fetch origin` and `git pull --ff-only origin main` before editing.
+- Added a `show_legend` option to the observed richness grid layer helper.
+- Kept the observed richness grid visible on the genus hotspot / ACSP selection map, but removed its fixed-position `Observed species richness` legend from that selection map to reduce UI clutter.
+- Preserved the richness legend on the Known distribution map and standalone richness map.
+
+Features preserved:
+- Genus Known distribution richness overlay, hotspot selection map richness overlay, ACSP selection, optional SSDM, selected-site exports, species mode, SDM/SSDM maps, VIF diagnostics, and spatial validation remain available.
+
+Known risks / TODO:
+- None known; this is a display-only legend adjustment.
+
 ## 2026-06-25 - Codex (OpenAI) - Show observed genus richness on maps
 
 Changed files:
