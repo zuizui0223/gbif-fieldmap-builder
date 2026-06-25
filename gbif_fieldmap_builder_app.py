@@ -922,30 +922,41 @@ def add_ssdm_richness_legend(fmap: folium.Map, value_col: str, min_val: float, m
     fmap.get_root().html.add_child(folium.Element(legend))
 
 
-@st.cache_data(show_spinner=False)
-def make_richness_map(grid: pd.DataFrame, hotspots: pd.DataFrame, metric: str) -> folium.Map:
-    center = (float(grid["latitude"].mean()), float(grid["longitude"].mean())) if not grid.empty else (35.5, 135.5)
-    fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
+def add_observed_richness_grid_layer(fmap: folium.Map, grid: pd.DataFrame, metric: str, *, name: Optional[str] = None, opacity: float = 0.38) -> None:
+    """Add an observed occurrence-richness grid layer to an existing Folium map."""
+    if grid is None or grid.empty:
+        return
     metric_col = {"Species richness": "species_richness", "Record count": "record_count", "Species with minimum records": "species_with_min_records"}.get(metric, "species_richness")
-    max_value = float(grid[metric_col].max()) if not grid.empty else 0.0
-    fg_grid = FeatureGroup(name=f"occurrence richness grid: {metric}", show=True)
+    if metric_col not in grid.columns:
+        return
+    max_value = float(pd.to_numeric(grid[metric_col], errors="coerce").max()) if not grid.empty else 0.0
+    fg_grid = FeatureGroup(name=name or f"observed richness grid: {metric}", show=True)
     for _, row in grid.iterrows():
-        value = float(row[metric_col])
-        popup = folium.Popup(
-            f"<b>Richness grid cell</b><br>{metric}: {value:g}<br>Species richness: {int(row['species_richness'])}<br>Records: {int(row['record_count'])}<br>Species: {row.get('species_list', '')}",
-            max_width=520,
-        )
+        value = float(row.get(metric_col, 0.0))
         folium.Rectangle(
             bounds=[[row["lat_min"], row["lon_min"]], [row["lat_max"], row["lon_max"]]],
             color=richness_color(value, max_value),
             weight=1,
             fill=True,
             fill_color=richness_color(value, max_value),
-            fill_opacity=0.48,
-            popup=popup,
+            fill_opacity=opacity,
+            popup=folium.Popup(
+                f"<b>Observed richness grid cell</b><br>{metric}: {value:g}<br>Species richness: {int(row.get('species_richness', 0))}<br>Records: {int(row.get('record_count', 0))}<br>Species: {row.get('species_list', '')}",
+                max_width=520,
+            ),
             tooltip=f"{metric}: {value:g}",
         ).add_to(fg_grid)
     fg_grid.add_to(fmap)
+    add_richness_legend(fmap, metric, max_value)
+
+
+@st.cache_data(show_spinner=False)
+def make_richness_map(grid: pd.DataFrame, hotspots: pd.DataFrame, metric: str) -> folium.Map:
+    center = (float(grid["latitude"].mean()), float(grid["longitude"].mean())) if not grid.empty else (35.5, 135.5)
+    fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
+    metric_col = {"Species richness": "species_richness", "Record count": "record_count", "Species with minimum records": "species_with_min_records"}.get(metric, "species_richness")
+    max_value = float(grid[metric_col].max()) if not grid.empty else 0.0
+    add_observed_richness_grid_layer(fmap, grid, metric, name=f"occurrence richness grid: {metric}", opacity=0.48)
     if hotspots is not None and not hotspots.empty:
         fg_hot = FeatureGroup(name="richness hotspot candidates", show=True)
         for _, row in hotspots.iterrows():
@@ -960,7 +971,6 @@ def make_richness_map(grid: pd.DataFrame, hotspots: pd.DataFrame, metric: str) -
                 tooltip=f"hotspot {int(row['hotspot_rank'])}",
             ).add_to(fg_hot)
         fg_hot.add_to(fmap)
-    add_richness_legend(fmap, metric, max_value)
     LayerControl(collapsed=True).add_to(fmap)
     try:
         fmap.fit_bounds([[grid["lat_min"].min(), grid["lon_min"].min()], [grid["lat_max"].max(), grid["lon_max"].max()]], padding=(30, 30))
@@ -976,23 +986,7 @@ def make_genus_candidate_selection_map(grid: pd.DataFrame, candidates: pd.DataFr
     metric_col = {"Species richness": "species_richness", "Record count": "record_count", "Species with minimum records": "species_with_min_records"}.get(metric, "species_richness")
     max_value = float(grid[metric_col].max()) if grid is not None and not grid.empty and metric_col in grid.columns else 0.0
     if show_grid and grid is not None and not grid.empty:
-        fg_grid = FeatureGroup(name=f"observed richness grid: {metric}", show=True)
-        for _, row in grid.iterrows():
-            value = float(row.get(metric_col, 0.0))
-            folium.Rectangle(
-                bounds=[[row["lat_min"], row["lon_min"]], [row["lat_max"], row["lon_max"]]],
-                color=richness_color(value, max_value),
-                weight=1,
-                fill=True,
-                fill_color=richness_color(value, max_value),
-                fill_opacity=0.38,
-                popup=folium.Popup(
-                    f"<b>Observed richness grid cell</b><br>{metric}: {value:g}<br>Species richness: {int(row.get('species_richness', 0))}<br>Records: {int(row.get('record_count', 0))}<br>Species: {row.get('species_list', '')}",
-                    max_width=520,
-                ),
-                tooltip=f"{metric}: {value:g}",
-            ).add_to(fg_grid)
-        fg_grid.add_to(fmap)
+        add_observed_richness_grid_layer(fmap, grid, metric, opacity=0.38)
     selected_set = set(int(s) for s in (selected_ids or []))
     if candidates is not None and not candidates.empty:
         fg_hot = FeatureGroup(name="richness hotspot candidates", show=True)
@@ -1023,7 +1017,6 @@ def make_genus_candidate_selection_map(grid: pd.DataFrame, candidates: pd.DataFr
         fg_hot.add_to(fmap)
     if add_draw:
         Draw(export=False, draw_options={"rectangle": True, "polyline": False, "circle": False, "marker": False, "circlemarker": False, "polygon": False}, edit_options={"edit": False, "remove": True}).add_to(fmap)
-    add_richness_legend(fmap, metric, max_value)
     LayerControl(collapsed=True).add_to(fmap)
     try:
         lat_values: list[float] = []
@@ -1166,9 +1159,17 @@ def make_exclusion_review_map(occ_map_display: pd.DataFrame, excluded_ids: set[i
     return fmap
 
 
-def make_target_selection_map(occ_map_display: pd.DataFrame) -> folium.Map:
+def make_target_selection_map(occ_map_display: pd.DataFrame, richness_grid: Optional[pd.DataFrame] = None, richness_metric: str = "Species richness") -> folium.Map:
     center = (float(occ_map_display["_latitude"].mean()), float(occ_map_display["_longitude"].mean())) if not occ_map_display.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=7, tiles="OpenStreetMap", control_scale=True)
+    if richness_grid is not None and not richness_grid.empty:
+        add_observed_richness_grid_layer(
+            fmap,
+            richness_grid,
+            richness_metric,
+            name=f"observed richness grid: {richness_metric}",
+            opacity=0.34,
+        )
     fg = FeatureGroup(name="target selection occurrences", show=True)
     for _, row in occ_map_display.iterrows():
         rid = int(row["_row_id"])
@@ -1205,6 +1206,8 @@ def target_occurrence_set_panel(
     show_map: bool = True,
     model_label: str = "SDM",
     allow_advanced_modes: bool = False,
+    richness_grid: Optional[pd.DataFrame] = None,
+    richness_metric: str = "Species richness",
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """Survey area selection panel.
 
@@ -1236,7 +1239,7 @@ def target_occurrence_set_panel(
                 st.rerun()
         with col_map:
             draw_data = st_folium(
-                make_target_selection_map(occ_map_display),
+                make_target_selection_map(occ_map_display, richness_grid, richness_metric),
                 width=None,
                 height=420,
                 returned_objects=["all_drawings", "last_active_drawing"],
@@ -3874,10 +3877,14 @@ def genus_diversity_panel() -> None:
         genus_ssdm_records = st.number_input("SSDM presence records per species", 3, 5_000, genus_ssdm_records, 25, key="genus_ssdm_records")
 
     st.subheader("🗺️ Known distribution")
+    genus_known_richness_grid = occurrence_richness_grid(occ_cleaned, float(grid_deg), int(min_records_cell))
     st.caption(
         f"{len(occ_cleaned):,} fetched records. "
+        "Observed species richness grid is overlaid from all cleaned genus records. "
         "Draw a rectangle to define your fieldwork area."
     )
+    if genus_known_richness_grid.empty:
+        st.info("Observed species richness grid is not available yet because species names could not be grouped into richness cells.")
     genus_target_display = limit_occurrence_display(occ_cleaned, set(), int(genus_map_records))
     occ, genus_target_counts = target_occurrence_set_panel(
         occ_cleaned,
@@ -3888,6 +3895,8 @@ def genus_diversity_panel() -> None:
         show_map=True,
         model_label="SSDM",
         allow_advanced_modes=False,
+        richness_grid=genus_known_richness_grid,
+        richness_metric=richness_metric,
     )
     if occ.empty:
         st.error("The active genus target occurrence set is empty. Change the rectangle target option or clear the target rectangle.")
@@ -4012,7 +4021,7 @@ def genus_diversity_panel() -> None:
             st.rerun()
         genus_show_grid_on_selection_map = st.checkbox(
             "Show richness grid on selection map (slower)",
-            value=False,
+            value=True,
             key="genus_show_grid_on_selection_map",
             help="Off keeps hotspot selection responsive. Turn on when you want to inspect observed richness cells behind the candidates.",
         )

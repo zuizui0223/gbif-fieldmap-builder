@@ -4,6 +4,24 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-25 - Codex (OpenAI) - Show observed genus richness on maps
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Synchronized local `main` with GitHub using `git fetch origin` and `git pull --ff-only origin main` before editing.
+- Added a shared observed richness grid layer helper so the same occurrence-based richness cells can be drawn on multiple Folium maps.
+- Overlaid observed species richness on the genus-mode Known distribution / survey-area rectangle map, using all cleaned genus occurrence records.
+- Changed the genus hotspot selection map so the observed richness grid is shown by default, while keeping the checkbox available for users who need to hide it for responsiveness.
+
+Features preserved:
+- Genus occurrence display, survey-area rectangle selection, observed richness hotspot generation, optional SSDM, ACSP selection, selected-site exports, species mode, SDM/SSDM maps, VIF diagnostics, and spatial validation remain available.
+
+Known risks / TODO:
+- Very dense genus datasets may render more richness cells on the Known distribution map; users can still control genus fetch/display caps and hide the hotspot-map richness layer if needed.
+
 ## 2026-06-25 - Codex (OpenAI) - Fix duplicate SSDM variable-selection widget key
 
 Changed files:
