@@ -23,6 +23,27 @@ Features preserved:
 Known risks / TODO:
 - README now describes the research direction more accurately, but app-provided NDVI/land-cover and richer online learning remain future work.
 
+## 2026-06-26 - Codex (OpenAI) - Validate Campanula microdonta and adapt small-local thinning
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Validated the species workflow with `Campanula microdonta Koidz.` from GBIF.
+- Confirmed GBIF reports 300 coordinate records and the app fetches 87 records after fetch-stage deduplication.
+- Found that the previous fixed 0.05-degree analysis grid over-thinned this small/local dataset from 66 unique coordinates to 28 candidate-input records, yielding only one occurrence-supported candidate.
+- Added adaptive local grid thinning for non-large datasets so small/local occurrence sets use a finer effective grid while large-dataset defaults remain unchanged.
+- Added pipeline transparency for the effective candidate grid when the adaptive local setting differs from the requested advanced setting.
+- Re-tested `Campanula microdonta`: candidate input increased to 53 records, SDM training input to 43 records, and occurrence-supported candidates to 9.
+
+Features preserved:
+- GBIF/CSV inputs, representative large-dataset defaults, exact-coordinate deduplication, spatial thinning, occurrence-supported candidates, optional SDM/SSDM, Potential Survey Sites, ACSP selection, exports, and field-validation outputs remain available.
+
+Known risks / TODO:
+- Potential Survey Sites still rely mainly on app-provided elevation/topography and coastline proxies unless optional OSM access/edge layers are enabled; true app-provided high-resolution NDVI/land-cover/geology layers remain future work.
+- ACSP `Habitat analogue survey` can still favor Environmental contrast / Under-surveyed analogue sites strongly; next improvement should separate Discovery versus Learning objectives for field planning.
+
 ## 2026-06-26 - Codex (OpenAI) - Improve app-provided access and edge distance proxies
 
 Changed files:

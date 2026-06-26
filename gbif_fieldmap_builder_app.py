@@ -1518,6 +1518,25 @@ def grid_thin(df: pd.DataFrame, grid_degrees: float) -> pd.DataFrame:
     return work.drop(columns=drop_cols).reset_index(drop=True)
 
 
+def adaptive_grid_thinning_degrees(df: pd.DataFrame, requested_grid_deg: float, large_mode: bool) -> float:
+    """Keep large-dataset defaults, but avoid over-thinning small island/local taxa."""
+    try:
+        requested = max(0.0, float(requested_grid_deg))
+    except Exception:
+        requested = 0.0
+    if requested <= 0 or df.empty or bool(large_mode):
+        return requested
+    n = len(df)
+    lat_span = float(pd.to_numeric(df["_latitude"], errors="coerce").max() - pd.to_numeric(df["_latitude"], errors="coerce").min())
+    lon_span = float(pd.to_numeric(df["_longitude"], errors="coerce").max() - pd.to_numeric(df["_longitude"], errors="coerce").min())
+    max_span = max(lat_span, lon_span)
+    if n <= 150:
+        return min(requested, 0.01)
+    if n <= 500 and max_span <= 2.0:
+        return min(requested, 0.02)
+    return requested
+
+
 def limit_occurrence_display(occ_raw: pd.DataFrame, excluded_ids: set[int], max_points: int) -> pd.DataFrame:
     if occ_raw.empty:
         return occ_raw.copy()
@@ -1583,9 +1602,11 @@ def prepare_large_dataset_inputs(
     candidate_target = max(1, int(candidate_target))
     sdm_target = max(1, int(sdm_target))
     base = exact_coordinate_deduplicate(occ_after_exclusion) if use_exact_dedup else occ_after_exclusion.copy().reset_index(drop=True)
-    candidate = grid_thin(base, max(float(manual_grid_deg), 0.05))
-    candidate = spatially_balanced_cap(candidate, candidate_target)
-    sdm_train = grid_thin(base, max(float(manual_grid_deg), 0.10))
+    effective_grid_deg = adaptive_grid_thinning_degrees(base, float(manual_grid_deg), bool(large_mode))
+    candidate_grid = grid_thin(base, effective_grid_deg)
+    candidate = spatially_balanced_cap(candidate_grid, candidate_target)
+    sdm_grid_deg = adaptive_grid_thinning_degrees(base, float(manual_grid_deg), bool(large_mode))
+    sdm_train = grid_thin(base, sdm_grid_deg)
     if float(manual_distance_m) > 0:
         sdm_train = spatial_thin(sdm_train, float(manual_distance_m))
     sdm_train = spatially_balanced_cap(sdm_train, sdm_target)
@@ -1593,6 +1614,9 @@ def prepare_large_dataset_inputs(
         "candidate_target": int(candidate_target),
         "sdm_target": int(sdm_target),
         "after_exact_dedup": int(len(base)),
+        "candidate_grid_deg": float(effective_grid_deg),
+        "sdm_grid_deg": float(sdm_grid_deg),
+        "after_grid_thin": int(len(candidate_grid)),
         "candidate_input": int(len(candidate)),
         "sdm_train": int(len(sdm_train)),
     }
@@ -5536,6 +5560,12 @@ def main() -> None:
     _n_candidates = len(occ_candidate_input)
 
     st.caption("**Record pipeline** — why counts change at each stage:")
+    if float(large_summary.get("candidate_grid_deg", float(grid_thinning_deg))) != float(grid_thinning_deg):
+        st.caption(
+            f"Adaptive local thinning: requested grid thinning {float(grid_thinning_deg):.3f} degrees, "
+            f"effective candidate grid {float(large_summary.get('candidate_grid_deg', 0.0)):.3f} degrees "
+            "because this is a small/local occurrence set."
+        )
     rp1, rp2, rp3, rp4, rp5 = st.columns(5)
     rp1.metric(
         "GBIF fetched records",
