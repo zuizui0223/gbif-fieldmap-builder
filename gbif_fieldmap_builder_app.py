@@ -21,6 +21,8 @@ import re
 import time
 import urllib.parse
 import zipfile
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -36,6 +38,7 @@ from folium.plugins import Draw, MarkerCluster
 from geopy.distance import geodesic
 from rasterio.enums import Resampling
 from rasterio.windows import Window, from_bounds
+from rasterio.warp import transform as rio_transform
 from shapely.geometry import MultiPoint, Point, box, shape
 from shapely.ops import unary_union
 from sklearn.cluster import DBSCAN
@@ -2578,6 +2581,149 @@ def sample_raster_values_fast(points: pd.DataFrame, raster_path: str, lat_col: s
         return clean_environment_array(values)
 
 
+def cache_uploaded_layer(uploaded: Any, prefix: str) -> Optional[str]:
+    """Persist an uploaded layer in the app cache so rasterio can reopen it across reruns."""
+    if uploaded is None:
+        return None
+    data = uploaded.getvalue()
+    digest = hashlib.sha1(data).hexdigest()[:16]
+    suffix = Path(uploaded.name).suffix.lower() or ".dat"
+    layer_dir = CACHE_DIR / "uploaded_layers"
+    layer_dir.mkdir(parents=True, exist_ok=True)
+    path = layer_dir / f"{prefix}_{digest}{suffix}"
+    if not path.exists() or path.stat().st_size != len(data):
+        path.write_bytes(data)
+    return str(path)
+
+
+def _coords_in_raster_crs(src: rasterio.io.DatasetReader, points: pd.DataFrame, lat_col: str, lon_col: str) -> np.ndarray:
+    coords = points[[lon_col, lat_col]].to_numpy(dtype=float)
+    if src.crs is not None and str(src.crs).upper() not in {"EPSG:4326", "OGC:CRS84"}:
+        xs, ys = rio_transform("EPSG:4326", src.crs, coords[:, 0].tolist(), coords[:, 1].tolist())
+        return np.column_stack([xs, ys]).astype(float)
+    return coords
+
+
+def sample_uploaded_raster_values(points: pd.DataFrame, raster_path: str, lat_col: str, lon_col: str, derived: Optional[str] = None) -> np.ndarray:
+    """Sample a user raster at WGS84 point coordinates, including DEM-derived local terrain metrics."""
+    if not raster_path or points.empty:
+        return np.array([], dtype=float)
+    with rasterio.open(raster_path) as src:
+        coords = _coords_in_raster_crs(src, points, lat_col, lon_col)
+        rc = np.array([src.index(float(x), float(y)) for x, y in coords], dtype=int)
+        values = np.full(len(points), np.nan, dtype=float)
+        pad = 1 if derived in {"slope", "aspect", "roughness", "tpi"} else 0
+        for i, (rr, cc) in enumerate(rc):
+            if rr < 0 or cc < 0 or rr >= src.height or cc >= src.width:
+                continue
+            window = Window(max(0, cc - pad), max(0, rr - pad), min(src.width, cc + pad + 1) - max(0, cc - pad), min(src.height, rr + pad + 1) - max(0, rr - pad))
+            arr = clean_environment_array(src.read(1, window=window, boundless=True, fill_value=np.nan).astype(float), src.nodata)
+            if arr.size == 0 or np.all(np.isnan(arr)):
+                continue
+            center = arr[min(pad, arr.shape[0] - 1), min(pad, arr.shape[1] - 1)]
+            if derived is None:
+                values[i] = center
+            elif derived == "roughness":
+                values[i] = np.nanmax(arr) - np.nanmin(arr)
+            elif derived == "tpi":
+                values[i] = center - np.nanmean(arr) if np.isfinite(center) else np.nan
+            elif arr.shape[0] >= 2 and arr.shape[1] >= 2:
+                gy, gx = np.gradient(arr)
+                if derived == "aspect":
+                    values[i] = (math.degrees(math.atan2(float(np.nanmean(gy)), float(np.nanmean(gx)))) + 360.0) % 360.0
+                else:
+                    values[i] = np.nanmean(np.sqrt(gy ** 2 + gx ** 2))
+        return clean_environment_array(values)
+
+
+def extract_geojson_vertices(path: Optional[str]) -> np.ndarray:
+    if not path:
+        return np.empty((0, 2), dtype=float)
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return np.empty((0, 2), dtype=float)
+    geoms = []
+    if payload.get("type") == "FeatureCollection":
+        geoms = [shape(f.get("geometry")) for f in payload.get("features", []) if f.get("geometry")]
+    elif payload.get("type") == "Feature":
+        geoms = [shape(payload.get("geometry"))]
+    else:
+        geoms = [shape(payload)]
+    coords: list[tuple[float, float]] = []
+    for geom in geoms:
+        if geom.is_empty:
+            continue
+        if hasattr(geom, "geoms"):
+            parts = geom.geoms
+        else:
+            parts = [geom]
+        for part in parts:
+            if hasattr(part, "coords"):
+                coords.extend([(float(x), float(y)) for x, y in part.coords])
+            elif hasattr(part, "exterior"):
+                coords.extend([(float(x), float(y)) for x, y in part.exterior.coords])
+    return np.array(coords, dtype=float) if coords else np.empty((0, 2), dtype=float)
+
+
+def nearest_vector_distance_m(points: pd.DataFrame, vertices_lonlat: np.ndarray, lat_col: str, lon_col: str) -> np.ndarray:
+    if points.empty or vertices_lonlat.size == 0:
+        return np.full(len(points), np.nan, dtype=float)
+    point_latlon = points[[lat_col, lon_col]].to_numpy(dtype=float)
+    vertex_latlon = np.column_stack([vertices_lonlat[:, 1], vertices_lonlat[:, 0]])
+    tree = BallTree(np.radians(vertex_latlon), metric="haversine")
+    dist_rad, _ = tree.query(np.radians(point_latlon), k=1)
+    return dist_rad[:, 0] * EARTH_RADIUS_M
+
+
+def buffered_profile_sample_points(points: pd.DataFrame, radius_m: float, lat_col: str = "latitude", lon_col: str = "longitude") -> pd.DataFrame:
+    """Create small local sample points around known occurrences for habitat-profile extraction."""
+    base = points.dropna(subset=[lat_col, lon_col]).copy()
+    if base.empty:
+        return base
+    radius = max(0.0, float(radius_m))
+    if radius <= 0:
+        return base[[lat_col, lon_col]].rename(columns={lat_col: "latitude", lon_col: "longitude"}).reset_index(drop=True)
+    rows: list[dict[str, float]] = []
+    bearings = [0, 45, 90, 135, 180, 225, 270, 315]
+    for _, row in base.iterrows():
+        lat = float(row[lat_col]); lon = float(row[lon_col])
+        rows.append({"latitude": lat, "longitude": lon})
+        for dist in [radius * 0.5, radius]:
+            for bearing in bearings:
+                dest = geodesic(meters=dist).destination((lat, lon), bearing)
+                rows.append({"latitude": float(dest.latitude), "longitude": float(dest.longitude)})
+    return pd.DataFrame(rows).drop_duplicates().reset_index(drop=True)
+
+
+def extract_potential_layer_values(points: pd.DataFrame, layers: dict[str, Optional[str]], lat_col: str = "latitude", lon_col: str = "longitude") -> pd.DataFrame:
+    """Extract high-resolution habitat-discovery layer values for candidate or known points."""
+    out = points.copy()
+    dem_path = layers.get("dem")
+    if dem_path:
+        out["elevation"] = sample_uploaded_raster_values(out, dem_path, lat_col, lon_col)
+        out["slope"] = sample_uploaded_raster_values(out, dem_path, lat_col, lon_col, "slope")
+        out["aspect"] = sample_uploaded_raster_values(out, dem_path, lat_col, lon_col, "aspect")
+        out["roughness"] = sample_uploaded_raster_values(out, dem_path, lat_col, lon_col, "roughness")
+        out["tpi"] = sample_uploaded_raster_values(out, dem_path, lat_col, lon_col, "tpi")
+    ndvi_path = layers.get("ndvi")
+    if ndvi_path:
+        out["ndvi"] = sample_uploaded_raster_values(out, ndvi_path, lat_col, lon_col)
+    landcover_path = layers.get("landcover")
+    if landcover_path:
+        out["landcover"] = sample_uploaded_raster_values(out, landcover_path, lat_col, lon_col)
+    for key, col in [
+        ("roads", "distance_to_road_m"),
+        ("trails", "distance_to_trail_m"),
+        ("coastline", "distance_to_coast_m"),
+        ("forest_edge", "distance_to_forest_edge_m"),
+    ]:
+        vertices = extract_geojson_vertices(layers.get(key))
+        if vertices.size:
+            out[col] = nearest_vector_distance_m(out, vertices, lat_col, lon_col)
+    return out
+
+
 def extract_environment(points: pd.DataFrame, variables: list[str], lat_col: str, lon_col: str, resolution: str, status=None) -> pd.DataFrame:
     out = points.copy()
     for i, var in enumerate(variables, start=1):
@@ -3577,6 +3723,8 @@ def make_potential_survey_site_candidates(
     prediction_table: Optional[pd.DataFrame] = None,
     env_variables: Optional[list[str]] = None,
     resolution: str = "2.5m",
+    highres_layers: Optional[dict[str, Optional[str]]] = None,
+    profile_buffer_m: float = 100.0,
 ) -> pd.DataFrame:
     """Build habitat-first exploratory survey cells from the active survey area.
 
@@ -3639,18 +3787,27 @@ def make_potential_survey_site_candidates(
     max_density = max(float(density.max()), 1.0)
     grid["nearest_known_population_km"] = (grid["distance_to_nearest_known_m"] / 1000.0).round(3)
 
+    highres_layers = highres_layers or {}
+    has_highres = any(highres_layers.get(k) for k in ["dem", "ndvi", "landcover", "roads", "trails", "coastline", "forest_edge"])
     env_vars = [v for v in (env_variables or POTENTIAL_ANALOGUE_PRESET) if v in SUPPORTED_ENV_VARS]
     try:
-            occ_env = extract_environment(
-                work.rename(columns={"_latitude": "latitude", "_longitude": "longitude"}),
-                env_vars,
-                "latitude",
-                "longitude",
-                resolution,
-            )
-            grid_env = extract_environment(grid, env_vars, "latitude", "longitude", resolution)
-            occ_env, _ = clean_environment_table(occ_env, env_vars, "Potential-site known environment")
-            grid_env, _ = clean_environment_table(grid_env, env_vars, "Potential-site grid environment")
+            known_points = work.rename(columns={"_latitude": "latitude", "_longitude": "longitude"})
+            profile_points = buffered_profile_sample_points(known_points, float(profile_buffer_m), "latitude", "longitude")
+            if has_highres:
+                occ_env = extract_potential_layer_values(profile_points, highres_layers, "latitude", "longitude")
+                grid_env = extract_potential_layer_values(grid, highres_layers, "latitude", "longitude")
+                continuous_cols = [
+                    "elevation", "slope", "aspect", "roughness", "tpi", "ndvi",
+                    "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m",
+                ]
+                env_vars = [c for c in continuous_cols if c in occ_env.columns and c in grid_env.columns]
+            else:
+                occ_env = extract_environment(profile_points, env_vars, "latitude", "longitude", resolution)
+                grid_env = extract_environment(grid, env_vars, "latitude", "longitude", resolution)
+            if not env_vars:
+                raise RuntimeError("No usable continuous habitat layers were available.")
+            occ_env, _ = clean_environment_table(occ_env, env_vars, "Potential-site known habitat environment")
+            grid_env, _ = clean_environment_table(grid_env, env_vars, "Potential-site grid habitat environment")
             mu = occ_env[env_vars].mean()
             sd = occ_env[env_vars].std(ddof=0).replace(0, 1.0).fillna(1.0)
             known_env = ((occ_env[env_vars] - mu) / sd).to_numpy(dtype=float)
@@ -3671,8 +3828,20 @@ def make_potential_survey_site_candidates(
             grid = grid.drop(columns=[c for c in ["environmental_distance_to_known", "analogue_score"] if c in grid.columns])
             grid = grid.merge(scored, on=["latitude", "longitude"], how="inner")
             grid["habitat_score"] = grid["analogue_score"]
-            grid["habitat_basis"] = f"Mahalanobis environmental analogue ({', '.join(env_vars)})"
-            grid["missing_layer_note"] = "NDVI, land cover, road/trail distance, forest-edge distance, and coastline distance are not yet supplied; current score uses available raster terrain/environment variables."
+            basis_prefix = "High-resolution local habitat analogue" if has_highres else "Built-in elevation-raster local analogue"
+            grid["habitat_basis"] = f"{basis_prefix}: {float(profile_buffer_m):.0f} m known-site buffer profile; Mahalanobis distance ({', '.join(env_vars)})"
+            missing = []
+            for label, key in [("DEM", "dem"), ("NDVI", "ndvi"), ("land cover", "landcover"), ("road distance", "roads"), ("trail distance", "trails"), ("coast distance", "coastline"), ("forest-edge distance", "forest_edge")]:
+                if not highres_layers.get(key):
+                    missing.append(label)
+            grid["missing_layer_note"] = "Missing optional high-resolution layers: " + ", ".join(missing) if missing else "All currently supported high-resolution layer inputs were supplied."
+            if "landcover" in occ_env.columns and "landcover" in grid_env.columns:
+                known_lc = pd.to_numeric(occ_env["landcover"], errors="coerce").dropna().round().astype(int)
+                dominant = set(known_lc.value_counts().head(5).index.tolist())
+                grid_lc = pd.to_numeric(grid_env["landcover"], errors="coerce").round()
+                grid["landcover"] = grid_lc.to_numpy()
+                grid["landcover_match_score"] = grid_lc.astype("Int64").isin(dominant).astype(float).to_numpy()
+                grid["habitat_score"] = (0.85 * pd.to_numeric(grid["habitat_score"], errors="coerce").fillna(0.0) + 0.15 * grid["landcover_match_score"]).clip(0, 1)
     except Exception as exc:
         grid["analogue_score"] = np.exp(-grid["distance_to_nearest_known_m"] / max(cell_m * 8.0, 1.0)).clip(0, 1)
         grid["habitat_score"] = grid["analogue_score"]
@@ -3707,22 +3876,22 @@ def make_potential_survey_site_candidates(
 
     pools = [
         (
-            "Habitat-match",
+            "Habitat analogue",
             grid[(grid["analogue_score"] >= float(grid["analogue_score"].quantile(0.65))) & (grid["distance_to_nearest_known_m"] >= cell_m)].copy(),
             "analogue_score",
-            "High environmental analogue proxy near known habitat, but outside existing candidate centres.",
+            "Known-site local habitat analogue, but outside existing candidate centres.",
         ),
         (
-            "Survey-gap",
+            "Under-surveyed analogue",
             grid[(grid["survey_gap_score"] >= float(grid["survey_gap_score"].quantile(0.65))) & (grid["analogue_score"] >= float(grid["analogue_score"].quantile(0.35)))].copy(),
             "survey_gap_score",
-            "Low local target-record density within the active survey area; field validation may learn whether this is unsurveyed or unsuitable.",
+            "Known-site analogue with low local target-record density; field validation can test whether this is unsurveyed or unsuitable.",
         ),
         (
-            "Environmental-test",
+            "Environmental contrast",
             grid[grid["environmental_novelty"] >= float(grid["environmental_novelty"].quantile(0.75))].copy(),
             "environmental_novelty",
-            "Environmentally/spatially novel exploratory cell intended to test niche boundaries or absence information.",
+            "Local environmental contrast cell intended to test habitat limits or collect informative absence/edge data.",
         ),
     ]
     out_rows: list[pd.DataFrame] = []
@@ -3791,8 +3960,15 @@ def _priority_marker_style(row: Any) -> tuple[int, str]:
     ctype_lower = ctype.lower()
     if ctype_lower.startswith("sdm-high") or ctype_lower.startswith("sdm_high") or ctype_lower.startswith("ssdm-high"):
         return 9, "#9467bd"
-    if ctype in {"Habitat-match", "Survey-gap", "Environmental-test"}:
-        return 9, {"Habitat-match": "#17becf", "Survey-gap": "#bcbd22", "Environmental-test": "#8c564b"}.get(ctype, "#17becf")
+    if ctype in {"Habitat-match", "Survey-gap", "Environmental-test", "Habitat analogue", "Under-surveyed analogue", "Environmental contrast"}:
+        return 9, {
+            "Habitat-match": "#17becf",
+            "Survey-gap": "#bcbd22",
+            "Environmental-test": "#8c564b",
+            "Habitat analogue": "#17becf",
+            "Under-surveyed analogue": "#bcbd22",
+            "Environmental contrast": "#8c564b",
+        }.get(ctype, "#17becf")
     rank = int(row.get("priority_rank", 99)) if str(row.get("priority_rank", "")).strip() not in ("", "nan") else 99
     if rank <= 3:
         return 14, "#d62728"
@@ -4802,7 +4978,7 @@ def make_survey_day_html(day_lists: dict, sites: pd.DataFrame) -> str:
             f"{body}</body></html>")
 
 
-EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "habitat_basis", "macro_filter_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "analogue_score", "environmental_distance_to_known", "environmental_novelty", "survey_effort_proxy", "survey_gap_score", "access_score", "target_record_density", "all_taxa_record_density", "nearest_known_population_km", "search_cell_radius_m", "elevation", "slope", "aspect", "roughness", "tpi", "missing_layer_note", "why_selected", "selection_reason", "selection_algorithm", "selection_step", "base_score", "geographic_complementarity_gain", "environmental_complementarity_gain", "exploration_gain", "sampling_gap_gain", "redundancy_penalty", "travel_penalty", "marginal_gain_score", "access_note", "recommended_survey_window", "season_confidence", "flowering_record_count", "google_maps_url"]
+EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "habitat_basis", "macro_filter_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "analogue_score", "environmental_distance_to_known", "environmental_novelty", "survey_effort_proxy", "survey_gap_score", "access_score", "target_record_density", "all_taxa_record_density", "nearest_known_population_km", "search_cell_radius_m", "elevation", "slope", "aspect", "roughness", "tpi", "ndvi", "landcover", "landcover_match_score", "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m", "missing_layer_note", "why_selected", "selection_reason", "selection_algorithm", "selection_step", "base_score", "geographic_complementarity_gain", "environmental_complementarity_gain", "exploration_gain", "sampling_gap_gain", "redundancy_penalty", "travel_penalty", "marginal_gain_score", "access_note", "recommended_survey_window", "season_confidence", "flowering_record_count", "google_maps_url"]
 
 
 def make_export_csv(sites: pd.DataFrame) -> str:
@@ -5544,18 +5720,49 @@ def main() -> None:
             "This is a local habitat-analogue search: known-site terrain profiles are compared with grid cells using "
             "Mahalanobis environmental distance. SDM remains a separate broad climate-niche tool."
         )
+        with st.expander("High-resolution habitat layers", expanded=False):
+            st.caption(
+                "Optional inputs for local field-scale habitat profiling. DEM/NDVI/land cover should be GeoTIFF. "
+                "Roads, trails, coastline, and forest edge should be GeoJSON line or polygon data. "
+                "If no layers are supplied, the app falls back to its built-in elevation raster."
+            )
+            hr1, hr2, hr3 = st.columns(3)
+            dem_upload = hr1.file_uploader("DEM GeoTIFF", type=["tif", "tiff"], key="potential_dem_upload")
+            ndvi_upload = hr2.file_uploader("NDVI GeoTIFF", type=["tif", "tiff"], key="potential_ndvi_upload")
+            landcover_upload = hr3.file_uploader("Land cover GeoTIFF", type=["tif", "tiff"], key="potential_landcover_upload")
+            hv1, hv2, hv3, hv4 = st.columns(4)
+            roads_upload = hv1.file_uploader("Roads GeoJSON", type=["geojson", "json"], key="potential_roads_upload")
+            trails_upload = hv2.file_uploader("Trails GeoJSON", type=["geojson", "json"], key="potential_trails_upload")
+            coast_upload = hv3.file_uploader("Coastline GeoJSON", type=["geojson", "json"], key="potential_coast_upload")
+            forest_edge_upload = hv4.file_uploader("Forest edge GeoJSON", type=["geojson", "json"], key="potential_forest_edge_upload")
+            highres_layers = {
+                "dem": cache_uploaded_layer(dem_upload, "potential_dem"),
+                "ndvi": cache_uploaded_layer(ndvi_upload, "potential_ndvi"),
+                "landcover": cache_uploaded_layer(landcover_upload, "potential_landcover"),
+                "roads": cache_uploaded_layer(roads_upload, "potential_roads"),
+                "trails": cache_uploaded_layer(trails_upload, "potential_trails"),
+                "coastline": cache_uploaded_layer(coast_upload, "potential_coast"),
+                "forest_edge": cache_uploaded_layer(forest_edge_upload, "potential_forest_edge"),
+            }
+            supplied_layers = [name for name, path in highres_layers.items() if path]
+            if supplied_layers:
+                st.caption(f"Using high-resolution layer inputs: {', '.join(supplied_layers)}")
+        if "highres_layers" not in locals():
+            highres_layers = {}
         pc1, pc2, pc3, pc4 = st.columns(4)
         potential_cell_m = pc1.selectbox("Search cell size", [100, 250, 500, 1000], index=0, format_func=lambda v: f"{v} m", key="potential_cell_size_m")
-        potential_per_type = pc2.number_input("Candidates per type", min_value=1, max_value=100, value=10, step=1, key="potential_candidates_per_type")
-        potential_max_cells = pc3.number_input("Max grid cells to evaluate", min_value=100, max_value=20_000, value=2_000, step=100, key="potential_max_grid_cells")
-        use_sdm_macro_filter = pc4.checkbox(
+        profile_buffer_m = pc2.number_input("Known-site profile buffer (m)", min_value=10, max_value=1000, value=100, step=10, key="potential_profile_buffer_m")
+        potential_per_type = pc3.number_input("Candidates per type", min_value=1, max_value=100, value=10, step=1, key="potential_candidates_per_type")
+        potential_max_cells = pc4.number_input("Max grid cells to evaluate", min_value=100, max_value=20_000, value=2_000, step=100, key="potential_max_grid_cells")
+        mc1, _mc2 = st.columns(2)
+        use_sdm_macro_filter = mc1.checkbox(
             "Use SDM as broad filter",
             value=False,
             disabled=pred_table is None or pred_table.empty,
             key="potential_use_sdm_macro_filter",
             help="Optional. Uses SDM predict-map cells as the macro-scale search frame, but local topographic analogue score remains the main habitat score.",
         )
-        st.caption("Candidate types: Habitat-match, Survey-gap, and Environmental-test. Current local variables: elevation, slope, aspect, roughness, and TPI from the available elevation raster.")
+        st.caption("Candidate types: Habitat analogue, Under-surveyed analogue, and Environmental contrast. Local variables come from uploaded high-resolution layers when supplied.")
         if st.button("Build potential survey-site candidates", key="build_potential_survey_sites", use_container_width=True):
             start_sid = int(all_candidates["site_id"].max()) + 1 if not all_candidates.empty and "site_id" in all_candidates.columns else 1
             potential_candidates = make_potential_survey_site_candidates(
@@ -5568,6 +5775,8 @@ def main() -> None:
                 prediction_table=pred_table if use_sdm_macro_filter and pred_table is not None and not pred_table.empty else None,
                 env_variables=POTENTIAL_ANALOGUE_PRESET,
                 resolution=resolution,
+                highres_layers=highres_layers,
+                profile_buffer_m=float(profile_buffer_m),
             )
             st.session_state["potential_survey_candidates"] = potential_candidates
             if potential_candidates.empty:
@@ -5576,7 +5785,7 @@ def main() -> None:
                 st.success(f"Generated {len(potential_candidates):,} potential survey-site candidates.")
         potential_candidates = st.session_state.get("potential_survey_candidates")
         if isinstance(potential_candidates, pd.DataFrame) and not potential_candidates.empty:
-            show_cols = [c for c in ["site_id", "candidate_type", "habitat_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "sdm_suitability", "survey_gap_score", "access_score", "environmental_novelty", "nearest_known_population_km", "search_cell_radius_m", "latitude", "longitude", "why_selected"] if c in potential_candidates.columns]
+            show_cols = [c for c in ["site_id", "candidate_type", "habitat_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "sdm_suitability", "survey_gap_score", "access_score", "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m", "environmental_novelty", "nearest_known_population_km", "search_cell_radius_m", "latitude", "longitude", "why_selected"] if c in potential_candidates.columns]
             st.dataframe(potential_candidates[show_cols], width="stretch", hide_index=True)
             pdl1, pdl2 = st.columns(2)
             pdl1.download_button("Potential candidates CSV", potential_candidates.to_csv(index=False).encode("utf-8"), "potential_survey_site_candidates.csv", "text/csv", use_container_width=True, key="potential_candidates_csv_download")
@@ -5623,7 +5832,8 @@ def main() -> None:
         )
         has_suit = "sdm_suitability" in all_candidates.columns and all_candidates["sdm_suitability"].notna().any()
         has_sdm_high = "candidate_type" in all_candidates.columns and all_candidates["candidate_type"].astype(str).str.startswith("SDM-high").any()
-        has_potential = "candidate_type" in all_candidates.columns and all_candidates["candidate_type"].astype(str).isin(["Habitat-match", "Survey-gap", "Environmental-test"]).any()
+        potential_types = ["Habitat-match", "Survey-gap", "Environmental-test", "Habitat analogue", "Under-surveyed analogue", "Environmental contrast"]
+        has_potential = "candidate_type" in all_candidates.columns and all_candidates["candidate_type"].astype(str).isin(potential_types).any()
         sc1, sc2, sc3 = st.columns(3)
         top_sites_shown = sc1.number_input("Top-ranked sites shown", min_value=1, value=20, step=1, key="sl_top_sites_shown")
         min_priority = sc2.number_input("Minimum priority score", 0.0, 1.0, 0.0, 0.05, format="%.2f", key="sl_min_priority")
@@ -5668,7 +5878,7 @@ def main() -> None:
         if include_sdm_candidates and has_sdm_high:
             type_mask |= map_candidates.get("candidate_type", pd.Series("", index=map_candidates.index)).astype(str).str.startswith("SDM-high")
         if include_potential_candidates and has_potential:
-            type_mask |= map_candidates.get("candidate_type", pd.Series("", index=map_candidates.index)).astype(str).isin(["Habitat-match", "Survey-gap", "Environmental-test"])
+            type_mask |= map_candidates.get("candidate_type", pd.Series("", index=map_candidates.index)).astype(str).isin(potential_types)
         if include_occurrence_candidates or (include_sdm_candidates and has_sdm_high) or (include_potential_candidates and has_potential):
             map_candidates = map_candidates[type_mask]
         if "priority_score" in map_candidates.columns:
@@ -5826,7 +6036,7 @@ def main() -> None:
         if all_candidates.empty:
             st.info("No candidates generated yet.")
         else:
-            all_cand_show_cols = [c for c in ["site_id", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "candidate_type", "n_occurrences", "habitat_score", "analogue_score", "survey_gap_score", "environmental_novelty", "nearest_known_population_km", "search_cell_radius_m", "latitude", "longitude", "score_explanation", "recommended_survey_window", "season_confidence", "flowering_record_count"] if c in all_candidates.columns]
+            all_cand_show_cols = [c for c in ["site_id", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "observed_weight", "model_weight", "candidate_type", "n_occurrences", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "analogue_score", "survey_gap_score", "access_score", "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m", "environmental_novelty", "nearest_known_population_km", "search_cell_radius_m", "latitude", "longitude", "score_explanation", "recommended_survey_window", "season_confidence", "flowering_record_count"] if c in all_candidates.columns]
             st.dataframe(all_candidates[all_cand_show_cols], width="stretch", hide_index=True)
             oc1, oc2 = st.columns(2)
             oc1.download_button(

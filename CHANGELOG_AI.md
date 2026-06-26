@@ -4,6 +4,30 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-26 - Codex (OpenAI) - Add high-resolution habitat layer inputs for Potential Survey Sites
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Added a dedicated `High-resolution habitat layers` input section inside `Potential Survey Sites (Habitat-first Discovery)`.
+- Added optional GeoTIFF inputs for DEM, NDVI, and land cover.
+- Added optional GeoJSON inputs for roads, trails, coastline, and forest edge, with nearest-distance extraction to candidate cells.
+- Added upload caching so Streamlit can reopen uploaded layers with rasterio across reruns.
+- Added high-resolution raster sampling that supports rasters with non-WGS84 CRS by transforming WGS84 candidate coordinates into raster CRS.
+- Added DEM-derived local terrain metrics from uploaded DEMs: elevation, slope, aspect, roughness, and TPI.
+- Changed known-site habitat profiling to sample points around each known occurrence within a user-defined buffer, default 100 m, instead of sampling only the exact coordinate.
+- Potential survey cells can now be scored from uploaded local habitat layers when available, with Mahalanobis environmental similarity, while SDM remains an optional broad macro-scale filter.
+- Renamed potential candidate types to `Habitat analogue`, `Under-surveyed analogue`, and `Environmental contrast` to match the intended field-discovery workflow.
+
+Features preserved:
+- Occurrence-supported candidates, optional SDM and SDM-high exploration candidates, raster-style predict map, VIF/spatial validation, ACSP selection, map/rectangle selection, selected-site exports, genus/SSDM workflows, and validation outputs remain available.
+
+Known risks / TODO:
+- Vector distance extraction currently uses nearest GeoJSON vertices as a lightweight approximation; a later refinement can densify line geometries for more exact road/trail/coast/forest-edge distances.
+- Uploaded land-cover values are sampled and exported, with a simple dominant-class match score; richer categorical habitat matching can be added after real layer examples are tested.
+
 ## 2026-06-26 - Codex (OpenAI) - Refine potential sites as local habitat analogue search
 
 Changed files:
