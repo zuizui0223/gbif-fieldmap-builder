@@ -2007,6 +2007,8 @@ def add_priority_rank(sites: pd.DataFrame, observed_weight: float = 0.7, model_w
 ACSP_SELECTION_MODES = [
     "Simple top-ranked",
     "Complementarity-based batch selection",
+    "Discovery-focused field survey",
+    "Learning-focused field survey",
     "Habitat analogue survey",
     "Exploration-focused active survey",
     "Phylogeographic gap-filling",
@@ -2028,6 +2030,16 @@ ACSP_MODE_WEIGHTS: dict[str, dict[str, float]] = {
         "base": 1.0, "coverage": 0.8, "exploration": 0.3,
         "gap": 0.4, "habitat": 0.4, "validation": 0.4, "access": 0.2,
         "redundancy": 0.8, "travel": 0.05,
+    },
+    "Discovery-focused field survey": {
+        "base": 0.9, "coverage": 0.35, "exploration": 0.25,
+        "gap": 0.25, "habitat": 1.15, "validation": 0.5, "access": 0.25,
+        "redundancy": 0.6, "travel": 0.04,
+    },
+    "Learning-focused field survey": {
+        "base": 0.45, "coverage": 0.8, "exploration": 0.65,
+        "gap": 1.0, "habitat": 0.45, "validation": 0.6, "access": 0.15,
+        "redundancy": 0.7, "travel": 0.07,
     },
     "Habitat analogue survey": {
         "base": 0.6, "coverage": 0.4, "exploration": 0.3,
@@ -2238,6 +2250,20 @@ def acsp_select(
             static_gap = np.clip(0.7 * static_gap + weight * _acsp_normalize(df[gap_col]), 0.0, 1.0)
     contrast_type = cand_type.str.contains("environmental contrast", case=False, na=False)
     static_gap = np.clip(static_gap + 0.15 * contrast_type.to_numpy(dtype=float), 0.0, 1.0)
+
+    if mode == "Discovery-focused field survey":
+        contrast_mask = contrast_type.to_numpy(dtype=bool)
+        known_anchor_mask = cand_type.str.contains("occurrence-supported", case=False, na=False).to_numpy(dtype=bool)
+        habitat_analogue_gain[known_anchor_mask] = np.maximum(habitat_analogue_gain[known_anchor_mask], 0.9)
+        exploration_gain[known_anchor_mask] = np.maximum(exploration_gain[known_anchor_mask], 0.15)
+        habitat_analogue_gain[contrast_mask] *= 0.2
+        static_gap[contrast_mask] *= 0.25
+        exploration_gain[contrast_mask] *= 0.35
+    elif mode == "Learning-focused field survey":
+        contrast_mask = contrast_type.to_numpy(dtype=bool)
+        model_only_mask = cand_type.str.contains("exploration|sdm-high|ssdm-high", case=False, na=False).to_numpy(dtype=bool)
+        static_gap[contrast_mask] = np.clip(static_gap[contrast_mask] + 0.25, 0.0, 1.0)
+        exploration_gain[model_only_mask | contrast_mask] = np.clip(exploration_gain[model_only_mask | contrast_mask] + 0.25, 0.0, 1.0)
 
     # ── Optional environmental space (standardised) ──────────────────────────
     env_cols = _acsp_environment_columns(df)
@@ -2659,10 +2685,16 @@ def sample_raster_values_fast(points: pd.DataFrame, raster_path: str, lat_col: s
                     values[i] = center - np.nanmean(sub) if np.isfinite(center) else np.nan
                 elif sub.shape[0] >= 2 and sub.shape[1] >= 2:
                     gy, gx = np.gradient(sub)
+                    if not (np.isfinite(gy).any() or np.isfinite(gx).any()):
+                        continue
                     if derived == "aspect":
+                        if not (np.isfinite(gy).any() and np.isfinite(gx).any()):
+                            continue
                         values[i] = (math.degrees(math.atan2(float(np.nanmean(gy)), float(np.nanmean(gx)))) + 360.0) % 360.0
                     else:
-                        values[i] = np.nanmean(np.sqrt(gy ** 2 + gx ** 2))
+                        grad_mag = np.sqrt(gy ** 2 + gx ** 2)
+                        if np.isfinite(grad_mag).any():
+                            values[i] = np.nanmean(grad_mag)
         return clean_environment_array(values)
 
 
@@ -2699,10 +2731,16 @@ def sample_uploaded_raster_values(points: pd.DataFrame, raster_path: str, lat_co
                 values[i] = center - np.nanmean(arr) if np.isfinite(center) else np.nan
             elif arr.shape[0] >= 2 and arr.shape[1] >= 2:
                 gy, gx = np.gradient(arr)
+                if not (np.isfinite(gy).any() or np.isfinite(gx).any()):
+                    continue
                 if derived == "aspect":
+                    if not (np.isfinite(gy).any() and np.isfinite(gx).any()):
+                        continue
                     values[i] = (math.degrees(math.atan2(float(np.nanmean(gy)), float(np.nanmean(gx)))) + 360.0) % 360.0
                 else:
-                    values[i] = np.nanmean(np.sqrt(gy ** 2 + gx ** 2))
+                    grad_mag = np.sqrt(gy ** 2 + gx ** 2)
+                    if np.isfinite(grad_mag).any():
+                        values[i] = np.nanmean(grad_mag)
         return clean_environment_array(values)
 
 
@@ -4729,10 +4767,12 @@ def genus_diversity_panel() -> None:
             "Adaptive Complementarity-based Survey Prioritization picks a *set* of hotspots that jointly "
             "maximises detection potential, model support, geographic/environmental complementarity, "
             "exploration value and species/sampling-gap coverage while reducing redundancy. "
-            "Phylogeographic gap-filling rewards hotspots covering species or regions not yet represented in the selected set."
+            "Discovery-focused selection prioritizes likely richness hotspots; Learning-focused selection prioritizes "
+            "under-sampled or contrasting areas for field validation."
         )
         gac1, gac2, gac3 = st.columns([2, 1, 1])
-        genus_acsp_mode = gac1.selectbox("Selection algorithm", ACSP_SELECTION_MODES, index=3, key="acsp_mode_genus")
+        genus_default_mode = "Phylogeographic gap-filling" if "species_list" in genus_acsp_pool.columns else "Discovery-focused field survey"
+        genus_acsp_mode = gac1.selectbox("Selection algorithm", ACSP_SELECTION_MODES, index=ACSP_SELECTION_MODES.index(genus_default_mode), key="acsp_mode_genus")
         genus_acsp_k = gac2.number_input("Sites to select (K)", 1, max(1, len(genus_acsp_pool)), min(10, max(1, len(genus_acsp_pool))), 1, key="acsp_k_genus")
         genus_acsp_seed = gac3.checkbox("Seed with current selection", value=False, key="acsp_seed_genus", help="Keep already-selected hotspots as the starting set (S0) and fill the rest by complementarity.")
         if st.button("Auto-select by selected algorithm", key="acsp_run_genus", use_container_width=True, disabled=genus_acsp_pool.empty):
@@ -6194,10 +6234,11 @@ def main() -> None:
             "Adaptive Complementarity-based Survey Prioritization picks a *set* of sites that "
             "jointly maximises detection potential, model support, environmental/geographic complementarity, "
             "exploration value and sampling-gap coverage while reducing redundancy. "
-            "Manual map clicks and rectangle selection remain available."
+            "Discovery-focused selection prioritizes likely habitat analogues; Learning-focused selection prioritizes "
+            "under-sampled, contrasting, or model-only exploratory sites. Manual map clicks and rectangle selection remain available."
         )
         ac1, ac2, ac3 = st.columns([2, 1, 1])
-        acsp_default_index = ACSP_SELECTION_MODES.index("Habitat analogue survey") if has_potential else ACSP_SELECTION_MODES.index("Complementarity-based batch selection")
+        acsp_default_index = ACSP_SELECTION_MODES.index("Discovery-focused field survey") if has_potential else ACSP_SELECTION_MODES.index("Complementarity-based batch selection")
         acsp_mode = ac1.selectbox("Selection algorithm", ACSP_SELECTION_MODES, index=acsp_default_index, key="acsp_mode_species")
         acsp_k = ac2.number_input("Sites to select (K)", 1, max(1, len(acsp_pool)), min(10, max(1, len(acsp_pool))), 1, key="acsp_k_species")
         acsp_seed = ac3.checkbox("Seed with current selection", value=False, key="acsp_seed_species", help="Keep already-selected sites as the starting set (S0) and fill the rest by complementarity.")

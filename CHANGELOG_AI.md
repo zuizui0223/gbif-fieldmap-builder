@@ -23,6 +23,29 @@ Features preserved:
 Known risks / TODO:
 - README now describes the research direction more accurately, but app-provided NDVI/land-cover and richer online learning remain future work.
 
+## 2026-06-26 - Codex (OpenAI) - Split ACSP discovery and learning objectives
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Added explicit ACSP selection modes for `Discovery-focused field survey` and `Learning-focused field survey`.
+- Made species-mode ACSP default to Discovery-focused selection when Potential Survey Sites are available.
+- Discovery-focused selection now treats occurrence-supported candidates as known habitat anchors and suppresses Environmental contrast dominance.
+- Learning-focused selection intentionally boosts environmental contrast, under-sampled areas, and exploratory/model-only signals.
+- Updated species and genus ACSP help text to explain the Discovery versus Learning distinction.
+- Avoided list-index fragility in genus ACSP by selecting the default mode by name.
+- Suppressed harmless terrain-derived raster warnings when a local derivative window contains only invalid/NoData values.
+- Validated with `Campanula microdonta`: Discovery selection produced a mixed set of Under-surveyed analogue and Occurrence-supported survey range candidates, while Learning selection emphasized Environmental contrast and Under-surveyed analogue candidates.
+
+Features preserved:
+- Existing ACSP modes, occurrence-supported candidates, Potential Survey Sites, optional SDM/SSDM, candidate maps, selected-site state, rectangle/click selection, exports, field-validation outputs, and representative working subsets remain available.
+
+Known risks / TODO:
+- Discovery/Learning weights are explainable heuristics and should be calibrated against real field-validation outcomes.
+- Potential Survey Sites still need richer app-provided high-resolution NDVI, land-cover, geology, and access layers for stronger local habitat analogue inference.
+
 ## 2026-06-26 - Codex (OpenAI) - Validate Campanula microdonta and adapt small-local thinning
 
 Changed files:
