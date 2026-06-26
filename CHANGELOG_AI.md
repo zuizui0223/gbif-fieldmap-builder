@@ -4,6 +4,26 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-26 - Codex (OpenAI) - Refine potential sites as local habitat analogue search
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Reframed `Potential Survey Sites (Habitat-first Discovery)` so it is not treated as another broad-climate SDM.
+- Added local terrain analogue variables derived from the available elevation raster: `aspect` and `tpi`, alongside elevation, slope, and roughness.
+- Changed potential-site scoring to build a known-site environmental profile and score grid cells by Mahalanobis environmental distance / environmental similarity.
+- Kept SDM separate: SDM predict-map cells can now be used only as an optional broad macro-scale filter, while local topographic analogue score remains the main habitat score.
+- Added export columns for `environmental_similarity`, `mahalanobis_environment_distance`, `macro_filter_basis`, local terrain variables, and `missing_layer_note`.
+- Clarified that NDVI, land cover, road/trail distance, forest-edge distance, and coastline distance are not yet supplied as real high-resolution layers in this implementation.
+
+Features preserved:
+- Occurrence-supported candidates, optional SDM and SDM-high exploration candidates, raster-style predict map, VIF/spatial validation, ACSP selection, map/rectangle selection, selected-site exports, genus/SSDM workflows, and validation outputs remain available.
+
+Known risks / TODO:
+- The local analogue search still uses the app's available WorldClim/elevation raster rather than user-uploaded high-resolution DEM/NDVI/land-cover/road/trail layers. A later Issue #23 step should add layer upload/sampling for true 100 m island-scale habitat profiling.
+
 ## 2026-06-26 - Codex (OpenAI) - Add Potential Survey Sites MVP
 
 Changed files:
