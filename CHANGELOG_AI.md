@@ -4,6 +4,24 @@ This file records changes made by AI coding agents such as Codex, Claude, ChatGP
 
 Each agent should update this file after editing code.
 
+## 2026-06-26 - Codex (OpenAI) - Improve app-provided access and edge distance proxies
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Added line densification for app-provided GeoJSON access/edge layers before nearest-distance calculations.
+- Densified coastline boundary points generated from the app's built-in land geometry.
+- Densified OpenStreetMap road, trail, and forest-edge geometries fetched for Potential Survey Sites.
+- Kept the calculation lightweight by using densified vertices with the existing BallTree nearest-distance path.
+
+Features preserved:
+- Potential Survey Sites, app-provided habitat layers, optional OSM access/edge layers, ACSP habitat analogue prioritization, field-validation learning, optional SDM/SSDM workflows, exports, and validation outputs remain available.
+
+Known risks / TODO:
+- Distances are still proxy distances based on densified geometry samples, not exact point-to-line geodesic distances; this is much closer than raw vertices while staying lightweight for Streamlit.
+
 ## 2026-06-26 - Codex (OpenAI) - Simplify Potential Survey Sites layer UI
 
 Changed files:

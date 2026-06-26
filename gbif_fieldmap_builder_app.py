@@ -2682,7 +2682,27 @@ def sample_uploaded_raster_values(points: pd.DataFrame, raster_path: str, lat_co
         return clean_environment_array(values)
 
 
-def extract_geojson_vertices(path: Optional[str]) -> np.ndarray:
+def densify_lonlat_coords(coords: list[tuple[float, float]], step_m: float = 75.0) -> list[tuple[float, float]]:
+    """Add intermediate lon/lat points along line segments for better nearest-distance proxies."""
+    if len(coords) < 2:
+        return coords
+    out: list[tuple[float, float]] = []
+    step = max(10.0, float(step_m))
+    for (lon1, lat1), (lon2, lat2) in zip(coords[:-1], coords[1:]):
+        if not out:
+            out.append((float(lon1), float(lat1)))
+        try:
+            dist_m = float(geodesic((lat1, lon1), (lat2, lon2)).meters)
+        except Exception:
+            dist_m = 0.0
+        n_steps = int(max(1, math.ceil(dist_m / step)))
+        for j in range(1, n_steps + 1):
+            frac = j / n_steps
+            out.append((float(lon1 + (lon2 - lon1) * frac), float(lat1 + (lat2 - lat1) * frac)))
+    return out
+
+
+def extract_geojson_vertices(path: Optional[str], densify_step_m: float = 75.0) -> np.ndarray:
     if not path:
         return np.empty((0, 2), dtype=float)
     try:
@@ -2706,9 +2726,9 @@ def extract_geojson_vertices(path: Optional[str]) -> np.ndarray:
             parts = [geom]
         for part in parts:
             if hasattr(part, "coords"):
-                coords.extend([(float(x), float(y)) for x, y in part.coords])
+                coords.extend(densify_lonlat_coords([(float(x), float(y)) for x, y in part.coords], densify_step_m))
             elif hasattr(part, "exterior"):
-                coords.extend([(float(x), float(y)) for x, y in part.exterior.coords])
+                coords.extend(densify_lonlat_coords([(float(x), float(y)) for x, y in part.exterior.coords], densify_step_m))
     return np.array(coords, dtype=float) if coords else np.empty((0, 2), dtype=float)
 
 
@@ -2733,7 +2753,7 @@ def app_coastline_geojson_for_bounds(west: float, south: float, east: float, nor
         parts = boundary.geoms if hasattr(boundary, "geoms") else [boundary]
         for part in parts:
             if hasattr(part, "coords"):
-                coords.extend([(float(x), float(y)) for x, y in part.coords])
+                coords.extend(densify_lonlat_coords([(float(x), float(y)) for x, y in part.coords], 75.0))
         arr = np.array(coords, dtype=float) if coords else np.empty((0, 2), dtype=float)
         digest = hashlib.sha1(f"{west:.4f},{south:.4f},{east:.4f},{north:.4f}".encode()).hexdigest()[:12]
         return write_vertices_geojson(arr, CACHE_DIR / "app_layers" / f"coastline_{digest}.geojson")
@@ -2751,9 +2771,9 @@ def _overpass_to_vertices(payload: dict[str, Any]) -> np.ndarray:
         if element.get("type") == "node" and "lon" in element and "lat" in element:
             coords.append((float(element["lon"]), float(element["lat"])))
         elif "geometry" in element:
-            coords.extend([(float(p["lon"]), float(p["lat"])) for p in element.get("geometry", []) if "lon" in p and "lat" in p])
+            coords.extend(densify_lonlat_coords([(float(p["lon"]), float(p["lat"])) for p in element.get("geometry", []) if "lon" in p and "lat" in p], 75.0))
         elif "nodes" in element:
-            coords.extend([nodes[nid] for nid in element.get("nodes", []) if nid in nodes])
+            coords.extend(densify_lonlat_coords([nodes[nid] for nid in element.get("nodes", []) if nid in nodes], 75.0))
     return np.array(coords, dtype=float) if coords else np.empty((0, 2), dtype=float)
 
 
