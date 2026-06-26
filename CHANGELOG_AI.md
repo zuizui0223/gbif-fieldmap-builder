@@ -23,6 +23,29 @@ Features preserved:
 Known risks / TODO:
 - README now describes the research direction more accurately, but app-provided NDVI/land-cover and richer online learning remain future work.
 
+## 2026-06-26 - Codex (OpenAI) - Validate and fix mirrored genus / SSDM workflow
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- CHANGELOG_AI.md
+
+Summary:
+- Validated genus mode with `Cirsium` in Japan.
+- Confirmed GBIF resolves the genus to `Cirsium Mill.` / backbone taxonKey `3112554`, with 23,616 coordinate records for the JP filter.
+- Fixed observed richness and SSDM species grouping so genus-only, `sp.`, `cf.`, `aff.`, indeterminate, and author-only labels such as `Cirsium Mill.` are not counted as species.
+- Added genus-specific exact-coordinate deduplication that preserves different species at the same coordinates.
+- Added genus-specific grid thinning that preserves different species in the same thinning grid cell, preventing observed richness hotspots from being artificially flattened.
+- Changed genus ACSP default to `Discovery-focused field survey` so genus mode mirrors species mode: observed evidence first, optional SSDM support, then discovery/learning set selection.
+- Added genus count transparency for species-level records and the number of non-species labels excluded from richness/SSDM.
+- Lightweight Cirsium validation showed observed hotspot richness increasing after species-preserving thinning, and a mini SSDM test successfully re-ranked observed hotspots while adding SSDM-high exploratory richness candidates.
+
+Features preserved:
+- Genus GBIF download, observed richness maps, richness hotspot candidates, optional SSDM, SSDM-high exploratory candidates, VIF safeguards, spatial validation options, ACSP selection modes, map/rectangle/click selection, downloads, and species-mode workflow remain available.
+
+Known risks / TODO:
+- Genus-mode SSDM is still computationally expensive for large caps and many eligible species; lightweight defaults and user-triggered Run SSDM remain necessary.
+- Species-name cleaning is intentionally conservative and excludes ambiguous labels from richness/SSDM; such records are still retained in fetched data for transparency.
+
 ## 2026-06-26 - Codex (OpenAI) - Split ACSP discovery and learning objectives
 
 Changed files:

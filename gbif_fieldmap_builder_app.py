@@ -783,7 +783,7 @@ def genus_species_summary(occ: pd.DataFrame, min_records_for_sdm: int, grid_deg:
     if occ.empty:
         return pd.DataFrame(columns=columns)
     work = occ.copy()
-    work["_species_clean"] = work["_species"].astype(str).str.strip()
+    work["_species_clean"] = work["_species"].apply(clean_species_label_for_genus_richness)
     work = work[work["_species_clean"].ne("")]
     if work.empty:
         return pd.DataFrame(columns=columns)
@@ -809,7 +809,7 @@ def occurrence_richness_grid(occ: pd.DataFrame, grid_deg: float, min_records_per
     if occ.empty:
         return pd.DataFrame()
     work = occ.copy()
-    work["_species_clean"] = work["_species"].astype(str).str.strip()
+    work["_species_clean"] = work["_species"].apply(clean_species_label_for_genus_richness)
     work = work[work["_species_clean"].ne("")]
     if work.empty:
         return pd.DataFrame()
@@ -872,7 +872,8 @@ def build_genus_observed_outputs_cached(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if occ.empty:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
-    candidate_input = spatially_balanced_cap(grid_thin(exact_coordinate_deduplicate(occ), 0.05), int(genus_candidate_records))
+    genus_base = genus_species_deduplicate(occ)
+    candidate_input = spatially_balanced_cap(genus_species_grid_thin(genus_base, 0.05), int(genus_candidate_records))
     summary = genus_species_summary(occ, int(min_records_for_sdm), float(grid_deg))
     grid = occurrence_richness_grid(candidate_input, float(grid_deg), int(min_records_cell))
     hotspots = richness_hotspot_candidates(grid, richness_metric, int(max_hotspots)) if not grid.empty else pd.DataFrame()
@@ -1506,6 +1507,37 @@ def exact_coordinate_deduplicate(df: pd.DataFrame) -> pd.DataFrame:
     return work.drop_duplicates(subset=["_latitude", "_longitude"], keep="first").drop(columns=[c for c in ["_year_sort", "_has_photo_sort"] if c in work.columns]).reset_index(drop=True)
 
 
+def genus_species_deduplicate(df: pd.DataFrame) -> pd.DataFrame:
+    """For genus richness, keep distinct species even when they share coordinates."""
+    if df.empty:
+        return df.copy().reset_index(drop=True)
+    work = occurrence_sort_for_representative(df)
+    species = work.get("_species", pd.Series("", index=work.index)).astype(str).str.strip()
+    work["_species_dedup_key"] = species
+    out = work.drop_duplicates(subset=["_latitude", "_longitude", "_species_dedup_key"], keep="first")
+    drop_cols = [c for c in ["_species_dedup_key", "_year_sort", "_has_photo_sort"] if c in out.columns]
+    return out.drop(columns=drop_cols).reset_index(drop=True)
+
+
+def clean_species_label_for_genus_richness(value: Any) -> str:
+    """Return a binomial species label; exclude genus-only, sp./cf./aff., and author-only labels."""
+    raw = str(value or "").strip()
+    if not raw or raw.lower() in {"nan", "none"}:
+        return ""
+    parts = raw.replace("×", " ").split()
+    if len(parts) < 2:
+        return ""
+    genus, epithet = parts[0], parts[1]
+    bad_epithets = {"sp", "sp.", "spp", "spp.", "cf", "cf.", "aff", "aff.", "indet", "indet.", "hybrid"}
+    if epithet.lower() in bad_epithets:
+        return ""
+    if not re.match(r"^[A-Z][A-Za-z-]+$", genus):
+        return ""
+    if not re.match(r"^[a-z][a-z-]+$", epithet):
+        return ""
+    return f"{genus} {epithet}"
+
+
 def grid_thin(df: pd.DataFrame, grid_degrees: float) -> pd.DataFrame:
     if df.empty or float(grid_degrees) <= 0:
         return df.copy().reset_index(drop=True)
@@ -1515,6 +1547,23 @@ def grid_thin(df: pd.DataFrame, grid_degrees: float) -> pd.DataFrame:
     work["_grid_lat"] = np.floor(work["_latitude"].astype(float) / cell).astype(int)
     work = work.drop_duplicates(subset=["_grid_lat", "_grid_lon"], keep="first")
     drop_cols = [c for c in ["_grid_lon", "_grid_lat", "_year_sort", "_has_photo_sort"] if c in work.columns]
+    return work.drop(columns=drop_cols).reset_index(drop=True)
+
+
+def genus_species_grid_thin(df: pd.DataFrame, grid_degrees: float) -> pd.DataFrame:
+    """Grid-thin genus data without collapsing different species in the same cell."""
+    if df.empty or float(grid_degrees) <= 0:
+        return df.copy().reset_index(drop=True)
+    work = occurrence_sort_for_representative(df)
+    cell = float(grid_degrees)
+    work["_species_grid_key"] = work.get("_species", pd.Series("", index=work.index)).apply(clean_species_label_for_genus_richness)
+    work = work[work["_species_grid_key"].ne("")]
+    if work.empty:
+        return work.drop(columns=[c for c in ["_species_grid_key", "_year_sort", "_has_photo_sort"] if c in work.columns], errors="ignore").reset_index(drop=True)
+    work["_grid_lon"] = np.floor(work["_longitude"].astype(float) / cell).astype(int)
+    work["_grid_lat"] = np.floor(work["_latitude"].astype(float) / cell).astype(int)
+    work = work.drop_duplicates(subset=["_grid_lat", "_grid_lon", "_species_grid_key"], keep="first")
+    drop_cols = [c for c in ["_grid_lon", "_grid_lat", "_species_grid_key", "_year_sort", "_has_photo_sort"] if c in work.columns]
     return work.drop(columns=drop_cols).reset_index(drop=True)
 
 
@@ -3733,7 +3782,7 @@ def fit_stacked_species_sdms(
     Returns (summary_df, richness_grid, hotspots, shape, bounds, vif_diag_df).
     """
     work = occ.copy()
-    work["_species_clean"] = work["_species"].astype(str).str.strip()
+    work["_species_clean"] = work["_species"].apply(clean_species_label_for_genus_richness)
     work = work[work["_species_clean"].ne("")]
     counts = work.groupby("_species_clean").size().sort_values(ascending=False)
     eligible = counts[counts >= int(min_records)].head(int(max_species))
@@ -4656,11 +4705,14 @@ def genus_diversity_panel() -> None:
     genus_all_candidates = genus_all_candidates.sort_values(genus_sort_cols, ascending=False, na_position="last").reset_index(drop=True) if genus_sort_cols else genus_all_candidates.reset_index(drop=True)
 
     # Species summary metrics (below the survey area panel).
-    c1, c2, c3, c4 = st.columns(4)
+    species_level_record_count = int(occ["_species"].apply(clean_species_label_for_genus_richness).astype(str).ne("").sum())
+    excluded_non_species_count = max(0, int(len(occ)) - species_level_record_count)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Valid target records", f"{len(occ):,}")
-    c2.metric("Species", f"{summary['species'].nunique():,}" if not summary.empty else "0")
-    c3.metric("Grid cells", f"{len(grid):,}")
-    c4.metric("Hotspots", f"{len(hotspots):,}")
+    c2.metric("Species-level records", f"{species_level_record_count:,}", help="Records with a binomial species name used for observed richness and SSDM.")
+    c3.metric("Species", f"{summary['species'].nunique():,}" if not summary.empty else "0")
+    c4.metric("Grid cells", f"{len(grid):,}")
+    c5.metric("Hotspots", f"{len(hotspots):,}", help=f"Excluded genus-only / cf. / sp. labels from richness: {excluded_non_species_count:,}")
     st.dataframe(summary, width="stretch", hide_index=True)
     genus_ssdm_slot = st.container()
 
@@ -4771,7 +4823,7 @@ def genus_diversity_panel() -> None:
             "under-sampled or contrasting areas for field validation."
         )
         gac1, gac2, gac3 = st.columns([2, 1, 1])
-        genus_default_mode = "Phylogeographic gap-filling" if "species_list" in genus_acsp_pool.columns else "Discovery-focused field survey"
+        genus_default_mode = "Discovery-focused field survey"
         genus_acsp_mode = gac1.selectbox("Selection algorithm", ACSP_SELECTION_MODES, index=ACSP_SELECTION_MODES.index(genus_default_mode), key="acsp_mode_genus")
         genus_acsp_k = gac2.number_input("Sites to select (K)", 1, max(1, len(genus_acsp_pool)), min(10, max(1, len(genus_acsp_pool))), 1, key="acsp_k_genus")
         genus_acsp_seed = gac3.checkbox("Seed with current selection", value=False, key="acsp_seed_genus", help="Keep already-selected hotspots as the starting set (S0) and fill the rest by complementarity.")
