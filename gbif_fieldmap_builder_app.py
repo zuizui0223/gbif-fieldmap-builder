@@ -52,8 +52,21 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from streamlit_folium import st_folium
 
+from acsp_discover import (
+    PLAN_ORDER as ACSP_DISCOVER_PLAN_ORDER,
+    apply_hard_constraints as apply_discover_hard_constraints,
+    build_acsp_discover_plans,
+    choose_candidate_resolution,
+    infer_default_survey_scope,
+    infer_survey_protocol,
+    parse_field_results,
+    preferred_survey_window,
+    recommend_survey_regions,
+    summarize_plan as summarize_discover_plan,
+)
+
 APP_TITLE = "ACSP — Adaptive Complementarity-based Survey Prioritization"
-APP_BUILD_ID = "hard-exclusion-v2-20260529"
+APP_BUILD_ID = "acsp-discover-hierarchy-v1-20260627"
 EARTH_RADIUS_M = 6_371_008.8
 ENV_SENTINEL_ABS = 1e20
 GBIF_SPECIES_MATCH_URL = "https://api.gbif.org/v1/species/match"
@@ -368,7 +381,14 @@ def init_session_state() -> None:
         "_last_analysis_mode": None,
         "acsp_result_species": None,
         "acsp_result_genus": None,
+        "acsp_discover_plans": None,
+        "acsp_discover_constraint_audit": None,
+        "acsp_discover_pool_signature": None,
         "potential_survey_candidates": None,
+        "automatic_discover_bundle": None,
+        "automatic_discover_query": None,
+        "automatic_region_draw_features": [],
+        "automatic_region_map_reset_token": 0,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -394,6 +414,10 @@ def clear_loaded_data() -> None:
     st.session_state.target_last_draw_sig = ""
     st.session_state.target_map_reset_token = st.session_state.get("target_map_reset_token", 0) + 1
     st.session_state.potential_survey_candidates = None
+    st.session_state.acsp_discover_plans = None
+    st.session_state.acsp_discover_constraint_audit = None
+    st.session_state.acsp_discover_pool_signature = None
+    st.session_state.acsp_result_species = None
     st.session_state.source_message = "No occurrence data loaded yet."
 
 
@@ -421,6 +445,9 @@ def clear_genus_data() -> None:
 def reset_model_outputs() -> None:
     for key in ["sdm_result", "sdm_train_table", "prediction_table", "prediction_overlay", "vif_table", "sdm_occurrence_row_ids"]:
         st.session_state[key] = None
+    st.session_state.acsp_discover_plans = None
+    st.session_state.acsp_discover_constraint_audit = None
+    st.session_state.acsp_discover_pool_signature = None
 
 
 def first_url(value: Any) -> str:
@@ -461,6 +488,11 @@ def clean_occurrences(df: pd.DataFrame, cols: ColumnDetection) -> pd.DataFrame:
     out["_gbif_id"] = out[cols.gbif_id].astype(str).replace({"nan": ""}) if cols.gbif_id and cols.gbif_id in out.columns else ""
     out["_locality"] = out[cols.locality].astype(str).replace({"nan": ""}) if cols.locality and cols.locality in out.columns else ""
     out["_year"] = pd.to_numeric(out[cols.year], errors="coerce") if cols.year and cols.year in out.columns else pd.to_datetime(out["_event_date"], errors="coerce").dt.year
+    uncertainty_col = detect_column(
+        list(out.columns),
+        ["coordinateUncertaintyInMeters", "coordinate_uncertainty_m", "coordinate uncertainty meters", "座標精度m"],
+    )
+    out["_coordinate_uncertainty_m"] = pd.to_numeric(out[uncertainty_col], errors="coerce") if uncertainty_col else np.nan
     out["_row_id"] = np.arange(len(out), dtype=int)
     return out.reset_index(drop=True)
 
@@ -521,6 +553,7 @@ def gbif_record_to_species_row(rec: dict[str, Any]) -> dict[str, Any]:
         "basisOfRecord": rec.get("basisOfRecord", ""),
         "countryCode": rec.get("countryCode", ""),
         "locality": rec.get("locality", ""),
+        "coordinateUncertaintyInMeters": rec.get("coordinateUncertaintyInMeters"),
         "gbifID": rec.get("gbifID") or rec.get("key"),
         "media_url": extract_media_url_from_gbif_record(rec),
     }
@@ -538,6 +571,7 @@ def gbif_record_to_genus_row(rec: dict[str, Any]) -> dict[str, Any]:
         "basisOfRecord": rec.get("basisOfRecord", ""),
         "countryCode": rec.get("countryCode", ""),
         "locality": rec.get("locality", ""),
+        "coordinateUncertaintyInMeters": rec.get("coordinateUncertaintyInMeters"),
         "gbifID": rec.get("gbifID") or rec.get("key"),
         "media_url": extract_media_url_from_gbif_record(rec),
     }
@@ -562,17 +596,30 @@ def fetch_gbif_records_representative(params_base: dict[str, Any], max_records: 
     records: list[dict[str, Any]] = []
     offsets = gbif_representative_offsets(total_count, target, 300)
     retrieval = "sequential pages" if total_count <= target else "representative evenly spaced GBIF offsets"
+    completed_pages = 0
+    failed_pages = 0
+    last_error: Optional[Exception] = None
     for offset in offsets:
         if len(records) >= target:
             break
         limit = min(300, target - len(records))
-        page = gbif_get_json(GBIF_OCCURRENCE_SEARCH_URL, {**params_base, "offset": offset, "limit": limit}, timeout=timeout)
+        try:
+            page = gbif_get_json(GBIF_OCCURRENCE_SEARCH_URL, {**params_base, "offset": offset, "limit": limit}, timeout=timeout)
+            completed_pages += 1
+        except Exception as exc:
+            failed_pages += 1
+            last_error = exc
+            continue
         batch = page.get("results", [])
         if not batch:
             continue
         records.extend(batch)
         if page.get("endOfRecords") and total_count <= target:
             break
+    if not records and last_error is not None:
+        raise last_error
+    if failed_pages:
+        retrieval += f"; partial resilient retrieval ({completed_pages} pages completed, {failed_pages} failed)"
     return records[:target], retrieval
 
 
@@ -2368,7 +2415,7 @@ def acsp_select(
     if "mahalanobis_environment_distance" in df.columns and pd.to_numeric(df["mahalanobis_environment_distance"], errors="coerce").notna().any():
         habitat_parts.append(0.25 * (1.0 - _acsp_normalize(df["mahalanobis_environment_distance"])))
     habitat_analogue_gain = np.sum(habitat_parts, axis=0) if habitat_parts else np.zeros(n)
-    habitat_type = cand_type.str.contains("habitat analogue|under-surveyed analogue", case=False, na=False)
+    habitat_type = cand_type.str.contains("habitat analogue|under-surveyed analogue|habitat-match|survey-gap", case=False, na=False)
     habitat_analogue_gain = np.clip(habitat_analogue_gain + 0.15 * habitat_type.to_numpy(dtype=float), 0.0, 1.0)
 
     validation_learning_gain = np.zeros(n)
@@ -2389,7 +2436,7 @@ def acsp_select(
     for gap_col, weight in [("survey_gap_score", 0.5), ("environmental_novelty", 0.25)]:
         if gap_col in df.columns and pd.to_numeric(df[gap_col], errors="coerce").notna().any():
             static_gap = np.clip(0.7 * static_gap + weight * _acsp_normalize(df[gap_col]), 0.0, 1.0)
-    contrast_type = cand_type.str.contains("environmental contrast", case=False, na=False)
+    contrast_type = cand_type.str.contains("environmental contrast|environmental-test", case=False, na=False)
     static_gap = np.clip(static_gap + 0.15 * contrast_type.to_numpy(dtype=float), 0.0, 1.0)
 
     if mode == "Discovery-focused field survey":
@@ -3032,6 +3079,48 @@ def app_provided_habitat_layers(bounds: tuple[float, float, float, float], inclu
         layers["trails"] = fetch_osm_vertices_geojson("trails", west, south, east, north)
         layers["forest_edge"] = fetch_osm_vertices_geojson("forest_edge", west, south, east, north)
     return layers
+
+
+def cache_uploaded_habitat_raster(uploaded: Any, layer_name: str) -> Optional[str]:
+    """Persist a Streamlit GeoTIFF upload in the app cache for rasterio."""
+    if uploaded is None:
+        return None
+    payload = uploaded.getvalue()
+    if not payload:
+        return None
+    digest = hashlib.sha1(payload).hexdigest()[:16]
+    suffix = Path(getattr(uploaded, "name", "layer.tif")).suffix.lower()
+    suffix = suffix if suffix in {".tif", ".tiff"} else ".tif"
+    path = CACHE_DIR / "uploaded_layers" / f"{layer_name}_{digest}{suffix}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_bytes(payload)
+    return str(path)
+
+
+def raster_pixel_resolution_m(path: Optional[str], reference_latitude: float) -> Optional[float]:
+    """Return the coarser raster pixel dimension in metres when CRS units are known."""
+    if not path:
+        return None
+    try:
+        with rasterio.open(path) as src:
+            x_size = abs(float(src.transform.a))
+            y_size = abs(float(src.transform.e))
+            if src.crs and src.crs.is_geographic:
+                x_m = x_size * 111_320.0 * max(0.2, math.cos(math.radians(float(reference_latitude))))
+                y_m = y_size * 111_320.0
+                return max(x_m, y_m)
+            if src.crs and src.crs.is_projected:
+                unit_factor = 1.0
+                try:
+                    factor = src.crs.linear_units_factor
+                    unit_factor = float(factor[1] if isinstance(factor, tuple) else factor)
+                except Exception:
+                    pass
+                return max(x_size, y_size) * unit_factor
+    except Exception:
+        return None
+    return None
 
 
 def nearest_vector_distance_m(points: pd.DataFrame, vertices_lonlat: np.ndarray, lat_col: str, lon_col: str) -> np.ndarray:
@@ -4107,7 +4196,33 @@ def make_potential_survey_site_candidates(
     if work.empty:
         return pd.DataFrame()
     requested_cell_m = max(50.0, float(cell_size_m))
-    cell_m = requested_cell_m
+    highres_layers = highres_layers or {}
+    center_latitude = float(work["_latitude"].mean())
+    raster_resolutions = [
+        raster_pixel_resolution_m(highres_layers.get(name), center_latitude)
+        for name in ("dem", "ndvi", "landcover")
+        if highres_layers.get(name)
+    ]
+    raster_resolutions = [value for value in raster_resolutions if value is not None and np.isfinite(value)]
+    # Without an uploaded local raster the fallback analogue uses WorldClim
+    # 2.5 arc-minutes, so a fine-looking 100 m cell would be false precision.
+    if highres_layers.get("dem") and raster_resolutions:
+        environmental_resolution_m = max(raster_resolutions)
+    else:
+        # Topographic predictors still fall back to the 2.5 arc-minute DEM.
+        environmental_resolution_m = max([4_500.0, *raster_resolutions])
+    coordinate_uncertainty = pd.to_numeric(
+        work.get("_coordinate_uncertainty_m", pd.Series(np.nan, index=work.index)), errors="coerce"
+    )
+    coordinate_q75 = float(coordinate_uncertainty.quantile(0.75)) if coordinate_uncertainty.notna().any() else None
+    access_resolution_m = 75.0 if any(highres_layers.get(name) for name in ("roads", "trails")) else None
+    resolution_decision = choose_candidate_resolution(
+        environmental_resolution_m=environmental_resolution_m,
+        access_resolution_m=access_resolution_m,
+        coordinate_uncertainty_q75_m=coordinate_q75,
+        minimum_practical_search_m=max(100.0, requested_cell_m),
+    )
+    cell_m = float(resolution_decision.cell_size_m)
 
     known_coords = work[["_latitude", "_longitude"]].to_numpy(dtype=float)
     if known_coords.shape[0] == 0:
@@ -4198,7 +4313,6 @@ def make_potential_survey_site_candidates(
     max_density = max(float(density.max()), 1.0)
     grid["nearest_known_population_km"] = (grid["distance_to_nearest_known_m"] / 1000.0).round(3)
 
-    highres_layers = highres_layers or {}
     has_highres = any(highres_layers.get(k) for k in ["dem", "ndvi", "landcover", "roads", "trails", "coastline", "forest_edge"])
     env_vars = [v for v in (env_variables or POTENTIAL_ANALOGUE_PRESET) if v in SUPPORTED_ENV_VARS]
     try:
@@ -4284,6 +4398,8 @@ def make_potential_survey_site_candidates(
     grid["search_cell_radius_m"] = round(cell_m / 2.0, 1)
     grid["requested_search_cell_size_m"] = round(requested_cell_m, 1)
     grid["effective_search_cell_size_m"] = round(cell_m, 1)
+    grid["resolution_decision_reason"] = resolution_decision.reason
+    grid["resolution_data_quality"] = resolution_decision.data_quality
     grid["effective_grid_cells_evaluated"] = int(len(grid))
     if "macro_filter_basis" not in grid.columns:
         grid["macro_filter_basis"] = "Local habitat analogue grid from the active survey-area occurrence set"
@@ -4298,19 +4414,19 @@ def make_potential_survey_site_candidates(
 
     pools = [
         (
-            "Habitat analogue",
+            "Habitat-match",
             grid[(grid["analogue_score"] >= float(grid["analogue_score"].quantile(0.65))) & (grid["distance_to_nearest_known_m"] >= cell_m)].copy(),
             "analogue_score",
             "Known-site local habitat analogue, but outside existing candidate centres.",
         ),
         (
-            "Under-surveyed analogue",
+            "Survey-gap",
             grid[(grid["survey_gap_score"] >= float(grid["survey_gap_score"].quantile(0.65))) & (grid["analogue_score"] >= float(grid["analogue_score"].quantile(0.35)))].copy(),
             "survey_gap_score",
             "Known-site analogue with low local target-record density; field validation can test whether this is unsurveyed or unsuitable.",
         ),
         (
-            "Environmental contrast",
+            "Environmental-test",
             grid[grid["environmental_novelty"] >= float(grid["environmental_novelty"].quantile(0.75))].copy(),
             "environmental_novelty",
             "Local environmental contrast cell intended to test habitat limits or collect informative absence/edge data.",
@@ -4340,9 +4456,9 @@ def make_potential_survey_site_candidates(
             pool["sdm_suitability"] = np.nan
             pool["model_support_score"] = 0.0
         macro_component = pd.to_numeric(pool.get("sdm_suitability", 0.0), errors="coerce").fillna(0.0).clip(0, 1)
-        if candidate_type == "Habitat analogue":
+        if candidate_type == "Habitat-match":
             pool["priority_score"] = (0.65 * habitat_component + 0.15 * gap_component + 0.10 * access_component + 0.10 * macro_component).clip(0, 1).round(3)
-        elif candidate_type == "Under-surveyed analogue":
+        elif candidate_type == "Survey-gap":
             pool["priority_score"] = (0.45 * habitat_component + 0.35 * gap_component + 0.10 * access_component + 0.10 * macro_component).clip(0, 1).round(3)
         else:
             pool["priority_score"] = (0.40 * contrast_component + 0.25 * habitat_component + 0.20 * gap_component + 0.10 * access_component + 0.05 * macro_component).clip(0, 1).round(3)
@@ -4391,17 +4507,14 @@ def apply_field_validation_learning(candidates: pd.DataFrame, validation: pd.Dat
     if "site_id" not in candidates.columns or "site_id" not in validation.columns:
         return candidates, "Validation learning needs a site_id column matching exported candidates."
     target_cols = [
+        "result",
         "target_species_found", "target_taxa_found", "presence", "present",
         "found", "detected", "newly_confirmed_population",
     ]
     target_col = next((c for c in target_cols if c in validation.columns), None)
     if target_col is None:
         return candidates, "Validation CSV needs a presence/result column such as target_species_found, found, or detected."
-    labels = validation[["site_id", target_col]].copy()
-    labels["site_id"] = pd.to_numeric(labels["site_id"], errors="coerce")
-    truth = labels[target_col].astype(str).str.lower().str.strip()
-    labels["_field_success"] = truth.isin(["1", "true", "yes", "y", "present", "found", "detected", "success"])
-    labels = labels.dropna(subset=["site_id"]).drop_duplicates("site_id")
+    labels = parse_field_results(validation, target_col)
     train = candidates.merge(labels[["site_id", "_field_success"]], on="site_id", how="inner")
     if len(train) < 6 or train["_field_success"].nunique() < 2:
         return candidates, "Validation learning needs at least 6 matched candidate rows with both success and non-success outcomes."
@@ -5495,7 +5608,7 @@ def make_survey_day_html(day_lists: dict, sites: pd.DataFrame) -> str:
             f"{body}</body></html>")
 
 
-EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "field_validation_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "habitat_basis", "macro_filter_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "analogue_score", "environmental_distance_to_known", "environmental_novelty", "survey_effort_proxy", "survey_gap_score", "access_score", "target_record_density", "all_taxa_record_density", "nearest_known_population_km", "requested_search_cell_size_m", "effective_search_cell_size_m", "effective_grid_cells_evaluated", "search_cell_radius_m", "elevation", "slope", "aspect", "roughness", "tpi", "ndvi", "landcover", "landcover_match_score", "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m", "missing_layer_note", "validation_learning_note", "why_selected", "selection_reason", "selection_algorithm", "selection_step", "base_score", "geographic_complementarity_gain", "environmental_complementarity_gain", "habitat_analogue_gain", "exploration_gain", "sampling_gap_gain", "validation_learning_gain", "access_gain", "redundancy_penalty", "travel_penalty", "marginal_gain_score", "access_note", "recommended_survey_window", "season_confidence", "flowering_record_count", "google_maps_url"]
+EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "plan_name", "plan_rank", "discover_utility", "discovery_value", "learning_value", "accessibility_score", "representation_value", "discovery_label", "learning_label", "access_label", "data_quality", "constraint_status", "priority_rank", "priority_score", "occurrence_support_score", "model_support_score", "field_validation_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "habitat_basis", "macro_filter_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "analogue_score", "environmental_distance_to_known", "environmental_novelty", "survey_effort_proxy", "survey_gap_score", "access_score", "target_record_density", "all_taxa_record_density", "nearest_known_population_km", "requested_search_cell_size_m", "effective_search_cell_size_m", "resolution_decision_reason", "resolution_data_quality", "effective_grid_cells_evaluated", "search_cell_radius_m", "elevation", "slope", "aspect", "roughness", "tpi", "ndvi", "landcover", "landcover_match_score", "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m", "missing_layer_note", "validation_learning_note", "why_selected", "selection_reason", "selection_algorithm", "selection_step", "base_score", "geographic_complementarity_gain", "environmental_complementarity_gain", "habitat_analogue_gain", "exploration_gain", "sampling_gap_gain", "validation_learning_gain", "access_gain", "redundancy_penalty", "travel_penalty", "marginal_gain_score", "access_note", "recommended_survey_window", "season_confidence", "flowering_record_count", "google_maps_url"]
 
 
 def make_export_csv(sites: pd.DataFrame) -> str:
@@ -5599,9 +5712,10 @@ def make_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
         "recommended_survey_window", "season_confidence", "flowering_record_count",
         "latitude", "longitude", "google_maps_url",
         "google_maps_checked", "accessible", "access_mode", "access_note",
-        "visited", "survey_date", "observer", "survey_effort_minutes", "search_area_m2",
+        "visited", "survey_date", "result", "survey_minutes", "observer", "survey_effort_minutes", "search_area_m2",
         "access_success", "target_species_found", "target_taxa_found", "abundance_count", "abundance_class",
-        "flowering_status", "number_of_species_detected", "newly_confirmed_population",
+        "flowering_state", "flowering_status", "estimated_abundance", "access_failure_reason",
+        "number_of_species_detected", "newly_confirmed_population",
         "photographs_taken", "photo_file", "specimen_collected", "specimens_collected", "specimen_id",
         "dna_sample_collected", "dna_samples_collected", "dna_sample_id", "habitat_note", "notes", "comments",
         "visit_date", "flowering_observed", "fruiting_observed", "vegetative_only", "phenology_notes",
@@ -5615,13 +5729,677 @@ def make_validation_template(sites: pd.DataFrame) -> pd.DataFrame:
     return base[cols]
 
 
+def automatic_candidate_scale_m(occ: pd.DataFrame) -> int:
+    """Choose a local occurrence grouping scale without asking the user."""
+    if occ is None or len(occ) < 2:
+        return 2_000
+    coords = occ[["_latitude", "_longitude"]].dropna().to_numpy(dtype=float)
+    if len(coords) < 2:
+        return 2_000
+    tree = BallTree(np.radians(coords), metric="haversine")
+    distances, _ = tree.query(np.radians(coords), k=2)
+    nearest_m = distances[:, 1] * EARTH_RADIUS_M
+    finite = nearest_m[np.isfinite(nearest_m) & (nearest_m > 0)]
+    typical = float(np.quantile(finite, 0.60)) if finite.size else 1_000.0
+    raw = float(np.clip(typical * 2.5, 500.0, 10_000.0))
+    return int(max(500, round(raw / 500.0) * 500))
+
+
+def automatic_region_label(scope: pd.DataFrame) -> str:
+    if scope is None or scope.empty:
+        return "Unknown"
+    center_lat = float(scope["_latitude"].mean())
+    center_lon = float(scope["_longitude"].mean())
+    locality = scope.get("_locality", pd.Series("", index=scope.index)).astype(str).str.strip()
+    valid_locality = ~locality.str.lower().isin({"", "nan", "none"})
+    if valid_locality.any():
+        local_rows = scope.loc[valid_locality].copy()
+        local_rows["_center_distance"] = (
+            (pd.to_numeric(local_rows["_latitude"], errors="coerce") - center_lat) ** 2
+            + ((pd.to_numeric(local_rows["_longitude"], errors="coerce") - center_lon) * math.cos(math.radians(center_lat))) ** 2
+        )
+        nearest_idx = local_rows["_center_distance"].idxmin()
+        nearest_name = str(locality.loc[nearest_idx])
+        return f"Main range near {nearest_name} ({center_lat:.3f}, {center_lon:.3f})"
+    return f"Main recorded range around {center_lat:.3f}, {center_lon:.3f}"
+
+
+def estimate_default_short_trip(
+    plan: pd.DataFrame,
+    hub_latitude: float,
+    hub_longitude: float,
+    survey_protocol: Optional[dict[str, Any]] = None,
+    target_days: int = 2,
+) -> dict[str, Any]:
+    """Schedule hub-to-hub field days with taxon-aware search effort.
+
+    This remains a route proxy, but unlike the former total-hours calculation,
+    every field day starts and ends at the hub and must fit its own time budget.
+    """
+    protocol = survey_protocol or infer_survey_protocol().as_dict()
+    assumptions = {
+        "daily_field_hours": float(protocol["daily_field_hours"]),
+        "operational_reserve_fraction": 0.15,
+        "usable_daily_hours": round(float(protocol["daily_field_hours"]) * 0.85, 3),
+        "average_road_speed_kmh": 35.0,
+        "road_distance_factor": 1.35,
+        "search_minutes_per_cell": int(protocol["search_minutes_per_cell"]),
+        "access_buffer_minutes_per_cell": int(protocol["access_buffer_minutes_per_cell"]),
+        "start_end": "recommended region hub",
+        "target_days": int(target_days),
+        "protocol_id": str(protocol["protocol_id"]),
+        "taxon_group": str(protocol["taxon_group"]),
+    }
+    if plan is None or plan.empty:
+        return {
+            **assumptions, "route_order_site_ids": [], "day_schedules": [],
+            "estimated_road_km": 0.0, "total_hours": 0.0, "estimated_days": 0,
+            "fits_target_days": True, "overtime_days": 0,
+        }
+    remaining = set(range(len(plan)))
+    route_positions: list[int] = []
+    day_schedules: list[dict[str, Any]] = []
+    total_straight_km = 0.0
+    service_hours = (
+        assumptions["search_minutes_per_cell"] + assumptions["access_buffer_minutes_per_cell"]
+    ) / 60.0
+    while remaining:
+        current_lat, current_lon = float(hub_latitude), float(hub_longitude)
+        day_positions: list[int] = []
+        day_straight_km = 0.0
+        day_elapsed_hours = 0.0
+        overtime = False
+        while remaining:
+            positions = np.array(sorted(remaining), dtype=int)
+            distances_km = _acsp_point_distances_m(
+                current_lat, current_lon,
+                pd.to_numeric(plan.iloc[positions]["latitude"], errors="coerce").to_numpy(dtype=float),
+                pd.to_numeric(plan.iloc[positions]["longitude"], errors="coerce").to_numpy(dtype=float),
+            ) / 1000.0
+            order = np.argsort(distances_km)
+            chosen: Optional[tuple[int, float, float]] = None
+            for candidate_index in order:
+                position = int(positions[int(candidate_index)])
+                leg_km = float(distances_km[int(candidate_index)])
+                candidate_lat = float(plan.iloc[position]["latitude"])
+                candidate_lon = float(plan.iloc[position]["longitude"])
+                return_km = float(_acsp_point_distances_m(
+                    candidate_lat, candidate_lon, np.array([hub_latitude]), np.array([hub_longitude])
+                )[0]) / 1000.0
+                projected_hours = day_elapsed_hours + (
+                    (leg_km + return_km) * assumptions["road_distance_factor"]
+                    / assumptions["average_road_speed_kmh"]
+                ) + service_hours
+                if projected_hours <= assumptions["usable_daily_hours"]:
+                    chosen = position, leg_km, return_km
+                    break
+            if chosen is None:
+                if day_positions:
+                    break
+                position = int(positions[int(order[0])])
+                leg_km = float(distances_km[int(order[0])])
+                candidate_lat = float(plan.iloc[position]["latitude"])
+                candidate_lon = float(plan.iloc[position]["longitude"])
+                return_km = float(_acsp_point_distances_m(
+                    candidate_lat, candidate_lon, np.array([hub_latitude]), np.array([hub_longitude])
+                )[0]) / 1000.0
+                chosen = position, leg_km, return_km
+                overtime = True
+            next_pos, leg_km, _return_km = chosen
+            day_straight_km += leg_km
+            day_elapsed_hours += (
+                leg_km * assumptions["road_distance_factor"] / assumptions["average_road_speed_kmh"]
+            ) + service_hours
+            day_positions.append(next_pos)
+            route_positions.append(next_pos)
+            remaining.remove(next_pos)
+            current_lat = float(plan.iloc[next_pos]["latitude"])
+            current_lon = float(plan.iloc[next_pos]["longitude"])
+        return_km = float(_acsp_point_distances_m(
+            current_lat, current_lon, np.array([hub_latitude]), np.array([hub_longitude])
+        )[0]) / 1000.0
+        day_straight_km += return_km
+        day_elapsed_hours += (
+            return_km * assumptions["road_distance_factor"] / assumptions["average_road_speed_kmh"]
+        )
+        overtime = overtime or day_elapsed_hours > assumptions["usable_daily_hours"]
+        total_straight_km += day_straight_km
+        day_schedules.append({
+            "day": len(day_schedules) + 1,
+            "site_ids": [int(plan.iloc[pos]["site_id"]) for pos in day_positions],
+            "straight_line_km": round(day_straight_km, 1),
+            "estimated_road_km": round(day_straight_km * assumptions["road_distance_factor"], 1),
+            "estimated_hours": round(day_elapsed_hours, 1),
+            "overtime": bool(overtime),
+        })
+    road_km = total_straight_km * assumptions["road_distance_factor"]
+    travel_hours = road_km / assumptions["average_road_speed_kmh"]
+    site_hours = len(plan) * service_hours
+    total_hours = travel_hours + site_hours
+    repeat_visits = int(protocol.get("minimum_repeat_visits", 1))
+    return {
+        **assumptions,
+        "route_order_site_ids": [int(plan.iloc[pos]["site_id"]) for pos in route_positions],
+        "day_schedules": day_schedules,
+        "straight_line_route_km": round(total_straight_km, 1),
+        "estimated_road_km": round(road_km, 1),
+        "travel_hours": round(travel_hours, 1),
+        "site_hours": round(site_hours, 1),
+        "total_hours": round(total_hours, 1),
+        "estimated_days": len(day_schedules),
+        "fits_target_days": len(day_schedules) <= int(target_days) and not any(day["overtime"] for day in day_schedules),
+        "overtime_days": sum(bool(day["overtime"]) for day in day_schedules),
+        "minimum_repeat_visits": repeat_visits,
+        "inference_ready_minimum_field_days": len(day_schedules) * repeat_visits,
+        "routing_confidence": "low; straight-line legs use a road-distance factor and do not model ferries, road topology, traffic, or trail time",
+    }
+
+
+def build_default_short_trip_plans(
+    eligible_candidates: pd.DataFrame,
+    hub_latitude: float,
+    hub_longitude: float,
+    target_days: int = 2,
+    max_cells: int = 8,
+    survey_protocol: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any], int]:
+    """Reduce plan size until the transparent default logistics fit the target days."""
+    requested_k = min(int(max_cells), len(eligible_candidates))
+    protocol = survey_protocol or infer_survey_protocol().as_dict()
+    pool = eligible_candidates.copy().reset_index(drop=True)
+    hub_distances_m = _acsp_point_distances_m(
+        float(hub_latitude), float(hub_longitude),
+        pd.to_numeric(pool["latitude"], errors="coerce").to_numpy(dtype=float),
+        pd.to_numeric(pool["longitude"], errors="coerce").to_numpy(dtype=float),
+    ) if not pool.empty else np.array([], dtype=float)
+    pool["distance_to_hub_m"] = hub_distances_m
+    service_hours = (
+        int(protocol["search_minutes_per_cell"]) + int(protocol["access_buffer_minutes_per_cell"])
+    ) / 60.0
+    usable_daily_hours = float(protocol["daily_field_hours"]) * 0.85
+    individual_hours = (
+        2.0 * hub_distances_m / 1000.0 * 1.35 / 35.0 + service_hours
+    )
+    feasible_mask = individual_hours <= usable_daily_hours
+    individually_infeasible = int((~feasible_mask).sum())
+    feasible_pool = pool.loc[feasible_mask].copy().reset_index(drop=True)
+    if not feasible_pool.empty:
+        pool = feasible_pool
+    pool_start_k = min(requested_k, len(pool))
+    minimum_k = min(1, pool_start_k)
+    plans: dict[str, pd.DataFrame] = {}
+    trip_estimate: dict[str, Any] = {}
+    for plan_k in range(pool_start_k, minimum_k - 1, -1):
+        plans = build_acsp_discover_plans(pool, plan_k)
+        trip_estimate = estimate_default_short_trip(
+            plans.get("Balanced", pd.DataFrame()), float(hub_latitude), float(hub_longitude),
+            survey_protocol=survey_protocol, target_days=target_days,
+        )
+        if bool(trip_estimate.get("fits_target_days")) or plan_k == minimum_k:
+            break
+    trip_estimate["individually_infeasible_candidates_excluded"] = individually_infeasible if not feasible_pool.empty else 0
+    trip_estimate["candidate_pool_had_no_individually_feasible_site"] = bool(pool_start_k and feasible_pool.empty)
+    return plans, trip_estimate, requested_k
+
+
+def make_region_overview_map(
+    occurrences: pd.DataFrame,
+    region_cards: list[dict[str, Any]],
+    selected_region_id: Optional[int],
+) -> folium.Map:
+    center = [float(occurrences["_latitude"].mean()), float(occurrences["_longitude"].mean())]
+    fmap = Map(location=center, zoom_start=6, tiles="OpenStreetMap", control_scale=True)
+    display = spatially_balanced_cap(occurrences, min(500, len(occurrences)))
+    records_group = FeatureGroup(name="Known distribution", show=True)
+    for _, row in display.iterrows():
+        scope_class = str(row.get("_scope_class", ""))
+        color = "#d62728" if scope_class == "possible_remote_noise" else "#4c78a8"
+        folium.CircleMarker(
+            (float(row["_latitude"]), float(row["_longitude"])), radius=3,
+            color=color, fill=True, fill_opacity=0.55, weight=1,
+        ).add_to(records_group)
+    records_group.add_to(fmap)
+    colors = ["#2ca02c", "#ff7f0e", "#9467bd"]
+    for index, region in enumerate(region_cards):
+        region_id = int(region["region_id"])
+        selected = selected_region_id is not None and region_id == int(selected_region_id)
+        color = colors[min(index, len(colors) - 1)]
+        radius_m = max(5_000.0, float(region.get("diameter_km", 0.0)) * 500.0)
+        folium.Circle(
+            (float(region["center_latitude"]), float(region["center_longitude"])),
+            radius=radius_m,
+            color=color,
+            fill=True,
+            fill_opacity=0.18 if selected else 0.08,
+            weight=5 if selected else 2,
+            tooltip=f"{region['card_role']} region {region_id}: {region['record_count']} records",
+        ).add_to(fmap)
+    Draw(
+        export=False,
+        draw_options={"rectangle": True, "polygon": True, "polyline": False, "circle": False, "marker": False, "circlemarker": False},
+        edit_options={"edit": False, "remove": True},
+    ).add_to(fmap)
+    LayerControl(collapsed=True).add_to(fmap)
+    try:
+        fmap.fit_bounds([
+            [float(occurrences["_latitude"].min()), float(occurrences["_longitude"].min())],
+            [float(occurrences["_latitude"].max()), float(occurrences["_longitude"].max())],
+        ], padding=(30, 30))
+    except Exception:
+        pass
+    return fmap
+
+
+def build_automatic_discover_bundle(
+    scientific_name: str,
+    occ_raw: pd.DataFrame,
+    source_message: str,
+    country_scope: str,
+    selected_region_id: Optional[int] = None,
+    override_row_ids: Optional[list[int]] = None,
+    taxon_metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Run the no-parameter ACSP-Discover path after occurrence retrieval."""
+    if occ_raw is None or occ_raw.empty:
+        raise ValueError("No valid coordinate records were available for automatic planning.")
+    warnings: list[str] = []
+    survey_protocol = infer_survey_protocol(taxon_metadata).as_dict()
+    enriched = enrich_occurrences_with_phenology(occ_raw)
+    _default_scope, scope_audit, scope_summary = infer_default_survey_scope(enriched)
+    region_cards, region_audit, distribution_summary = recommend_survey_regions(enriched, scope_audit)
+    selected_region: Optional[dict[str, Any]] = None
+    if override_row_ids:
+        override_set = set(map(int, override_row_ids))
+        scope = enriched[enriched["_row_id"].astype(int).isin(override_set)].copy().reset_index(drop=True)
+        selected_region_label = "Custom map area"
+    else:
+        if not region_cards:
+            scope = _default_scope.copy().reset_index(drop=True)
+            selected_region_label = automatic_region_label(scope)
+        else:
+            selected_region = next(
+                (region for region in region_cards if int(region["region_id"]) == int(selected_region_id)),
+                region_cards[0],
+            ) if selected_region_id is not None else region_cards[0]
+            member_ids = set(map(int, selected_region["member_row_ids"]))
+            scope = enriched[enriched["_row_id"].astype(int).isin(member_ids)].copy().reset_index(drop=True)
+            selected_region_label = automatic_region_label(scope)
+    if scope.empty:
+        raise ValueError("The selected survey region did not retain usable occurrence records.")
+
+    cluster_m = automatic_candidate_scale_m(scope)
+    candidate_input, _sdm_unused, pipeline_summary = prepare_large_dataset_inputs(
+        scope,
+        True,
+        0.05,
+        max(0.0, cluster_m * 0.5),
+        len(scope) > 1_000,
+        candidate_target=FAST_CANDIDATE_RECORDS,
+        sdm_target=FAST_SDM_RECORDS,
+    )
+    known_candidates = build_occurrence_candidates_cached(
+        candidate_input,
+        float(cluster_m),
+        1,
+        "Medoid",
+        0.35,
+        0.7,
+        0.3,
+    )
+    if known_candidates.empty:
+        raise ValueError("Occurrence records could not be converted into survey candidates.")
+
+    potential_candidates = pd.DataFrame()
+    try:
+        bounds = (
+            float(scope["_longitude"].min()), float(scope["_latitude"].min()),
+            float(scope["_longitude"].max()), float(scope["_latitude"].max()),
+        )
+        habitat_layers = app_provided_habitat_layers(bounds, include_osm=False)
+        settings = recommended_potential_survey_settings(scope)
+        potential_candidates = make_potential_survey_site_candidates(
+            scope,
+            known_candidates,
+            float(settings["cell_m"]),
+            min(10, int(settings["per_type"])),
+            min(800, int(settings["max_cells"])),
+            int(known_candidates["site_id"].max()) + 1,
+            env_variables=POTENTIAL_ANALOGUE_PRESET,
+            resolution="2.5m",
+            highres_layers=habitat_layers,
+            profile_buffer_m=100.0,
+        )
+        if potential_candidates.empty:
+            warnings.append("No habitat-first cells survived the automatic local search; plans use known anchors only.")
+    except Exception as exc:
+        warnings.append(f"Automatic habitat-first generation was unavailable: {exc}")
+
+    all_candidates = pd.concat([known_candidates, potential_candidates], ignore_index=True, sort=False)
+    try:
+        all_candidates = filter_to_land(all_candidates, "latitude", "longitude", 500.0)
+    except Exception as exc:
+        warnings.append(f"Land-mask verification was unavailable: {exc}")
+    all_candidates = add_priority_rank(all_candidates, 0.7, 0.3)
+    eligible, constraint_audit = apply_discover_hard_constraints(all_candidates)
+    hub_lat = float(selected_region["center_latitude"]) if selected_region else float(scope["_latitude"].mean())
+    hub_lon = float(selected_region["center_longitude"]) if selected_region else float(scope["_longitude"].mean())
+    plans, trip_estimate, requested_k = build_default_short_trip_plans(
+        eligible, hub_lat, hub_lon, target_days=2, max_cells=8, survey_protocol=survey_protocol
+    )
+    balanced = plans.get("Balanced", pd.DataFrame())
+    if balanced.empty:
+        raise ValueError("No candidate survived automatic hard-constraint screening.")
+    if len(balanced) < requested_k:
+        warnings.append(
+            f"The default two-day feasibility assumption reduced the plan from {requested_k} to {len(balanced)} cells."
+        )
+    if not bool(trip_estimate.get("fits_target_days")):
+        warnings.append(
+            "Even the smallest candidate plan exceeds the proxy day budget; choose a closer hub or verify actual routing before fieldwork."
+        )
+    if int(survey_protocol.get("minimum_repeat_visits", 1)) > 1:
+        warnings.append(
+            f"The {survey_protocol['taxon_group']} protocol recommends at least "
+            f"{survey_protocol['minimum_repeat_visits']} visits before treating non-detection as evidence of absence."
+        )
+    if str(survey_protocol.get("confidence")) == "low":
+        warnings.append(
+            "The automatic taxon protocol is only a coarse reconnaissance profile; verify a focal-species method before inference-ready sampling."
+        )
+
+    recommended_window = preferred_survey_window(
+        balanced.get("recommended_survey_window", pd.Series(dtype=object))
+    )
+    proposal = summarize_discover_plan(balanced)
+    balanced_ids = set(balanced["site_id"].astype(int))
+    balanced_audit = constraint_audit[constraint_audit["site_id"].astype(int).isin(balanced_ids)]
+    if proposal.get("data_quality") == "high" and balanced_audit["unknown_constraints"].astype(str).ne("").any():
+        proposal["data_quality"] = "medium"
+    proposal.update({
+        "region": selected_region_label,
+        "estimated_days": int(trip_estimate["estimated_days"]),
+        "recommended_window": recommended_window,
+    })
+    return {
+        "scientific_name": scientific_name,
+        "country_scope": country_scope,
+        "taxon_metadata": dict(taxon_metadata or {}),
+        "survey_protocol": survey_protocol,
+        "source_message": source_message,
+        "occurrences": enriched,
+        "scope": scope,
+        "scope_audit": scope_audit,
+        "scope_summary": scope_summary,
+        "region_cards": region_cards,
+        "region_audit": region_audit,
+        "distribution_summary": distribution_summary,
+        "selected_region": selected_region,
+        "selected_region_id": (int(selected_region["region_id"]) if selected_region else None),
+        "custom_override": bool(override_row_ids),
+        "pipeline_summary": pipeline_summary,
+        "cluster_m": cluster_m,
+        "known_candidates": known_candidates,
+        "potential_candidates": potential_candidates,
+        "all_candidates": all_candidates,
+        "constraint_audit": constraint_audit,
+        "plans": plans,
+        "proposal": proposal,
+        "trip_estimate": trip_estimate,
+        "warnings": warnings,
+    }
+
+
+def render_automatic_discover() -> None:
+    """Normal species-name-only product surface."""
+    st.title("🌿 ACSP-Discover")
+    st.caption("Enter one scientific name. ACSP automatically retrieves records, infers a practical survey region, builds candidate cells, and returns three field plans.")
+    query = st.text_input(
+        "Species scientific name",
+        value=st.session_state.get("automatic_discover_query") or "",
+        placeholder="e.g. Campanula microdonta",
+        key="automatic_species_name_input",
+    )
+    if st.button("Create survey proposal", type="primary", use_container_width=True):
+        if not query.strip():
+            st.error("Enter a scientific name.")
+        else:
+            try:
+                with st.spinner("Retrieving records and building ACSP-Discover plans..."):
+                    payload, jp_count, _ = gbif_species_count_cached(query.strip(), "JP", None, None)
+                    country_scope = "Japan"
+                    country_code = "JP"
+                    if int(jp_count) == 0:
+                        payload, world_count, _ = gbif_species_count_cached(query.strip(), "", None, None)
+                        if int(world_count) == 0:
+                            raise ValueError("GBIF returned no coordinate records for this taxon.")
+                        country_scope = "Worldwide fallback"
+                        country_code = ""
+                    matched_rank = str(payload.get("rank") or "").upper()
+                    if matched_rank and matched_rank not in {"SPECIES", "SUBSPECIES", "VARIETY", "FORM"}:
+                        raise ValueError(f"GBIF matched rank {matched_rank}, not a species-level taxon. Enter a more specific name.")
+                    message, raw = fetch_gbif_occurrences_cached(query.strip(), 1_000, country_code, None, None)
+                    detected = detect_occurrence_columns(raw)
+                    cleaned = clean_occurrences(raw, detected)
+                    bundle = build_automatic_discover_bundle(
+                        str(payload.get("scientificName") or query.strip()), cleaned, message, country_scope,
+                        taxon_metadata=payload,
+                    )
+                st.session_state.automatic_discover_query = query.strip()
+                st.session_state.automatic_discover_bundle = bundle
+                st.session_state.automatic_region_draw_features = []
+                st.session_state.automatic_region_map_reset_token = st.session_state.get("automatic_region_map_reset_token", 0) + 1
+            except Exception as exc:
+                st.session_state.automatic_discover_bundle = None
+                st.error(f"Could not create the automatic survey proposal: {exc}")
+
+    bundle = st.session_state.get("automatic_discover_bundle")
+    if not isinstance(bundle, dict):
+        st.info("The ordinary workflow needs no SDM, VIF, grid, clustering, or weight choices. Those remain available in Advanced workflow.")
+        return
+
+    distribution = bundle.get("distribution_summary", {})
+    st.subheader("Known distribution and suggested survey regions")
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Distribution regime", str(distribution.get("distribution_regime", "unknown")).title())
+    d2.metric("Eligible range span", f"{float(distribution.get('total_span_km', 0.0)):.0f} km")
+    d3.metric("Compact trip regions", int(distribution.get("stable_regions", 0)))
+    st.caption(str(distribution.get("distribution_regime_reason", "")))
+
+    region_cards = bundle.get("region_cards", [])
+    if region_cards:
+        card_columns = st.columns(len(region_cards))
+        for column, region in zip(card_columns, region_cards):
+            with column:
+                selected = bundle.get("selected_region_id") == int(region["region_id"]) and not bundle.get("custom_override")
+                st.markdown(f"**{region['card_role']} region**{' ✅' if selected else ''}")
+                st.metric("Known records", int(region["record_count"]))
+                st.caption(
+                    f"Diameter ≈ {float(region['diameter_km']):.0f} km · "
+                    f"center {float(region['center_latitude']):.3f}, {float(region['center_longitude']):.3f}"
+                )
+                st.caption(str(region["card_reason"]))
+                if st.button(
+                    "Use this region" if not selected else "Using this region",
+                    key=f"automatic_use_region_{int(region['region_id'])}",
+                    disabled=selected,
+                    use_container_width=True,
+                ):
+                    with st.spinner("Rebuilding the proposal inside the selected region..."):
+                        st.session_state.automatic_discover_bundle = build_automatic_discover_bundle(
+                            bundle["scientific_name"], bundle["occurrences"], bundle["source_message"],
+                            bundle["country_scope"], selected_region_id=int(region["region_id"]),
+                            taxon_metadata=bundle.get("taxon_metadata"),
+                        )
+                    st.session_state.automatic_region_draw_features = []
+                    st.session_state.automatic_region_map_reset_token = st.session_state.get("automatic_region_map_reset_token", 0) + 1
+                    st.rerun()
+
+    region_map_data = st_folium(
+        make_region_overview_map(bundle["occurrences"], region_cards, bundle.get("selected_region_id")),
+        width=None,
+        height=560,
+        returned_objects=["all_drawings", "last_active_drawing"],
+        key=(
+            f"automatic_region_map_{bundle.get('selected_region_id')}_{int(bundle.get('custom_override', False))}_"
+            f"{st.session_state.get('automatic_region_map_reset_token', 0)}"
+        ),
+    )
+    drawn_raw = (region_map_data or {}).get("all_drawings") or (region_map_data or {}).get("last_active_drawing")
+    drawn_features = extract_drawn_features(drawn_raw)
+    if drawn_features:
+        st.session_state.automatic_region_draw_features = drawn_features
+    active_drawings = st.session_state.get("automatic_region_draw_features", [])
+    map_action1, map_action2 = st.columns(2)
+    if map_action1.button(
+        "Rebuild within drawn area",
+        key="automatic_rebuild_drawn_area",
+        disabled=not bool(active_drawings),
+        use_container_width=True,
+    ):
+        override_ids = ids_inside_drawn_rectangles(
+            bundle["occurrences"], "_row_id", "_latitude", "_longitude", active_drawings
+        )
+        if len(override_ids) < 3:
+            st.error("The drawn area contains fewer than three usable records. Draw a broader area.")
+        else:
+            with st.spinner("Rebuilding the proposal inside the drawn area..."):
+                st.session_state.automatic_discover_bundle = build_automatic_discover_bundle(
+                    bundle["scientific_name"], bundle["occurrences"], bundle["source_message"],
+                    bundle["country_scope"], override_row_ids=override_ids,
+                    taxon_metadata=bundle.get("taxon_metadata"),
+                )
+            st.session_state.automatic_region_map_reset_token = st.session_state.get("automatic_region_map_reset_token", 0) + 1
+            st.rerun()
+    if map_action2.button(
+        "Clear drawn area",
+        key="automatic_clear_drawn_area",
+        disabled=not bool(active_drawings),
+        use_container_width=True,
+    ):
+        st.session_state.automatic_region_draw_features = []
+        st.session_state.automatic_region_map_reset_token = st.session_state.get("automatic_region_map_reset_token", 0) + 1
+        st.rerun()
+
+    proposal = bundle["proposal"]
+    st.subheader(f"Survey proposal — {bundle['scientific_name']}")
+    st.caption(f"Record scope: {bundle['country_scope']}. {bundle['source_message']}")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Recommended region", proposal["region"])
+    c2.metric("Estimated days", proposal["estimated_days"])
+    c3.metric("Priority cells", proposal["priority_cells"])
+    c4.metric("Known revisits", proposal["known_anchors"])
+    c5.metric("Discovery cells", proposal["discovery_cells"])
+    c6.metric("Data quality", str(proposal["data_quality"]).title())
+    trip_estimate = bundle.get("trip_estimate", {})
+    survey_protocol = bundle.get("survey_protocol", {})
+    st.caption(
+        f"Suggested season: {proposal['recommended_window']}. Default logistics estimate: "
+        f"{float(trip_estimate.get('estimated_road_km', 0.0)):.0f} road-km proxy, "
+        f"{float(trip_estimate.get('total_hours', 0.0)):.1f} total hours. "
+        f"Each day starts/ends at the region hub; assumes 35 km/h, "
+        f"{int(trip_estimate.get('search_minutes_per_cell', 0))} survey minutes plus "
+        f"{int(trip_estimate.get('access_buffer_minutes_per_cell', 0))} access minutes per station, and "
+        f"{float(trip_estimate.get('daily_field_hours', 0.0)):.1f} field hours/day with a "
+        f"{float(trip_estimate.get('operational_reserve_fraction', 0.0)):.0%} operational reserve."
+    )
+    st.caption("Presence, flowering, access permission, actual roads/ferries, weather, and safety require current field verification.")
+    with st.expander("Taxon-aware survey protocol and daily schedule", expanded=False):
+        st.write({
+            "taxon_group": survey_protocol.get("taxon_group"),
+            "protocol": survey_protocol.get("protocol_id"),
+            "method": survey_protocol.get("method"),
+            "observation_unit": survey_protocol.get("observation_unit"),
+            "daily_window": survey_protocol.get("daily_window"),
+            "minimum_repeat_visits": survey_protocol.get("minimum_repeat_visits"),
+            "protocol_confidence": survey_protocol.get("confidence"),
+            "movement_caution": survey_protocol.get("movement_caution"),
+            "weather_caution": survey_protocol.get("weather_caution"),
+            "routing_confidence": trip_estimate.get("routing_confidence"),
+            "inference_ready_minimum_field_days": trip_estimate.get("inference_ready_minimum_field_days"),
+        })
+        st.dataframe(pd.DataFrame(trip_estimate.get("day_schedules", [])), width="stretch", hide_index=True)
+    for warning in bundle.get("warnings", []):
+        st.warning(warning)
+
+    scope_summary = bundle["scope_summary"]
+    with st.expander("Automatic scope and QC evidence", expanded=False):
+        st.write({
+            "distribution_regime": distribution.get("distribution_regime"),
+            "eligible_range_span_km": distribution.get("total_span_km"),
+            "compact_trip_regions": distribution.get("stable_regions"),
+            "main_range_records": scope_summary.get("main_records", 0),
+            "disjunct_range_records": scope_summary.get("disjunct_records", 0),
+            "possible_remote_noise_records": scope_summary.get("possible_noise_records", 0),
+            "scope_cluster_distance_m": scope_summary.get("cluster_eps_m"),
+            "candidate_grouping_scale_m": bundle["cluster_m"],
+        })
+        st.dataframe(bundle["scope_audit"], width="stretch", hide_index=True)
+        st.download_button(
+            "Download scope audit CSV", bundle["scope_audit"].to_csv(index=False).encode("utf-8"),
+            "acsp_discover_scope_audit.csv", "text/csv", key="automatic_scope_audit_download",
+        )
+        st.download_button(
+            "Download region assignment CSV", bundle["region_audit"].to_csv(index=False).encode("utf-8"),
+            "acsp_discover_region_audit.csv", "text/csv", key="automatic_region_audit_download",
+        )
+
+    tabs = st.tabs(list(ACSP_DISCOVER_PLAN_ORDER))
+    for tab, plan_name in zip(tabs, ACSP_DISCOVER_PLAN_ORDER):
+        with tab:
+            plan = bundle["plans"].get(plan_name, pd.DataFrame())
+            if plan.empty:
+                st.info("No eligible cells in this plan.")
+                continue
+            show_cols = [c for c in [
+                "plan_rank", "site_id", "candidate_type", "discovery_label", "learning_label", "access_label",
+                "effective_search_cell_size_m", "search_cell_radius_m", "recommended_survey_window",
+                "data_quality", "why_selected", "latitude", "longitude",
+            ] if c in plan.columns]
+            st.dataframe(plan[show_cols], width="stretch", hide_index=True)
+            d1, d2, d3 = st.columns(3)
+            d1.download_button(
+                "Plan CSV", make_export_csv(plan).encode("utf-8"), f"acsp_discover_{plan_name.lower()}.csv",
+                "text/csv", use_container_width=True, key=f"automatic_{plan_name.lower()}_csv",
+            )
+            d2.download_button(
+                "Field validation CSV", make_validation_template(plan).to_csv(index=False).encode("utf-8"),
+                f"acsp_discover_{plan_name.lower()}_validation.csv", "text/csv", use_container_width=True,
+                key=f"automatic_{plan_name.lower()}_validation",
+            )
+            route_url = make_google_maps_route_url(plan, "driving")
+            d3.link_button("Open in Google Maps", route_url, use_container_width=True)
+
+    st.subheader("Balanced plan map")
+    balanced = bundle["plans"]["Balanced"]
+    auto_layers = {"predict": False, "occ": True, "candidate_circles": True}
+    auto_map = build_map(bundle["scope"], balanced, None, None, 0.0, 500.0, auto_layers, False)
+    st_folium(auto_map, width=None, height=650, returned_objects=[], key="automatic_balanced_map")
+
+    with st.expander("Constraint audit", expanded=False):
+        st.dataframe(bundle["constraint_audit"], width="stretch", hide_index=True)
+        st.download_button(
+            "Download constraint audit CSV", bundle["constraint_audit"].to_csv(index=False).encode("utf-8"),
+            "acsp_discover_constraint_audit.csv", "text/csv", key="automatic_constraint_audit_download",
+        )
+
+
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="🗺️", layout="wide")
     init_session_state()
+    st.sidebar.caption(f"Build: {APP_BUILD_ID}")
+    workflow = st.sidebar.radio(
+        "Workflow",
+        ["Species name only", "Advanced / manual"],
+        index=0,
+        key="product_workflow",
+    )
+    if workflow == "Species name only":
+        render_automatic_discover()
+        return
+
     st.title("🗺️ ACSP — Adaptive Complementarity-based Survey Prioritization")
     st.caption("Adaptive Complementarity-based Survey Prioritization: occurrence-based survey ranges, rectangle coordinate QC, raster-style SDM predict maps, VIF diagnostics, spatial partition diagnostics, complementarity-based set selection, and route planning.")
 
-    st.sidebar.caption(f"Build: {APP_BUILD_ID}")
     analysis_mode = st.sidebar.radio("Analysis mode", ["Single species survey planning", "Genus diversity / SSDM"], index=0, key="analysis_mode")
 
     # Reset widget-collision-prone state when switching between modes to avoid
@@ -6292,6 +7070,22 @@ def main() -> None:
             help="Adds OpenStreetMap road, trail, and forest-edge distance proxies for the current survey area. Keep off if Overpass is slow.",
         )
         highres_layers = app_provided_habitat_layers(_layer_bounds, bool(include_osm_layers))
+        st.markdown("**Optional local GeoTIFF evidence**")
+        st.caption(
+            "Upload rasters covering the active survey area. The coarsest supplied raster and the 75th percentile "
+            "of coordinate uncertainty set the minimum honest search-cell width. Without a local raster, the built-in "
+            "~4.5 km elevation fallback prevents false 100 m precision."
+        )
+        ul1, ul2, ul3 = st.columns(3)
+        dem_upload = ul1.file_uploader("DEM GeoTIFF", type=["tif", "tiff"], key="potential_dem_geotiff")
+        ndvi_upload = ul2.file_uploader("NDVI GeoTIFF", type=["tif", "tiff"], key="potential_ndvi_geotiff")
+        landcover_upload = ul3.file_uploader("Land-cover GeoTIFF", type=["tif", "tiff"], key="potential_landcover_geotiff")
+        uploaded_layer_paths = {
+            "dem": cache_uploaded_habitat_raster(dem_upload, "dem"),
+            "ndvi": cache_uploaded_habitat_raster(ndvi_upload, "ndvi"),
+            "landcover": cache_uploaded_habitat_raster(landcover_upload, "landcover"),
+        }
+        highres_layers.update({name: path for name, path in uploaded_layer_paths.items() if path})
         base_supplied = [name for name, path in highres_layers.items() if path]
         st.caption(
             "App-provided layers: elevation/topography and coastline proxy"
@@ -6328,7 +7122,7 @@ def main() -> None:
             key="potential_use_sdm_macro_filter",
             help="Optional. Uses SDM predict-map cells as the macro-scale search frame, but local topographic analogue score remains the main habitat score.",
         )
-        st.caption("Candidate types: Habitat analogue, Under-surveyed analogue, and Environmental contrast. Local variables come from uploaded high-resolution layers when supplied.")
+        st.caption("Candidate types: Habitat-match, Survey-gap, and Environmental-test. Local variables come from uploaded high-resolution layers when supplied.")
         if st.button("Build potential survey-site candidates", key="build_potential_survey_sites", use_container_width=True):
             start_sid = int(all_candidates["site_id"].max()) + 1 if not all_candidates.empty and "site_id" in all_candidates.columns else 1
             potential_candidates = make_potential_survey_site_candidates(
@@ -6345,6 +7139,9 @@ def main() -> None:
                 profile_buffer_m=float(profile_buffer_m),
             )
             st.session_state["potential_survey_candidates"] = potential_candidates
+            st.session_state.acsp_discover_plans = None
+            st.session_state.acsp_discover_constraint_audit = None
+            st.session_state.acsp_discover_pool_signature = None
             if potential_candidates.empty:
                 st.warning("No potential survey-site candidates were generated. Try a coarser cell size or a broader survey area.")
             else:
@@ -6495,29 +7292,122 @@ def main() -> None:
                 st.session_state.sl_selected_site_ids = sorted(existing | add_ids)
 
         # ── ACSP: candidate-SET selection algorithm ──────────────────────────
-        st.markdown("#### Auto-select a survey set (ACSP)")
+        st.markdown("#### ACSP-Discover v1 — three ready-to-compare plans")
         st.caption(
-            "Adaptive Complementarity-based Survey Prioritization picks a *set* of sites that "
-            "jointly maximises detection potential, model support, environmental/geographic complementarity, "
-            "exploration value and sampling-gap coverage while reducing redundancy. "
-            "Discovery-focused selection prioritizes likely habitat analogues; Learning-focused selection prioritizes "
-            "under-sampled, contrasting, or model-only exploratory sites. Manual map clicks and rectangle selection remain available."
+            "The same eligible candidate pool produces Balanced, Discovery, and Learning plans. "
+            "Known water, dangerous slopes, restricted access, and cells beyond the 500 m road/trail limit "
+            "are excluded before scoring; unknown constraints remain visible as unknown, not assumed safe."
         )
-        ac1, ac2, ac3 = st.columns([2, 1, 1])
-        acsp_default_index = ACSP_SELECTION_MODES.index("Discovery-focused field survey") if has_potential else ACSP_SELECTION_MODES.index("Complementarity-based batch selection")
-        acsp_mode = ac1.selectbox("Selection algorithm", ACSP_SELECTION_MODES, index=acsp_default_index, key="acsp_mode_species")
-        acsp_k = ac2.number_input("Sites to select (K)", 1, max(1, len(acsp_pool)), min(10, max(1, len(acsp_pool))), 1, key="acsp_k_species")
-        acsp_seed = ac3.checkbox("Seed with current selection", value=False, key="acsp_seed_species", help="Keep already-selected sites as the starting set (S0) and fill the rest by complementarity.")
-        if st.button("Auto-select by selected algorithm", key="acsp_run_species", use_container_width=True, disabled=acsp_pool.empty):
-            seed_ids = list(st.session_state.get("sl_selected_site_ids", [])) if acsp_seed else None
-            acsp_res = acsp_select(acsp_pool, int(acsp_k), acsp_mode, selected_ids=seed_ids, cluster_distance_m=float(cluster_m))
-            if acsp_res.empty:
-                st.warning("ACSP could not select any sites from the current candidate pool.")
-            else:
-                st.session_state.acsp_result_species = acsp_res
-                st.session_state.sl_selected_site_ids = [int(s) for s in acsp_res["site_id"].tolist()]
-                st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
-                st.rerun()
+        discover_k = st.number_input(
+            "Priority cells per ACSP-Discover plan",
+            1,
+            max(1, len(acsp_pool)),
+            min(8, max(1, len(acsp_pool))),
+            1,
+            key="acsp_discover_k_species",
+        )
+        signature_cols = [c for c in [
+            "site_id", "candidate_type", "latitude", "longitude", "analogue_score", "habitat_score",
+            "sdm_suitability", "survey_gap_score", "environmental_novelty", "access_score",
+            "distance_to_road_m", "distance_to_trail_m", "slope",
+        ] if c in acsp_pool.columns]
+        pool_signature = hashlib.sha1(
+            pd.util.hash_pandas_object(acsp_pool[signature_cols], index=False).values.tobytes()
+            if signature_cols else b"empty"
+        ).hexdigest()
+        if st.session_state.get("acsp_discover_pool_signature") not in (None, pool_signature):
+            st.session_state.acsp_discover_plans = None
+            st.session_state.acsp_discover_constraint_audit = None
+        if st.button(
+            "Build Balanced / Discovery / Learning plans",
+            key="acsp_discover_run_species",
+            type="primary",
+            use_container_width=True,
+            disabled=acsp_pool.empty,
+        ):
+            eligible_pool, constraint_audit = apply_discover_hard_constraints(acsp_pool)
+            st.session_state.acsp_discover_constraint_audit = constraint_audit
+            st.session_state.acsp_discover_plans = build_acsp_discover_plans(eligible_pool, int(discover_k))
+            st.session_state.acsp_discover_pool_signature = pool_signature
+
+        discover_plans = st.session_state.get("acsp_discover_plans")
+        if isinstance(discover_plans, dict) and discover_plans:
+            audit = st.session_state.get("acsp_discover_constraint_audit")
+            if isinstance(audit, pd.DataFrame) and not audit.empty:
+                excluded_n = int((~audit["eligible"]).sum())
+                unknown_n = int(audit["unknown_constraints"].astype(str).ne("").sum())
+                st.caption(
+                    f"Hard-constraint audit: {int(audit['eligible'].sum())} eligible, "
+                    f"{excluded_n} excluded, {unknown_n} retained with one or more unknown constraints."
+                )
+                with st.expander("Constraint audit", expanded=False):
+                    st.dataframe(audit, width="stretch", hide_index=True)
+                    st.download_button(
+                        "Download constraint audit CSV",
+                        audit.to_csv(index=False).encode("utf-8"),
+                        "acsp_discover_constraint_audit.csv",
+                        "text/csv",
+                        key="acsp_discover_constraint_audit_download",
+                    )
+            plan_tabs = st.tabs(list(ACSP_DISCOVER_PLAN_ORDER))
+            for tab, plan_name in zip(plan_tabs, ACSP_DISCOVER_PLAN_ORDER):
+                with tab:
+                    plan = discover_plans.get(plan_name, pd.DataFrame())
+                    summary = summarize_discover_plan(plan)
+                    m1, m2, m3, m4, m5 = st.columns(5)
+                    m1.metric("Priority cells", summary["priority_cells"])
+                    m2.metric("Known anchors", summary["known_anchors"])
+                    m3.metric("Discovery cells", summary["discovery_cells"])
+                    m4.metric("Learning cells", summary["learning_cells"])
+                    m5.metric("Data quality", str(summary["data_quality"]).title())
+                    if plan.empty:
+                        st.info("No eligible cells were available for this plan.")
+                        continue
+                    plan_cols = [c for c in [
+                        "plan_rank", "site_id", "candidate_type", "discovery_label", "learning_label",
+                        "access_label", "effective_search_cell_size_m", "search_cell_radius_m",
+                        "data_quality", "why_selected", "latitude", "longitude",
+                    ] if c in plan.columns]
+                    st.dataframe(plan[plan_cols], width="stretch", hide_index=True)
+                    p1, p2 = st.columns(2)
+                    p1.download_button(
+                        f"Download {plan_name} plan CSV",
+                        make_export_csv(plan).encode("utf-8"),
+                        f"acsp_discover_{plan_name.lower()}_plan.csv",
+                        "text/csv",
+                        use_container_width=True,
+                        key=f"acsp_discover_{plan_name.lower()}_download",
+                    )
+                    if p2.button(
+                        f"Use {plan_name} plan on map",
+                        key=f"acsp_discover_{plan_name.lower()}_use",
+                        use_container_width=True,
+                    ):
+                        st.session_state.acsp_result_species = plan
+                        st.session_state.sl_selected_site_ids = [int(s) for s in plan["site_id"].tolist()]
+                        st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
+                        st.rerun()
+
+        with st.expander("Advanced: legacy single-algorithm ACSP selection", expanded=False):
+            st.markdown("#### Auto-select a survey set (ACSP)")
+            st.caption(
+                "Legacy and specialist selection modes remain available for backward compatibility and research comparisons."
+            )
+            ac1, ac2, ac3 = st.columns([2, 1, 1])
+            acsp_default_index = ACSP_SELECTION_MODES.index("Discovery-focused field survey") if has_potential else ACSP_SELECTION_MODES.index("Complementarity-based batch selection")
+            acsp_mode = ac1.selectbox("Selection algorithm", ACSP_SELECTION_MODES, index=acsp_default_index, key="acsp_mode_species")
+            acsp_k = ac2.number_input("Sites to select (K)", 1, max(1, len(acsp_pool)), min(10, max(1, len(acsp_pool))), 1, key="acsp_k_species")
+            acsp_seed = ac3.checkbox("Seed with current selection", value=False, key="acsp_seed_species", help="Keep already-selected sites as the starting set (S0) and fill the rest by complementarity.")
+            if st.button("Auto-select by selected algorithm", key="acsp_run_species", use_container_width=True, disabled=acsp_pool.empty):
+                seed_ids = list(st.session_state.get("sl_selected_site_ids", [])) if acsp_seed else None
+                acsp_res = acsp_select(acsp_pool, int(acsp_k), acsp_mode, selected_ids=seed_ids, cluster_distance_m=float(cluster_m))
+                if acsp_res.empty:
+                    st.warning("ACSP could not select any sites from the current candidate pool.")
+                else:
+                    st.session_state.acsp_result_species = acsp_res
+                    st.session_state.sl_selected_site_ids = [int(s) for s in acsp_res["site_id"].tolist()]
+                    st.session_state.sl_reset_token = st.session_state.get("sl_reset_token", 0) + 1
+                    st.rerun()
 
         route_plan = pd.DataFrame()
 

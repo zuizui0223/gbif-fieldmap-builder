@@ -4,6 +4,25 @@ ACSP is a Streamlit app for turning occurrence records into ranked, field-ready 
 
 The app is no longer just a GBIF map builder. It integrates known records, optional SDM/SSDM prediction, local habitat-analogue discovery, accessibility proxies, and field-validation feedback to help researchers decide where to survey next.
 
+## Species-name-only workflow
+
+The default screen asks only for a scientific name. After `Create survey proposal`, ACSP automatically:
+
+1. matches the taxon and fetches a representative GBIF subset (Japan first, worldwide fallback when Japan has no records);
+2. separates the main recorded range, stable disjunct ranges, and possible remote noise without deleting the audit trail;
+3. classifies the distribution as narrow/local, regional, disjunct, or widespread;
+4. creates compact short-trip region cards (recommended, discovery, and range contrast) before selecting sites;
+5. chooses thinning and candidate-grouping scales within the selected region;
+6. creates occurrence-supported, Habitat-match, Survey-gap, and Environmental-test candidates;
+7. applies hard constraints before scoring; and
+8. returns Balanced, Discovery, and Learning plans, a map, Google Maps route, plan CSV, validation CSV, and QC audits.
+
+Balanced plans reserve available capacity for at least two known anchors, three discovery candidates, and one learning candidate when eight cells are requested. Advanced/manual workflow preserves the existing controls, optional SDM/SSDM, and researcher CSV inputs.
+
+For widespread taxa, the app no longer mixes nationwide sites into one trip. Region recommendations use compact approximately 40 km-radius hubs. Every field day now begins and ends at the selected hub, uses a 35 km/h average road speed, a 1.35 road-distance factor, and keeps a 15% operational reserve for navigation, parking, breaks, and delay. Search time, access time, usable daily hours, repeat visits, and interpretation cautions are inferred from broad GBIF taxonomy (for example plant, bird, amphibian, arthropod, mammal, or fish). Candidate count is reduced until each day fits. These are transparent reconnaissance defaults, not a road-routing or species-method guarantee.
+
+The Known distribution map remains available in the ordinary result flow. Users can choose another suggested region or draw a rectangle/polygon and rebuild within their own study area without making map drawing a prerequisite for receiving an answer.
+
 ## Core Idea
 
 ACSP is designed for field-survey planning, not as a full all-record SDM platform.
@@ -47,9 +66,9 @@ Potential Survey Sites is a local habitat-discovery layer.
 
 It builds grid-cell candidates beyond known occurrence clusters:
 
-- `Habitat analogue`: environmentally similar to known sites but not yet recorded.
-- `Under-surveyed analogue`: similar habitat with low local record density.
-- `Environmental contrast`: deliberately different or edge-like habitat to test limits and learn absence/contrast information.
+- `Habitat-match`: environmentally similar to known sites but not yet recorded.
+- `Survey-gap`: similar habitat with low local record density.
+- `Environmental-test`: deliberately different or edge-like habitat to test limits and learn absence/contrast information.
 
 The app builds a local known-site habitat profile from variables such as:
 
@@ -62,6 +81,8 @@ The app builds a local known-site habitat profile from variables such as:
 - optional OpenStreetMap road, trail, and forest-edge distance proxies
 
 Candidate cells are scored with interpretable local metrics such as Mahalanobis environmental distance, environmental similarity, survey-gap score, environmental novelty, and accessibility proxies.
+
+Local DEM, NDVI, and land-cover GeoTIFFs can be uploaded directly. ACSP-Discover prevents false precision by choosing a cell width no finer than the coarsest supplied raster, the 75th percentile of coordinate uncertainty, or the practical field-search scale. Without a local raster, the built-in approximately 4.5 km elevation layer limits the effective cell width accordingly.
 
 SDM remains separate: it can be used as a broad search-frame filter, while local habitat analogue scoring remains the main Potential Survey Sites logic.
 
@@ -82,7 +103,13 @@ The greedy marginal-gain selection considers:
 - redundancy penalty
 - travel penalty
 
-Available modes include:
+The default v1 result presents three plans made from the same eligible pool:
+
+- `Balanced`: balances discovery, learning, representation, access, and movement.
+- `Discovery`: prioritizes likely new populations and feasible access.
+- `Learning`: prioritizes uncertainty, environmental boundaries, and representation.
+
+Known hard constraints are applied before scoring, with a downloadable exclusion/unknown-data audit. Advanced legacy modes remain available for comparison, including:
 
 - `Simple top-ranked`
 - `Complementarity-based batch selection`
@@ -94,7 +121,7 @@ Outputs include selected-site tables, Google Maps links, CSV, KML, HTML, and fie
 
 ## Field-Validation Learning
 
-ACSP can ingest a previous validation CSV with matching `site_id` values and result columns such as `target_species_found`, `found`, or `detected`.
+ACSP can ingest a previous validation CSV with matching `site_id` values and a standard `result` field (`found`, `not_found`, `flowering_absent`, `inaccessible`, or `uncertain_id`), as well as older result columns such as `target_species_found`, `found`, or `detected`. Only determinate `found`/`not_found` outcomes train the presence-support model.
 
 When enough positive and negative outcomes are available, the app learns a lightweight `field_validation_support_score` and uses it as one optional component in future ranking.
 

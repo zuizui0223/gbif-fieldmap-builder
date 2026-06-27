@@ -1,8 +1,58 @@
 # AI Change Log
 
+## 2026-06-27 — Taxon-aware short-trip feasibility
+
+- Added broad GBIF-taxonomy survey profiles so plants, birds, mammals, amphibians/reptiles, arthropods, fish, and unknown taxa no longer share one field-effort assumption.
+- Replaced the single continuous trip estimate with day-by-day hub-return schedules.
+- Excluded sites that cannot individually fit the daily budget and included hub distance in first-site selection.
+- Added a 15% operational reserve and explicit repeat-visit requirements for inference-ready non-detection.
+- Random validation with `Egretta garzetta` exposed and then verified the fix for a distant first-site failure.
+
 This file records changes made by AI coding agents such as Codex, Claude, ChatGPT, or other assistants.
 
 Each agent should update this file after editing code.
+
+## 2026-06-27 - Codex (OpenAI) - ACSP-Discover v1 planning contract
+
+Changed files:
+- acsp_discover.py
+- test_acsp_discover.py
+- test_gbif_fetch_resilience.py
+- validate_automatic_discover.py
+- gbif_fieldmap_builder_app.py
+- .gitignore
+- README.md
+- CHANGELOG_AI.md
+
+Summary:
+- Added a UI-independent ACSP-Discover v1 engine with explicit Discovery and Learning scores and fixed Balanced, Discovery, and Learning plan presets generated from one candidate pool.
+- Added pre-score hard constraints with a downloadable row-level audit; unknown land, legal access, slope, or physical access remains explicitly unknown rather than being assumed safe.
+- Added an honest candidate-resolution decision based on environmental raster resolution, access-layer resolution, GBIF coordinate-uncertainty q75, and practical search scale.
+- Added optional DEM, NDVI, and land-cover GeoTIFF inputs. Without a local DEM, the built-in ~4.5 km topographic fallback prevents false 100 m candidate precision.
+- Standardized new candidate type output as Habitat-match, Survey-gap, and Environmental-test while retaining compatibility with older labels.
+- Added the fixed field-validation columns requested by Issue #23 and made adaptive learning accept `result`; flowering-absent, inaccessible, and uncertain-ID visits do not become false absences.
+- Kept the former single-mode ACSP selectors under Advanced for backward compatibility and baseline comparisons.
+- Added the default species-name-only workflow: Japan-first/worldwide-fallback GBIF retrieval, automatic main-range scope inference, automatic candidate scales, candidate generation, constraint screening, proposal cards, three plans, map, Google Maps, and exports.
+- Added explicit candidate-type minimums so an eight-cell Balanced plan includes available capacity for two known anchors, three discovery cells, and one learning cell before filling remaining slots by utility.
+- Made representative GBIF retrieval resilient to individual page failures; completed pages are retained and partial retrieval is reported instead of discarding the whole proposal.
+- Added a reproducible command-line validation runner and regression tests for scope inference, plan quotas, empty phenology, field-result semantics, and partial GBIF page failure.
+- Random validation selected `Cirsium japonicum`: 830 fetched records, 406 in the automatic main range, 117 known candidates, 24 potential candidates, and three eight-cell plans. The final Balanced plan contained 2 known anchors, 4 discovery cells, and 2 learning cells, with medium data quality and Apr–May suggested season.
+- Browser E2E confirmed the default species-name-only screen and complete proposal render with no browser console errors.
+- Added hierarchical distribution planning: automatic narrow/local, regional, disjunct, or widespread classification followed by compact region/hub recommendation before within-region site selection.
+- Added Recommended, Discovery, and Range-contrast region cards and a Known distribution result map. Users can switch suggested regions or draw a custom rectangle/polygon and rebuild without making map selection mandatory.
+- Replaced candidate-count-only day estimates with a transparent hub-based route proxy using road-distance factor, average speed, per-cell survey/access time, and daily field-hour assumptions.
+- Added a two-day default feasibility loop that reduces selected cell count when an eight-cell plan cannot fit the stated assumptions.
+- Added synthetic broad-range, narrow-range, automatic-bundle, and short-trip feasibility tests; the full local suite now contains 13 passing tests.
+
+Features preserved:
+- GBIF pagination, CSV upload, occurrence exclusion and red QC points, occurrence-supported candidates without SDM, independent optional ensemble SDM, VIF, spatial validation, predict maps, SDM-high candidates, genus/SSDM, map selection, Google Maps/CSV/KML/HTML outputs, and legacy ACSP modes.
+
+Known risks / TODO:
+- Without a high-resolution local DEM, automatic potential cells correctly fall back to 5 km because the built-in WorldClim topographic evidence is about 4.5 km; automatic acquisition of finer authoritative terrain/land-cover data remains the next precision milestone.
+- Compact regions and travel estimates still use geodesic proxies rather than a road/ferry routing engine. Start/end base, transport mode, ferry barriers, and researcher-specific daily budgets remain optional-logistics work.
+- The current automatic candidate generator is still plant-oriented; taxon-specific Survey Protocol profiles for birds, mammals, insects, aquatic organisms, and other groups remain to be implemented.
+- Access/legal/safety datasets are incomplete in many regions; unknown constraints are retained and require field verification.
+- The fixed v1 weights need retrospective holdout and prospective field calibration.
 
 ## 2026-06-26 - Codex (OpenAI) - Add automatic SDM remote-outlier QC
 
