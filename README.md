@@ -77,10 +77,10 @@ Genus names route to the observed-richness/SSDM workflow. Observed richness cand
 
 ## Python package
 
-The installable Python distribution is named `acsp-survey`; its import package is `acsp`.
+The installable Python distribution is named `acsp-survey`; its import package is `acsp`. A normal install includes the reusable package, the Streamlit application dependencies, and the app support modules.
 
 ```bash
-python -m pip install -e .
+python -m pip install .
 ```
 
 ```python
@@ -104,7 +104,7 @@ Current Python APIs cover candidate quotas, classifier construction, equal-weigh
 An early base-R package is provided in [`r-acsp`](r-acsp).
 
 ```r
-remotes::install_local("r-acsp")
+remotes::install_github("zuizui0223/acsp", subdir = "r-acsp")
 library(acsp)
 
 recommended <- acsp_recommend(candidates, per_area = 3)
@@ -112,12 +112,20 @@ partition <- acsp_sdm_partition(86, geographic_span_degrees = 1.8)
 algorithms <- acsp_default_algorithms()
 ```
 
-The R package currently mirrors recommendation quotas, partition selection, default ensemble specification, and method-record generation. Full raster SDM/SSDM fitting is a planned package extension.
+For a local clone, use `remotes::install_local("r-acsp")`. The R package currently mirrors recommendation quotas, partition selection, default ensemble specification, and method-record generation. Full raster SDM/SSDM fitting is a planned package extension.
 
 ## Install and run the app
 
+Install the Python distribution, then launch the bundled Streamlit app with its command-line entry point:
+
 ```bash
-python -m pip install -r requirements.txt
+python -m pip install .
+acsp-fieldmap
+```
+
+For development from a source checkout, this remains equivalent:
+
+```bash
 python -m streamlit run gbif_fieldmap_builder_app.py
 ```
 
@@ -130,12 +138,12 @@ Streamlit Community Cloud:
 ## Repository structure
 
 - `gbif_fieldmap_builder_app.py`: Streamlit application and raster/GBIF orchestration
-- `acsp/`: reusable Python package
+- `acsp/`: reusable Python package and packaged app command
 - `r-acsp/`: reusable R package
 - `acsp_discover.py`: retained survey-protocol and legacy set-selection methods
 - `test_*.py`: regression and package tests
 - `CITATION.cff`: software citation metadata
-- `.github/workflows/package-checks.yml`: Python and R package CI
+- `.github/workflows/package-checks.yml`: Python package, app-installation, and R package CI
 
 ## Validation and publication path
 
@@ -149,7 +157,7 @@ For a reproducible paper or report:
 4. retain field-validation outcomes; and
 5. cite the archived release using `CITATION.cff`.
 
-Python and R package checks run in GitHub Actions. PyPI, CRAN, and DOI/Zenodo publication require final author metadata, release review, and repository-owner credentials.
+GitHub Actions runs on every push, pull request, and manual dispatch. It tests the Python package across Python 3.10–3.12, builds and installs a wheel in an isolated environment, checks the packaged Streamlit command, and runs `R CMD check` for `r-acsp`. PyPI, CRAN, and DOI/Zenodo publication require final author metadata, release review, and repository-owner credentials.
 
 ## Current limitations
 
