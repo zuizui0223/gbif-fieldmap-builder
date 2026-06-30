@@ -50,6 +50,9 @@ def _build_parser() -> argparse.ArgumentParser:
     recommend.add_argument("--area-column", default="survey_area_id", help="Survey-area column name (default: survey_area_id).")
     recommend.add_argument("--score-column", default="priority_score", help="Priority-score column name (default: priority_score).")
     recommend.add_argument("--site-column", default="site_id", help="Stable candidate-ID column name (default: site_id).")
+    recommend.add_argument("--extent", nargs=4, type=float, metavar=("WEST", "SOUTH", "EAST", "NORTH"), help="Optional rectangular candidate extent.")
+    recommend.add_argument("--latitude-column", default="latitude", help="Latitude column used with --extent.")
+    recommend.add_argument("--longitude-column", default="longitude", help="Longitude column used with --extent.")
     return parser
 
 
@@ -69,6 +72,9 @@ def run_recommendation(args: argparse.Namespace) -> dict[str, object]:
         area_col=args.area_column,
         score_col=args.score_column,
         id_col=args.site_column,
+        extent=args.extent,
+        latitude_col=args.latitude_column,
+        longitude_col=args.longitude_column,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,6 +98,7 @@ def run_recommendation(args: argparse.Namespace) -> dict[str, object]:
         "area_column_present": bool(args.area_column in candidates.columns),
         "score_column": args.score_column,
         "site_column": args.site_column,
+        "extent": list(args.extent) if args.extent is not None else None,
         "selected_count_by_area": area_counts,
     }
     summary_path.parent.mkdir(parents=True, exist_ok=True)

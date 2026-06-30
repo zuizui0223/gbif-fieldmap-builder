@@ -6,6 +6,7 @@ import numpy as np
 from acsp import (
     DEFAULT_ENSEMBLE_ALGORITHMS,
     choose_spatial_partition,
+    filter_candidates_to_extent,
     model_performance_table,
     make_classifier,
     predict_equal_weight_ensemble,
@@ -36,6 +37,19 @@ class AcspPackageTests(unittest.TestCase):
         })
         selected = recommend_candidates(candidates, per_area=3)
         self.assertEqual(selected.groupby("survey_area_id").size().to_dict(), {1: 3, 2: 3})
+
+    def test_extent_filters_candidates_before_ranking(self):
+        candidates = pd.DataFrame({
+            "site_id": [1, 2, 3],
+            "priority_score": [0.7, 0.9, 1.0],
+            "latitude": [35.0, 35.2, 36.0],
+            "longitude": [139.0, 139.2, 140.0],
+        })
+        extent = (138.9, 34.9, 139.3, 35.3)
+        filtered = filter_candidates_to_extent(candidates, extent)
+        selected = recommend_candidates(candidates, extent=extent)
+        self.assertEqual(filtered["site_id"].tolist(), [1, 2])
+        self.assertEqual(selected["site_id"].tolist(), [2, 1])
 
     def test_partition_and_method_reporting(self):
         method, reason = choose_spatial_partition(86, 1.8)

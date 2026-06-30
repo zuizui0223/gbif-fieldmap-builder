@@ -77,7 +77,7 @@ from acsp_discover import (
 )
 
 APP_TITLE = "ACSP — Adaptive Complementarity-based Survey Prioritization"
-APP_BUILD_ID = "acsp-four-model-publication-20260630"
+APP_BUILD_ID = "acsp-readonly-map-extent-20260630"
 EARTH_RADIUS_M = 6_371_008.8
 ENV_SENTINEL_ABS = 1e20
 GBIF_SPECIES_MATCH_URL = "https://api.gbif.org/v1/species/match"
@@ -3595,7 +3595,9 @@ def correlation_filter_variables(env_df: pd.DataFrame, variables: list[str], thr
     corr = X_imp.corr().abs()
     while len(kept) > 1:
         sub = corr.loc[kept, kept].copy()
-        np.fill_diagonal(sub.values, 0.0)
+        sub_values = sub.to_numpy(dtype=float, copy=True)
+        np.fill_diagonal(sub_values, 0.0)
+        sub = pd.DataFrame(sub_values, index=sub.index, columns=sub.columns)
         max_corr = float(sub.max().max())
         if not np.isfinite(max_corr) or max_corr <= float(threshold):
             break
@@ -4902,7 +4904,7 @@ def st_folium_with_overlay(fmap: folium.Map, selected_overlay: Optional[FeatureG
 
 
 @st.cache_data(show_spinner=False)
-def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str, Any]], route_plan: Optional[pd.DataFrame], occurrence_buffer_m: float, survey_range_m: float, layers: dict[str, bool], show_images: bool = True, selected_ids: Optional[tuple] = None, add_draw: bool = False) -> folium.Map:
+def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str, Any]], route_plan: Optional[pd.DataFrame], occurrence_buffer_m: float, survey_range_m: float, layers: dict[str, bool], show_images: bool = True, selected_ids: Optional[tuple] = None, add_draw: bool = False, range_ids: Optional[tuple] = None) -> folium.Map:
     center = (float(occ["_latitude"].mean()), float(occ["_longitude"].mean())) if not occ.empty else (35.5, 135.5)
     fmap = Map(location=center, zoom_start=8, tiles="OpenStreetMap", control_scale=True)
     if layers.get("predict") and overlay is not None:
@@ -4917,8 +4919,9 @@ def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str
             folium.CircleMarker((row["_latitude"], row["_longitude"]), radius=4, color="#1f77b4", fill=True, popup=folium.Popup(html, max_width=330)).add_to(mc)
         mc.add_to(fg); fg.add_to(fmap)
     selected_set = set(int(s) for s in (selected_ids or []))
+    range_set = None if range_ids is None else set(int(s) for s in range_ids)
     if layers.get("candidate_circles") and sites is not None and not sites.empty:
-        fg = FeatureGroup(name="candidate circles", show=True)
+        fg = FeatureGroup(name="candidate sites", show=True)
         for _, row in sites.iterrows():
             ctype = str(row.get("candidate_type", ""))
             marker_radius, color = _priority_marker_style(row)
@@ -4930,15 +4933,16 @@ def build_map(occ: pd.DataFrame, sites: pd.DataFrame, overlay: Optional[dict[str
             tooltip_text = f"{rank_label}{ctype} | site {int(row['site_id'])}"
             popup_html = popup_html_site(row)
             loc = (row["latitude"], row["longitude"])
-            # Survey range circle
-            folium.Circle(loc, radius=survey_range_m, color=color, fill=True, fill_opacity=0.12, weight=weight, popup=folium.Popup(popup_html, max_width=460)).add_to(fg)
+            sid = int(row["site_id"])
+            if range_set is None or sid in range_set:
+                range_color = "#00a843" if sid in selected_set else color
+                folium.Circle(loc, radius=survey_range_m, color=range_color, fill=True, fill_color=range_color, fill_opacity=0.12, weight=3 if sid in selected_set else weight, popup=folium.Popup(popup_html, max_width=460)).add_to(fg)
             # Priority marker dot
             kwargs: dict[str, Any] = dict(radius=marker_radius, color=color, fill=True, fill_color=color, fill_opacity=0.85, weight=2 if not is_sdm_high else 2, tooltip=tooltip_text, popup=folium.Popup(popup_html, max_width=460))
             if dash:
                 kwargs["dash_array"] = dash
             folium.CircleMarker(loc, **kwargs).add_to(fg)
             # Selected-site outer ring
-            sid = int(row["site_id"])
             if sid in selected_set:
                 folium.CircleMarker(loc, radius=marker_radius + 5, color="#00cc44", fill=False, weight=3, tooltip=f"SELECTED | site {sid}").add_to(fg)
         fg.add_to(fmap)
@@ -6892,11 +6896,12 @@ def render_simple_candidate_result(
         f"{key_prefix}_field_validation.csv", "text/csv", key=f"{key_prefix}_validation_csv",
         use_container_width=True,
     )
-    st.caption("All candidate-pool sites are shown on the map; recommended sites have a green outline.")
+    st.caption("All candidate-pool sites are shown as points. Recommended sites have a green outline and a 500 m survey buffer.")
     layers = {"predict": overlay is not None, "occ": True, "candidate_circles": True}
     selected_ids = tuple(pd.to_numeric(recommended["site_id"], errors="coerce").dropna().astype(int).tolist())
     result_map = build_map(
         bundle["scope"], pool, overlay, None, 0.0, 500.0, layers, False, selected_ids=selected_ids,
+        range_ids=selected_ids,
     )
     st_folium(result_map, width=None, height=650, returned_objects=[], key=f"{key_prefix}_map")
 

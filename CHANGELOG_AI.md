@@ -1,5 +1,37 @@
 # AI Change Log
 
+## 2026-06-30 - Codex (OpenAI) - Automatic SDM read-only fix, clearer candidate maps, and package extents
+
+Changed files:
+- gbif_fieldmap_builder_app.py
+- acsp/__init__.py
+- acsp/planning.py
+- acsp/cli.py
+- r-acsp/R/recommend.R
+- r-acsp/man/acsp_recommend.Rd
+- test_acsp_package.py
+- test_acsp_cli.py
+- test_automatic_hierarchy.py
+- README.md
+- CHANGELOG_AI.md
+
+Summary:
+- Fixed automatic SDM/SSDM variable selection under pandas copy-on-write by zeroing the correlation-matrix diagonal on an explicit writable NumPy copy.
+- Changed automatic result maps to show the full candidate pool as points while drawing green 500 m survey buffers only around recommended sites.
+- Added inclusive rectangular extent filtering to the Python and R recommendation APIs, ordered as west, south, east, north.
+- Added Python CLI support through `--extent WEST SOUTH EAST NORTH` and documented package examples.
+
+Validation:
+- `python -m py_compile gbif_fieldmap_builder_app.py` passed.
+- All 29 Python unit tests passed, including pandas copy-on-write, extent API/CLI, and candidate-map buffer regression tests.
+- The updated Streamlit app booted locally with no browser console errors.
+
+Features preserved:
+- Full candidate pools remain visible and downloadable; recommended-site identity, optional SDM/SSDM, independent model extents, VIF/variable selection, prediction maps, exploratory candidates, and exports remain available.
+
+Known risks / TODO:
+- Package extent filtering currently supports non-dateline-crossing rectangles; polygon and antimeridian extents are not yet exposed as package APIs.
+
 ## 2026-06-30 - Codex (OpenAI) - Four-model ensembles and publication-ready repository metadata
 
 Changed files:

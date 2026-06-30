@@ -47,6 +47,28 @@ class AcspCliTests(unittest.TestCase):
         self.assertEqual(summary["selected_count"], 6)
         self.assertEqual(summary["selected_count_by_area"], {"north": 3, "south": 3})
 
+    def test_recommend_command_accepts_extent(self):
+        candidates = pd.DataFrame({
+            "site_id": [1, 2, 3],
+            "priority_score": [0.8, 0.9, 1.0],
+            "latitude": [35.0, 35.2, 36.0],
+            "longitude": [139.0, 139.2, 140.0],
+        })
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workdir = Path(temporary_directory)
+            input_csv = workdir / "candidates.csv"
+            output_csv = workdir / "recommended.csv"
+            summary_json = workdir / "summary.json"
+            candidates.to_csv(input_csv, index=False)
+            main([
+                "recommend", "--input", str(input_csv), "--output", str(output_csv),
+                "--summary-json", str(summary_json), "--extent", "138.9", "34.9", "139.3", "35.3",
+            ])
+            selected = pd.read_csv(output_csv)
+            summary = json.loads(summary_json.read_text(encoding="utf-8"))
+        self.assertEqual(selected["site_id"].tolist(), [2, 1])
+        self.assertEqual(summary["extent"], [138.9, 34.9, 139.3, 35.3])
+
 
 if __name__ == "__main__":
     unittest.main()

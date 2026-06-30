@@ -9,6 +9,8 @@ from gbif_fieldmap_builder_app import (
     build_automatic_discover_bundle,
     build_automatic_genus_bundle,
     build_default_short_trip_plans,
+    build_map,
+    correlation_filter_variables,
     decode_gsi_dem_rgb,
     estimate_default_short_trip,
     get_worldclim_raster_path,
@@ -18,6 +20,34 @@ from gbif_fieldmap_builder_app import (
 
 
 class AutomaticHierarchyTests(unittest.TestCase):
+    def test_correlation_filter_works_with_read_only_pandas_arrays(self):
+        environment = pd.DataFrame({
+            "bio1": [1.0, 2.0, 3.0, 4.0],
+            "bio12": [1.0, 2.1, 2.9, 4.2],
+            "bio15": [4.0, 1.0, 3.0, 2.0],
+        })
+        with pd.option_context("mode.copy_on_write", True):
+            kept, _ = correlation_filter_variables(environment, list(environment.columns), 0.8)
+        self.assertGreaterEqual(len(kept), 1)
+
+    def test_automatic_result_map_buffers_only_recommended_sites(self):
+        occurrences = pd.DataFrame({"_latitude": [35.0], "_longitude": [139.0]})
+        sites = pd.DataFrame({
+            "site_id": [1, 2, 3],
+            "latitude": [35.0, 35.01, 35.02],
+            "longitude": [139.0, 139.01, 139.02],
+            "candidate_type": ["Habitat-match"] * 3,
+            "priority_score": [0.9, 0.8, 0.7],
+        })
+        fmap = build_map(
+            occurrences, sites, None, None, 0.0, 500.0,
+            {"predict": False, "occ": False, "candidate_circles": True},
+            False, selected_ids=(2,), range_ids=(2,),
+        )
+        html = fmap.get_root().render()
+        self.assertEqual(html.count("L.circle("), 1)
+        self.assertGreaterEqual(html.count("L.circleMarker("), 4)
+
     def test_remote_raster_open_retries_transient_failures(self):
         with (
             patch(
