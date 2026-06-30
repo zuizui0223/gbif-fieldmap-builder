@@ -3,11 +3,17 @@ name: Package checks
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   python:
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
@@ -15,12 +21,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e .
-      - run: python -m py_compile gbif_fieldmap_builder_app.py acsp/__init__.py acsp/planning.py acsp/modeling.py acsp/sdm.py
-      - run: python -m unittest test_acsp_package.py test_acsp_discover.py test_automatic_hierarchy.py test_gbif_fetch_resilience.py
+      - name: Install package and build tools
+        run: |
+          python -m pip install --upgrade pip build
+          python -m pip install -e .
+      - name: Compile Python sources
+        run: python -m py_compile gbif_fieldmap_builder_app.py acsp/__init__.py acsp/app.py acsp/planning.py acsp/modeling.py acsp/sdm.py acsp_discover.py
+      - name: Run Python tests
+        run: python -m unittest discover -v
+      - name: Build Python wheel
+        run: python -m build --wheel
+      - name: Verify wheel in an isolated environment
+        run: |
+          python -m venv .wheel-venv
+          .wheel-venv/bin/python -m pip install --upgrade pip
+          .wheel-venv/bin/python -m pip install dist/*.whl
+          pushd /tmp
+          "$GITHUB_WORKSPACE/.wheel-venv/bin/python" -I -c "import acsp; import acsp_discover; import gbif_fieldmap_builder_app; print('installed Python package and app imports successfully')"
+          popd
+      - name: Verify packaged app command
+        run: acsp-fieldmap --help
 
   r:
+    name: R package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
