@@ -27,6 +27,9 @@ dependencies = [
     "streamlit-folium>=0.18",
 ]
 
+[project.scripts]
+acsp-fieldmap = "acsp.app:main"
+
 [project.license]
 text = "MIT"
 
@@ -37,6 +40,9 @@ Issues = "https://github.com/zuizui0223/acsp/issues"
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "twine>=5", "pytest>=8"]
+
+[tool.setuptools]
+py-modules = ["acsp_discover", "gbif_fieldmap_builder_app"]
 
 [tool.setuptools.packages.find]
 include = ["acsp*"]
