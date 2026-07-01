@@ -9,6 +9,8 @@
 - Added zone CSV/API/CLI/R outputs and made the GitHub Action emit zone-level recommendations.
 - Replaced the fixed two-day assumption with an internal one-to-five-day feasibility curve and automatic knee selection.
 - Added candidate-to-candidate route insertion cost to final plan utility while retaining ecological complementarity.
+- Fixed multi-island planning so one field day cannot mix separate survey areas, every selected area receives coverage before duplicates, and local distance uses an area-level hub.
+- Multi-island outputs now report unmodeled ferry/flight transfers and very-low routing confidence instead of treating sea crossings as roads.
 
 ## 2026-06-30 - Codex (OpenAI) - Fast cached macro-climate SDM/SSDM
 

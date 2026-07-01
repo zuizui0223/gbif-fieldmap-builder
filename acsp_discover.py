@@ -670,6 +670,8 @@ def build_acsp_discover_plans(
         "discovery": candidate_types.str.contains("habitat|analogue|survey-gap|under-surveyed").to_numpy(bool),
         "learning": candidate_types.str.contains("environmental-test|environmental contrast|sdm-high|ssdm-high").to_numpy(bool),
     }
+    area_values = scored.get("survey_area_id", pd.Series(1, index=scored.index)).astype(str).to_numpy()
+    distinct_areas = list(dict.fromkeys(area_values.tolist()))
     plans: dict[str, pd.DataFrame] = {}
     for plan_name in PLAN_ORDER:
         weights = PLAN_WEIGHTS[plan_name]
@@ -694,14 +696,26 @@ def build_acsp_discover_plans(
                 if selected_counts[category] < minimum
                 and any(type_masks[category][i] for i in range(len(scored)) if i not in selected)
             }
+            selected_areas = {area_values[position] for position in selected}
+            unmet_areas = set(distinct_areas) - selected_areas if int(k) >= len(distinct_areas) else set()
             best: Optional[tuple[float, int, dict[str, float]]] = None
             for i in range(len(scored)):
                 if i in selected:
                     continue
-                if unmet and not any(type_masks[category][i] for category in unmet):
+                if unmet_areas and area_values[i] not in unmet_areas:
                     continue
-                if selected:
-                    distances = _distances_m(lats[i], lons[i], lats[selected], lons[selected])
+                if unmet and not any(type_masks[category][i] for category in unmet):
+                    same_area_type_available = any(
+                        j not in selected
+                        and (not unmet_areas or area_values[j] in unmet_areas)
+                        and any(type_masks[category][j] for category in unmet)
+                        for j in range(len(scored))
+                    )
+                    if same_area_type_available:
+                        continue
+                same_area_selected = [position for position in selected if area_values[position] == area_values[i]]
+                if same_area_selected:
+                    distances = _distances_m(lats[i], lons[i], lats[same_area_selected], lons[same_area_selected])
                     nearest = float(np.min(distances))
                     if nearest < 1.0:
                         continue
