@@ -6384,6 +6384,7 @@ def estimate_default_short_trip(
     hub_longitude: float,
     survey_protocol: Optional[dict[str, Any]] = None,
     target_days: int = 2,
+    area_hubs_override: Optional[dict[str, tuple[float, float]]] = None,
 ) -> dict[str, Any]:
     """Schedule hub-to-hub field days with taxon-aware search effort.
 
@@ -6399,7 +6400,7 @@ def estimate_default_short_trip(
         "road_distance_factor": 1.35,
         "search_minutes_per_cell": int(protocol["search_minutes_per_cell"]),
         "access_buffer_minutes_per_cell": int(protocol["access_buffer_minutes_per_cell"]),
-        "start_end": "recommended region hub",
+        "start_end": "local hub within each survey area",
         "target_days": int(target_days),
         "protocol_id": str(protocol["protocol_id"]),
         "taxon_group": str(protocol["taxon_group"]),
@@ -6411,6 +6412,20 @@ def estimate_default_short_trip(
             "fits_target_days": True, "overtime_days": 0,
         }
     remaining = set(range(len(plan)))
+    area_labels = plan.get("survey_area_id", pd.Series(1, index=plan.index)).astype(str).reset_index(drop=True)
+    distinct_areas = area_labels.drop_duplicates().tolist()
+    area_hubs: dict[str, tuple[float, float]] = {}
+    for area in distinct_areas:
+        area_positions = np.flatnonzero(area_labels.eq(area).to_numpy())
+        if area_hubs_override and area in area_hubs_override:
+            area_hubs[area] = tuple(map(float, area_hubs_override[area]))
+        elif len(distinct_areas) == 1:
+            area_hubs[area] = (float(hub_latitude), float(hub_longitude))
+        else:
+            area_hubs[area] = (
+                float(pd.to_numeric(plan.iloc[area_positions]["latitude"], errors="coerce").mean()),
+                float(pd.to_numeric(plan.iloc[area_positions]["longitude"], errors="coerce").mean()),
+            )
     route_positions: list[int] = []
     day_schedules: list[dict[str, Any]] = []
     total_straight_km = 0.0
@@ -6418,13 +6433,18 @@ def estimate_default_short_trip(
         assumptions["search_minutes_per_cell"] + assumptions["access_buffer_minutes_per_cell"]
     ) / 60.0
     while remaining:
-        current_lat, current_lon = float(hub_latitude), float(hub_longitude)
+        active_area = str(area_labels.iloc[min(remaining)])
+        day_hub_lat, day_hub_lon = area_hubs[active_area]
+        current_lat, current_lon = day_hub_lat, day_hub_lon
         day_positions: list[int] = []
         day_straight_km = 0.0
         day_elapsed_hours = 0.0
         overtime = False
         while remaining:
-            positions = np.array(sorted(remaining), dtype=int)
+            positions = np.array(
+                [position for position in sorted(remaining) if str(area_labels.iloc[position]) == active_area],
+                dtype=int,
+            )
             distances_km = _acsp_point_distances_m(
                 current_lat, current_lon,
                 pd.to_numeric(plan.iloc[positions]["latitude"], errors="coerce").to_numpy(dtype=float),
@@ -6438,7 +6458,7 @@ def estimate_default_short_trip(
                 candidate_lat = float(plan.iloc[position]["latitude"])
                 candidate_lon = float(plan.iloc[position]["longitude"])
                 return_km = float(_acsp_point_distances_m(
-                    candidate_lat, candidate_lon, np.array([hub_latitude]), np.array([hub_longitude])
+                    candidate_lat, candidate_lon, np.array([day_hub_lat]), np.array([day_hub_lon])
                 )[0]) / 1000.0
                 projected_hours = day_elapsed_hours + (
                     (leg_km + return_km) * assumptions["road_distance_factor"]
@@ -6455,7 +6475,7 @@ def estimate_default_short_trip(
                 candidate_lat = float(plan.iloc[position]["latitude"])
                 candidate_lon = float(plan.iloc[position]["longitude"])
                 return_km = float(_acsp_point_distances_m(
-                    candidate_lat, candidate_lon, np.array([hub_latitude]), np.array([hub_longitude])
+                    candidate_lat, candidate_lon, np.array([day_hub_lat]), np.array([day_hub_lon])
                 )[0]) / 1000.0
                 chosen = position, leg_km, return_km
                 overtime = True
@@ -6470,7 +6490,7 @@ def estimate_default_short_trip(
             current_lat = float(plan.iloc[next_pos]["latitude"])
             current_lon = float(plan.iloc[next_pos]["longitude"])
         return_km = float(_acsp_point_distances_m(
-            current_lat, current_lon, np.array([hub_latitude]), np.array([hub_longitude])
+            current_lat, current_lon, np.array([day_hub_lat]), np.array([day_hub_lon])
         )[0]) / 1000.0
         day_straight_km += return_km
         day_elapsed_hours += (
@@ -6480,6 +6500,7 @@ def estimate_default_short_trip(
         total_straight_km += day_straight_km
         day_schedules.append({
             "day": len(day_schedules) + 1,
+            "survey_area_id": active_area,
             "site_ids": [int(plan.iloc[pos]["site_id"]) for pos in day_positions],
             "straight_line_km": round(day_straight_km, 1),
             "estimated_road_km": round(day_straight_km * assumptions["road_distance_factor"], 1),
@@ -6505,7 +6526,13 @@ def estimate_default_short_trip(
         "overtime_days": sum(bool(day["overtime"]) for day in day_schedules),
         "minimum_repeat_visits": repeat_visits,
         "inference_ready_minimum_field_days": len(day_schedules) * repeat_visits,
-        "routing_confidence": "low; straight-line legs use a road-distance factor and do not model ferries, road topology, traffic, or trail time",
+        "inter_area_transfers": max(0, len(distinct_areas) - 1),
+        "inter_area_transfer_status": "not modeled; verify ferry/flight schedules" if len(distinct_areas) > 1 else "not applicable",
+        "routing_confidence": (
+            "very low for multi-island plans; field days never mix survey areas, but ferry/flight schedules are not modeled"
+            if len(distinct_areas) > 1 else
+            "low; straight-line legs use a road-distance factor and do not model road topology, traffic, or trail time"
+        ),
     }
 
 
@@ -6521,11 +6548,25 @@ def build_default_short_trip_plans(
     requested_k = min(int(max_cells), len(eligible_candidates))
     protocol = survey_protocol or infer_survey_protocol().as_dict()
     pool = eligible_candidates.copy().reset_index(drop=True)
-    hub_distances_m = _acsp_point_distances_m(
-        float(hub_latitude), float(hub_longitude),
-        pd.to_numeric(pool["latitude"], errors="coerce").to_numpy(dtype=float),
-        pd.to_numeric(pool["longitude"], errors="coerce").to_numpy(dtype=float),
-    ) if not pool.empty else np.array([], dtype=float)
+    pool["_logistics_area"] = pool.get("survey_area_id", pd.Series(1, index=pool.index)).astype(str)
+    distinct_areas = pool["_logistics_area"].drop_duplicates().tolist()
+    area_hubs: dict[str, tuple[float, float]] = {}
+    for area, group in pool.groupby("_logistics_area", sort=False):
+        if len(distinct_areas) == 1:
+            area_hubs[str(area)] = (float(hub_latitude), float(hub_longitude))
+        else:
+            area_hubs[str(area)] = (
+                float(pd.to_numeric(group["latitude"], errors="coerce").mean()),
+                float(pd.to_numeric(group["longitude"], errors="coerce").mean()),
+            )
+    hub_distances_m = np.array([
+        float(_acsp_point_distances_m(
+            area_hubs[str(row["_logistics_area"])][0],
+            area_hubs[str(row["_logistics_area"])][1],
+            np.array([float(row["latitude"])]), np.array([float(row["longitude"])]),
+        )[0])
+        for _, row in pool.iterrows()
+    ], dtype=float) if not pool.empty else np.array([], dtype=float)
     pool["distance_to_hub_m"] = hub_distances_m
     service_hours = (
         int(protocol["search_minutes_per_cell"]) + int(protocol["access_buffer_minutes_per_cell"])
@@ -6545,11 +6586,14 @@ def build_default_short_trip_plans(
     trip_estimate: dict[str, Any] = {}
     for plan_k in range(pool_start_k, minimum_k - 1, -1):
         plans = build_acsp_discover_plans(
-            pool, plan_k, hub_latitude=float(hub_latitude), hub_longitude=float(hub_longitude)
+            pool, plan_k,
+            hub_latitude=float(hub_latitude) if len(distinct_areas) == 1 else None,
+            hub_longitude=float(hub_longitude) if len(distinct_areas) == 1 else None,
         )
         trip_estimate = estimate_default_short_trip(
             plans.get("Balanced", pd.DataFrame()), float(hub_latitude), float(hub_longitude),
             survey_protocol=survey_protocol, target_days=target_days,
+            area_hubs_override=area_hubs,
         )
         if bool(trip_estimate.get("fits_target_days")) or plan_k == minimum_k:
             break
@@ -6569,6 +6613,18 @@ def select_automatic_trip_scale(
 ) -> dict[str, Any]:
     """Choose an internal trip scale from the knee of a feasibility curve."""
     alternatives: list[dict[str, Any]] = []
+    logistics = eligible_candidates.copy()
+    logistics["_logistics_area"] = logistics.get("survey_area_id", pd.Series(1, index=logistics.index)).astype(str)
+    logistics_areas = logistics["_logistics_area"].drop_duplicates().tolist()
+    area_hubs_override = {
+        str(area): (
+            float(hub_latitude), float(hub_longitude)
+        ) if len(logistics_areas) == 1 else (
+            float(pd.to_numeric(group["latitude"], errors="coerce").mean()),
+            float(pd.to_numeric(group["longitude"], errors="coerce").mean()),
+        )
+        for area, group in logistics.groupby("_logistics_area", sort=False)
+    }
     for days in range(1, max(1, int(maximum_days)) + 1):
         plans, trip, requested_k = build_default_short_trip_plans(
             eligible_candidates,
@@ -6579,16 +6635,35 @@ def select_automatic_trip_scale(
             survey_protocol=survey_protocol,
         )
         balanced = plans.get("Balanced", pd.DataFrame())
-        reachable_zones = zones_matching_plan(all_zones, balanced)
+        reachable_zones = recommended_zone_rows(
+            zones_matching_plan(all_zones, balanced),
+            per_area=3,
+            default_total=max(1, len(balanced)),
+        )
+        visible_site_ids = {
+            site_id
+            for value in reachable_zones.get("zone_member_site_ids", pd.Series(dtype=str)).astype(str)
+            for site_id in value.split(";")
+        }
+        visible_balanced = balanced[
+            balanced["site_id"].astype(str).isin(visible_site_ids)
+        ].copy().reset_index(drop=True)
+        visible_plans = dict(plans)
+        visible_plans["Balanced"] = visible_balanced
+        trip = estimate_default_short_trip(
+            visible_balanced, float(hub_latitude), float(hub_longitude),
+            survey_protocol=survey_protocol, target_days=days,
+            area_hubs_override=area_hubs_override,
+        )
         zone_value = float(pd.to_numeric(reachable_zones.get("zone_score"), errors="coerce").fillna(0.0).sum()) if not reachable_zones.empty else 0.0
         alternatives.append({
             "days": days,
-            "plans": plans,
+            "plans": visible_plans,
             "trip": trip,
             "requested_k": requested_k,
             "zones": reachable_zones,
             "zone_count": int(len(reachable_zones)),
-            "station_count": int(len(balanced)),
+            "station_count": int(len(visible_balanced)),
             "zone_value": zone_value,
         })
     max_zones = max((item["zone_count"] for item in alternatives), default=0)

@@ -16,6 +16,8 @@ The app shows one ranked **Recommended survey zones** table and map. Nearby cand
 
 Trip duration is not fixed by the user. Internally, ACSP builds feasible one- through five-day alternatives, charges each added zone for its minimum insertion cost in the hub-return route, and chooses the knee of the resulting value-versus-duration curve. The primary screen shows only the selected practical zone set and a short reason; the curve remains reproducible diagnostic evidence.
 
+Separate drawn survey areas are treated as separate daily logistics units. A single field day never combines different islands/areas, and each area receives a candidate before additional same-area sites are added. Island-local travel uses a local area hub; ferry and flight schedules are not yet modeled and are explicitly reported as unverified rather than converted into road distance.
+
 When several rectangles are drawn, ACSP treats them as independent survey areas. Candidate generation and recommendation quotas run separately in each area, preventing record-rich regions from taking every recommendation.
 
 ## Occurrence and local candidate processing

@@ -30,6 +30,36 @@ from gbif_fieldmap_builder_app import (
 
 
 class AutomaticHierarchyTests(unittest.TestCase):
+    def test_multi_island_days_never_mix_survey_areas(self):
+        plan = pd.DataFrame({
+            "site_id": [1, 2, 3, 4],
+            "survey_area_id": [1, 2, 3, 4],
+            "latitude": [34.72, 34.52, 34.38, 34.21],
+            "longitude": [139.40, 139.28, 139.26, 139.14],
+        })
+        estimate = estimate_default_short_trip(
+            plan, 34.72, 139.40,
+            infer_survey_protocol({"kingdom": "Plantae"}).as_dict(), target_days=4,
+        )
+        self.assertEqual(estimate["estimated_days"], 4)
+        self.assertTrue(estimate["fits_target_days"])
+        self.assertEqual(estimate["inter_area_transfers"], 3)
+        self.assertTrue(all(len(day["site_ids"]) == 1 for day in estimate["day_schedules"]))
+        self.assertEqual(len({day["survey_area_id"] for day in estimate["day_schedules"]}), 4)
+
+    def test_plan_covers_each_survey_area_before_adding_duplicates(self):
+        candidates = pd.DataFrame({
+            "site_id": [1, 2, 3, 4, 5],
+            "survey_area_id": [1, 2, 3, 4, 1],
+            "candidate_type": ["Habitat-match"] * 5,
+            "priority_score": [1.0, 0.8, 0.7, 0.6, 0.99],
+            "analogue_score": [0.8] * 5, "access_score": [0.8] * 5,
+            "latitude": [34.72, 34.52, 34.38, 34.21, 34.721],
+            "longitude": [139.40, 139.28, 139.26, 139.14, 139.401],
+        })
+        plan = build_acsp_discover_plans(candidates, 4)["Balanced"]
+        self.assertEqual(set(plan["survey_area_id"].astype(int)), {1, 2, 3, 4})
+
     def test_route_insertion_cost_is_recorded_between_candidates(self):
         candidates = pd.DataFrame({
             "site_id": [1, 2, 3],
