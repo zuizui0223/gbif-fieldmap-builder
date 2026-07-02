@@ -4,6 +4,8 @@ ACSP converts occurrence records into ranked, field-ready survey zones. It is a 
 
 Development status: **alpha (0.1.0)**. Independent retrospective tests support cross-taxon prioritization of 10 km regional candidate zones over random same-pool selection. Exact-site accuracy, access, detection, abundance, and field efficiency remain unvalidated; see [HIERARCHICAL_VALIDATION_REPORT.md](HIERARCHICAL_VALIDATION_REPORT.md).
 
+The investigated 5 km precision ceiling and rejected model variants are recorded in [FINE_SCALE_LIMITS_REPORT.md](FINE_SCALE_LIMITS_REPORT.md). Candidate exports include a technical precision-floor audit so coarse representative points cannot silently acquire an exact-site interpretation.
+
 ## Main workflow
 
 The automatic app asks users to make only three decisions:
@@ -178,7 +180,7 @@ The method should be benchmarked against random sampling, occurrence-only rankin
 
 The package now exposes `stratified_random_taxa()`, `spatial_block_candidate_benchmark()`, `multi_taxon_weight_benchmark()`, and `calibrate_candidate_weights()` for reproducible weight studies. The intended design samples taxa across occurrence-count strata with a recorded seed, rebuilds candidates from training spatial blocks only, tunes weights on calibration taxa, and reports performance on completely unseen taxa against same-pool random Top-k, local-only, macro-model-only, and the current default weights. Failed taxa remain in the audit table and are not silently replaced. Retrospective GBIF recovery does not identify accessibility or detectability weights; those require prospective field-validation records.
 
-`benchmark_random_species_models.py` provides the separate model-accuracy benchmark: seeded random taxa, repeated spatial-block holdout, four individual algorithms plus the ensemble, auditable predictions, ROC-AUC, PR-AUC, Brier score, log loss, TSS, calibration, Boyce-style rank correlation, taxon bootstrap intervals, and taxon-held-out ensemble calibration. `benchmark_izu_random_taxa.py` remains the separate four-island candidate-recovery benchmark. The prospective field protocol is in [FIELD_VALIDATION_IZU.md](FIELD_VALIDATION_IZU.md).
+`benchmark_general_random_taxa_regions.py` is the supported national hierarchical benchmark. Superseded Izu, initial SDM-accuracy, and pre-hierarchy national experiments are retained under [legacy/](legacy/README.md) for reproducibility and are excluded from normal test discovery.
 
 For a reproducible paper or report:
 

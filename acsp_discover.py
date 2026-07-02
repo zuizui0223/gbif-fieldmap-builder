@@ -64,6 +64,44 @@ def primary_recovery_radius_km(
     return 5.0
 
 
+def spatial_precision_audit(
+    effective_cell_size_m: float,
+    *,
+    environmental_resolution_m: Optional[float] = None,
+    coordinate_uncertainty_q75_m: Optional[float] = None,
+    target_radius_km: float = 5.0,
+) -> dict[str, object]:
+    """State whether a grid can technically support a fine-radius claim.
+
+    The half diagonal is the worst-case centre quantisation error before any
+    ecological ranking error. A fine claim needs at least half of the target
+    radius left for model error; this is a technical eligibility check, not a
+    validation result.
+    """
+    cell_m = max(0.0, float(effective_cell_size_m))
+    target_m = max(1.0, float(target_radius_km) * 1000.0)
+    quantisation_m = cell_m / math.sqrt(2.0)
+    environment_m = max(0.0, float(environmental_resolution_m or 0.0))
+    uncertainty_m = max(0.0, float(coordinate_uncertainty_q75_m or 0.0))
+    precision_floor_m = max(quantisation_m, environment_m, uncertainty_m)
+    eligible = precision_floor_m <= target_m / 2.0
+    limiting = max(
+        (("grid half-diagonal", quantisation_m), ("environmental resolution", environment_m), ("coordinate uncertainty q75", uncertainty_m)),
+        key=lambda item: item[1],
+    )[0]
+    return {
+        "target_radius_km": float(target_radius_km),
+        "precision_floor_km": round(precision_floor_m / 1000.0, 3),
+        "technical_eligibility": bool(eligible),
+        "status": "technically eligible but not retrospectively validated" if eligible else "unsupported at current input resolution",
+        "limiting_factor": limiting,
+        "reason": (
+            f"{limiting} implies a {precision_floor_m / 1000.0:.2f} km precision floor; "
+            f"the {target_radius_km:.1f} km target reserves only {target_radius_km / 2.0:.2f} km for input quantisation."
+        ),
+    }
+
+
 @dataclass(frozen=True)
 class ResolutionDecision:
     cell_size_m: int

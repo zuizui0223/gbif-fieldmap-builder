@@ -39,3 +39,5 @@ Pooling only the two independent, algorithm-compatible confirmation samples yiel
 ## Interpretation and remaining uncertainty
 
 The evidence supports a cross-taxon 10 km regional-zone prioritization claim: independently confirmed animal and plant estimates both exceed the same-pool random baseline. It does not establish that every taxonomic class performs equally, nor that a representative point is reachable or occupied during a visit. Rare ecological guilds remain thinly sampled, GBIF observation bias is inherited, land/water masks do not replace hydrography or bathymetry, and retrospective presence recovery cannot estimate false absences. Prospective standardized surveys are still required before claims about exact sites, detection, access, abundance, or field efficiency.
+
+The attempted transition to a general 5 km exact-location claim, rejected alternatives, and the automatic precision-floor audit are documented in [FINE_SCALE_LIMITS_REPORT.md](FINE_SCALE_LIMITS_REPORT.md).

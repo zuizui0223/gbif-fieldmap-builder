@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip build
           python -m pip install -e .
       - name: Compile Python sources
-        run: python -m py_compile gbif_fieldmap_builder_app.py acsp/__init__.py acsp/app.py acsp/cli.py acsp/planning.py acsp/modeling.py acsp/sdm.py acsp_discover.py
+        run: python -m py_compile gbif_fieldmap_builder_app.py acsp/__init__.py acsp/app.py acsp/benchmarking.py acsp/cli.py acsp/planning.py acsp/modeling.py acsp/sdm.py acsp_discover.py
       - name: Run Python tests
         run: python -m unittest discover -v
       - name: Build Python wheel

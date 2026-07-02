@@ -14,7 +14,7 @@ import pandas as pd
 import requests
 
 from acsp import clustered_recovery_inference, spatial_block_candidate_benchmark
-from benchmark_izu_random_taxa import _coverage_at_radius, _fold_completion, _get_json
+from acsp.benchmarking import coverage_at_radius, fold_completion, get_json
 from gbif_fieldmap_builder_app import (
     build_automatic_discover_bundle,
     clean_occurrences,
@@ -63,13 +63,13 @@ def rectangle_feature(bounds: tuple[float, float, float, float], name: str) -> d
 @lru_cache(maxsize=4096)
 def _species_metadata(key: int) -> dict[str, Any] | None:
     try:
-        return _get_json(f"{GBIF_SPECIES}/{int(key)}", timeout=30)
+        return get_json(f"{GBIF_SPECIES}/{int(key)}", timeout=30)
     except (requests.RequestException, ValueError):
         return None
 
 
 def taxon_frame(bounds: tuple[float, float, float, float], kingdom_key: int, facet_limit: int, minimum_records: int) -> pd.DataFrame:
-    payload = _get_json(GBIF_SEARCH, {
+    payload = get_json(GBIF_SEARCH, {
         "kingdomKey": int(kingdom_key), "geometry": rectangle_wkt(bounds),
         "hasCoordinate": "true", "hasGeospatialIssue": "false", "occurrenceStatus": "PRESENT",
         "limit": 0, "facet": "speciesKey", "facetLimit": int(facet_limit),
@@ -151,7 +151,7 @@ def predeclare_pairs(
 
 def fetch_occurrences(row: pd.Series, cap: int) -> pd.DataFrame:
     bounds = (float(row.west), float(row.south), float(row.east), float(row.north))
-    payload = _get_json(GBIF_SEARCH, {
+    payload = get_json(GBIF_SEARCH, {
         "taxonKey": int(row.speciesKey), "geometry": rectangle_wkt(bounds),
         "hasCoordinate": "true", "hasGeospatialIssue": "false", "occurrenceStatus": "PRESENT",
         "limit": min(300, int(cap)), "offset": 0,
@@ -161,7 +161,7 @@ def fetch_occurrences(row: pd.Series, cap: int) -> pd.DataFrame:
 
 
 def summarize_recovery(candidates: pd.DataFrame, radius: float, top_k: int, seed: int) -> list[dict[str, Any]]:
-    work = _coverage_at_radius(candidates, radius)
+    work = coverage_at_radius(candidates, radius)
     rng = np.random.default_rng(int(seed))
     rows = []
     group_columns = ["benchmark_taxon", "benchmark_region", "taxon_group", "geographic_stratum"]
@@ -230,7 +230,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         candidate_path, fold_path = output / f"{slug}_candidates.csv", output / f"{slug}_folds.csv"
         if candidate_path.exists() and fold_path.exists():
             folds = pd.read_csv(fold_path)
-            statuses.append({"pair_id": int(row.pair_id), "scientific_name": row.scientific_name, "checkpoint": True, **_fold_completion(folds, args.repeats)})
+            statuses.append({"pair_id": int(row.pair_id), "scientific_name": row.scientific_name, "checkpoint": True, **fold_completion(folds, args.repeats)})
             continue
         try:
             occurrences = fetch_occurrences(row, args.records_per_pair)
@@ -282,7 +282,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 frame["geographic_stratum"] = str(row.geographic_stratum)
             (candidates if not candidates.empty else pd.DataFrame(columns=["benchmark_taxon"])).to_csv(candidate_path, index=False)
             folds.to_csv(fold_path, index=False)
-            statuses.append({"pair_id": int(row.pair_id), "scientific_name": row.scientific_name, **_fold_completion(folds, args.repeats)})
+            statuses.append({"pair_id": int(row.pair_id), "scientific_name": row.scientific_name, **fold_completion(folds, args.repeats)})
         except Exception as exc:
             statuses.append({"pair_id": int(row.pair_id), "scientific_name": row.scientific_name, "status": "failed", "reason": str(exc)})
         pd.DataFrame(statuses).to_csv(output / "pair_status.csv", index=False)

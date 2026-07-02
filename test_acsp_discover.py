@@ -12,6 +12,7 @@ from acsp_discover import (
     infer_survey_protocol,
     parse_field_results,
     primary_recovery_radius_km,
+    spatial_precision_audit,
     preferred_survey_window,
     recommend_survey_regions,
     score_discovery_learning,
@@ -29,6 +30,14 @@ class DiscoverV1Tests(unittest.TestCase):
         self.assertEqual(primary_recovery_radius_km({"class": "Aves"}), 10.0)
         self.assertEqual(primary_recovery_radius_km({"class": "Insecta"}), 5.0)
         self.assertEqual(primary_recovery_radius_km({"class": "Reptilia"}, surface_domain="marine"), 10.0)
+
+    def test_precision_audit_rejects_coarse_cells_before_fine_claim(self):
+        coarse = spatial_precision_audit(7000, environmental_resolution_m=4500, target_radius_km=5)
+        fine = spatial_precision_audit(1000, environmental_resolution_m=250, coordinate_uncertainty_q75_m=100, target_radius_km=5)
+        self.assertFalse(coarse["technical_eligibility"])
+        self.assertEqual(coarse["limiting_factor"], "grid half-diagonal")
+        self.assertTrue(fine["technical_eligibility"])
+        self.assertIn("not retrospectively validated", fine["status"])
 
     def test_taxonomy_changes_protocol_without_user_parameters(self):
         plant = infer_survey_protocol({"kingdom": "Plantae", "class": "Magnoliopsida"})

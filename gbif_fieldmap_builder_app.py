@@ -78,6 +78,7 @@ from acsp_discover import (
     infer_survey_protocol,
     parse_field_results,
     primary_recovery_radius_km,
+    spatial_precision_audit,
     preferred_survey_window,
     recommend_survey_regions,
     summarize_plan as summarize_discover_plan,
@@ -5174,6 +5175,19 @@ def make_potential_survey_site_candidates(
         "10 km regional candidate zone; coordinate is a representative screening point, not a validated exact survey site"
     )
     grid["validated_zone_radius_km"] = 10.0
+    precision_rows = [
+        spatial_precision_audit(
+            effective_cell,
+            environmental_resolution_m=environmental_resolution_m,
+            coordinate_uncertainty_q75_m=coordinate_q75,
+            target_radius_km=5.0,
+        )
+        for effective_cell in effective_cells.to_numpy(dtype=float)
+    ]
+    grid["five_km_precision_status"] = [row["status"] for row in precision_rows]
+    grid["precision_floor_km"] = [row["precision_floor_km"] for row in precision_rows]
+    grid["precision_limiting_factor"] = [row["limiting_factor"] for row in precision_rows]
+    grid["precision_limit_reason"] = [row["reason"] for row in precision_rows]
     if "macro_filter_basis" not in grid.columns:
         grid["macro_filter_basis"] = "Local habitat analogue grid from the active survey-area occurrence set"
 
@@ -6448,6 +6462,7 @@ def make_survey_day_html(day_lists: dict, sites: pd.DataFrame) -> str:
 
 EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "validated_spatial_claim", "validated_zone_radius_km", "surface_domain", "plan_name", "plan_rank", "discover_utility", "discovery_value", "learning_value", "accessibility_score", "representation_value", "discovery_label", "learning_label", "access_label", "data_quality", "constraint_status", "priority_rank", "priority_score", "observed_base_priority_score", "candidate_evidence", "recommendation_basis", "occurrence_support_score", "model_support_score", "model_support_available", "observed_model_agreement_score", "model_agreement_bonus", "model_only_exploration_bonus", "field_validation_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "habitat_basis", "macro_filter_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "analogue_score", "environmental_distance_to_known", "environmental_novelty", "survey_effort_proxy", "survey_gap_score", "access_score", "target_record_density", "all_taxa_record_density", "nearest_known_population_km", "requested_search_cell_size_m", "effective_search_cell_size_m", "resolution_decision_reason", "resolution_data_quality", "effective_grid_cells_evaluated", "search_cell_radius_m", "elevation", "slope", "aspect", "roughness", "tpi", "ndvi", "landcover", "landcover_match_score", "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m", "missing_layer_note", "validation_learning_note", "why_selected", "selection_reason", "selection_algorithm", "selection_step", "base_score", "geographic_complementarity_gain", "environmental_complementarity_gain", "habitat_analogue_gain", "exploration_gain", "sampling_gap_gain", "validation_learning_gain", "access_gain", "redundancy_penalty", "travel_penalty", "marginal_gain_score", "access_note", "recommended_survey_window", "season_confidence", "flowering_record_count", "google_maps_url"]
 for _column in reversed([
+    "five_km_precision_status", "precision_floor_km", "precision_limiting_factor", "precision_limit_reason",
     "integrated_support_score", "integrated_base_score", "integrated_evidence_class",
     "evidence_agreement_score", "evidence_divergence_score", "agreement_bonus",
     "divergence_exploration_bonus", "integrated_available_weight",

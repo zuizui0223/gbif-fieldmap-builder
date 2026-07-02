@@ -4,7 +4,7 @@ import unittest
 
 import pandas as pd
 
-from benchmark_izu_random_taxa import (
+from legacy.benchmarks.benchmark_izu_random_taxa import (
     ISLAND_BOUNDS,
     _coverage_at_radius,
     _fold_completion,
