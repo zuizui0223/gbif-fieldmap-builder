@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from acsp import spatial_block_candidate_benchmark
+from acsp import clustered_recovery_inference, spatial_block_candidate_benchmark
 from benchmark_izu_random_taxa import _coverage_at_radius, _fold_completion, _get_json
 from gbif_fieldmap_builder_app import (
     build_automatic_discover_bundle,
@@ -93,11 +93,17 @@ def taxon_frame(bounds: tuple[float, float, float, float], kingdom_key: int, fac
     return pd.DataFrame([row for row in rows if row is not None])
 
 
-def predeclare_pairs(pair_count: int, seed: int, facet_limit: int, minimum_records: int) -> pd.DataFrame:
+def predeclare_pairs(
+    pair_count: int,
+    seed: int,
+    facet_limit: int,
+    minimum_records: int,
+    excluded_taxa: set[str] | None = None,
+) -> pd.DataFrame:
     rng = np.random.default_rng(int(seed))
     cells = pd.DataFrame(REGION_CELLS, columns=["geographic_stratum", "region_name", "west", "south", "east", "north"])
     selected_rows = []
-    used_taxa: set[str] = set()
+    used_taxa: set[str] = set(map(str, excluded_taxa or set()))
     strata = list(dict.fromkeys(cells["geographic_stratum"]))
     groups = list(TAXON_GROUPS)
     frame_cache: dict[tuple[str, str], pd.DataFrame] = {}
@@ -186,8 +192,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     sample_path = output / "predeclared_taxon_region_pairs.csv"
+    excluded_taxa: set[str] = set()
+    if args.exclude_sample:
+        exclusion = pd.read_csv(args.exclude_sample)
+        if "scientific_name" not in exclusion.columns:
+            raise ValueError("Exclusion sample requires a scientific_name column.")
+        excluded_taxa = set(exclusion["scientific_name"].dropna().astype(str))
     sample = pd.read_csv(sample_path) if sample_path.exists() else predeclare_pairs(
-        args.pairs, args.seed, args.facet_limit, args.minimum_records
+        args.pairs, args.seed, args.facet_limit, args.minimum_records, excluded_taxa
     )
     if not sample_path.exists():
         sample.to_csv(sample_path, index=False)
@@ -264,12 +276,24 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         )
         cohort = cohort.merge(rankable, on=["radius_km", "taxon_group", "geographic_stratum"], how="left")
     cohort.to_csv(output / "cohort_summary.csv", index=False)
+    robust = pd.DataFrame()
+    if not recovery.empty:
+        declared = sample[sample["status"].eq("predeclared")].rename(
+            columns={"scientific_name": "benchmark_taxon"}
+        )
+        robust = clustered_recovery_inference(
+            recovery, declared, repeats=args.repeats,
+            bootstrap_draws=args.bootstrap_draws, permutation_draws=args.permutation_draws,
+            random_state=args.seed,
+        )
+    robust.to_csv(output / "robust_inference.csv", index=False)
     result = {
         "protocol": vars(args), "predeclared_pairs": int(len(sample)),
         "evaluable_pairs": int(candidates[["benchmark_taxon", "benchmark_region"]].drop_duplicates().shape[0]) if not candidates.empty else 0,
         "status_counts": pd.Series([item.get("status", "unknown") for item in statuses]).value_counts().to_dict(),
         "cohort_summary": cohort.to_dict("records"),
-        "interpretation": "General performance across predeclared taxon-group, record-count, and geographic strata; failures remain in the denominator.",
+        "robust_inference": json.loads(robust.to_json(orient="records")),
+        "interpretation": "General performance across predeclared taxon-group, record-count, and geographic strata. Robust inference assigns zero recovery to missing/failed folds and clusters uncertainty by taxon-region pair.",
     }
     (output / "benchmark_summary.json").write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     return result
@@ -284,11 +308,14 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--minimum-records", type=int, default=20)
     command.add_argument("--facet-limit", type=int, default=160)
     command.add_argument("--seed", type=int, default=20260702)
+    command.add_argument("--exclude-sample", default="", help="CSV whose scientific_name taxa are excluded from a confirmatory draw.")
     command.add_argument("--block-degrees", type=float, default=0.10)
     command.add_argument("--holdout-fraction", type=float, default=0.20)
     command.add_argument("--top-k", type=int, default=5)
     command.add_argument("--radii", type=float, nargs="+", default=[2.0, 5.0, 10.0])
     command.add_argument("--random-draws", type=int, default=200)
+    command.add_argument("--bootstrap-draws", type=int, default=5000)
+    command.add_argument("--permutation-draws", type=int, default=20000)
     return command
 
 

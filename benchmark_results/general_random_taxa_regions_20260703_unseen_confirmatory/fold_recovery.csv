@@ -1,0 +1,223 @@
+benchmark_taxon,benchmark_region,taxon_group,geographic_stratum,repeat,radius_km,candidate_pool,effective_top_k,rankable_fold,default_recall,random_recall,greedy_oracle_recall
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,1,2.0,1,1,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,2,2.0,2,2,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,3,2.0,2,2,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,5,2.0,1,1,False,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,1,2.0,11,5,True,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,2,2.0,11,5,True,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,3,2.0,12,5,True,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,4,2.0,11,5,True,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,5,2.0,10,5,True,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,1,2.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,2,2.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,3,2.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,4,2.0,2,2,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,5,2.0,1,1,False,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,1,2.0,12,5,True,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,2,2.0,11,5,True,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,3,2.0,8,5,True,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,4,2.0,9,5,True,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,5,2.0,5,5,False,0.0,0.0,0.0
+"Anas crecca Linnaeus, 1758",Izu,animal,east,2,2.0,2,2,False,0.0,0.0,0.0
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,1,2.0,2,2,False,0.0,0.0,0.0
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,2,2.0,1,1,False,0.0,0.0,0.0
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,4,2.0,2,2,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,1,2.0,3,3,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,2,2.0,3,3,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,3,2.0,2,2,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,4,2.0,4,4,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,5,2.0,3,3,False,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,1,2.0,10,5,True,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,2,2.0,9,5,True,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,3,2.0,11,5,True,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,4,2.0,10,5,True,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,5,2.0,10,5,True,0.0,0.0,0.0
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,1,2.0,13,5,True,0.0,0.0,0.0
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,2,2.0,11,5,True,0.0,0.0,0.0
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,3,2.0,13,5,True,0.0,0.01708333333333333,0.041666666666666664
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,4,2.0,11,5,True,0.0,0.0,0.0
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,5,2.0,12,5,True,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,1,2.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,2,2.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,3,2.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,4,2.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,5,2.0,4,4,False,0.0,0.0,0.0
+"Felis catus Linnaeus, 1758",Kanto,animal,east,1,2.0,10,5,True,0.03125,0.0165625,0.03125
+"Felis catus Linnaeus, 1758",Kanto,animal,east,2,2.0,10,5,True,0.0,0.0,0.0
+"Felis catus Linnaeus, 1758",Kanto,animal,east,3,2.0,10,5,True,0.0,0.0,0.0
+"Felis catus Linnaeus, 1758",Kanto,animal,east,4,2.0,10,5,True,0.037037037037037035,0.020370370370370372,0.037037037037037035
+"Felis catus Linnaeus, 1758",Kanto,animal,east,5,2.0,10,5,True,0.0,0.020200000000000006,0.04
+Fragaria nipponica Makino,Hokkaido east,plant,north,2,2.0,2,2,False,0.0,0.0,0.0
+Fragaria nipponica Makino,Hokkaido east,plant,north,3,2.0,2,2,False,0.0,0.0,0.0
+Fragaria nipponica Makino,Hokkaido east,plant,north,5,2.0,10,5,True,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,1,2.0,1,1,False,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,2,2.0,1,1,False,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,3,2.0,1,1,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,1,2.0,5,5,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,2,2.0,5,5,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,3,2.0,4,4,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,4,2.0,4,4,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,5,2.0,5,5,False,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,1,2.0,6,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,2,2.0,7,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,3,2.0,7,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,4,2.0,5,5,False,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,5,2.0,6,5,True,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,1,2.0,2,2,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,2,2.0,3,3,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,3,2.0,2,2,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,4,2.0,1,1,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,5,2.0,3,3,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,1,2.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,2,2.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,3,2.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,4,2.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,5,2.0,2,2,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,1,5.0,1,1,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,2,5.0,2,2,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,3,5.0,2,2,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,5,5.0,1,1,False,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,1,5.0,11,5,True,0.0,0.0259375,0.0625
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,2,5.0,11,5,True,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,3,5.0,12,5,True,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,4,5.0,11,5,True,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,5,5.0,10,5,True,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,1,5.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,2,5.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,3,5.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,4,5.0,2,2,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,5,5.0,1,1,False,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,1,5.0,12,5,True,0.0,0.12162162162162161,0.2702702702702703
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,2,5.0,11,5,True,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,3,5.0,8,5,True,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,4,5.0,9,5,True,0.0,0.1377777777777778,0.2222222222222222
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,5,5.0,5,5,False,0.0,0.0,0.0
+"Anas crecca Linnaeus, 1758",Izu,animal,east,2,5.0,2,2,False,0.25,0.25,0.25
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,1,5.0,2,2,False,0.0,0.0,0.0
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,2,5.0,1,1,False,0.0,0.0,0.0
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,4,5.0,2,2,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,1,5.0,3,3,False,0.041666666666666664,0.04166666666666666,0.041666666666666664
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,2,5.0,3,3,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,3,5.0,2,2,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,4,5.0,4,4,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,5,5.0,3,3,False,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,1,5.0,10,5,True,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,2,5.0,9,5,True,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,3,5.0,11,5,True,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,4,5.0,10,5,True,0.0,0.0,0.0
+Stellaria radians L.,Hokkaido east,plant,north,5,5.0,10,5,True,0.0,0.0,0.0
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,1,5.0,13,5,True,0.0,0.0,0.0
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,2,5.0,11,5,True,0.0,0.0,0.0
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,3,5.0,13,5,True,0.041666666666666664,0.04833333333333333,0.125
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,4,5.0,11,5,True,0.0,0.0,0.0
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,5,5.0,12,5,True,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,1,5.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,2,5.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,3,5.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,4,5.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,5,5.0,4,4,False,0.0,0.0,0.0
+"Felis catus Linnaeus, 1758",Kanto,animal,east,1,5.0,10,5,True,0.03125,0.0165625,0.03125
+"Felis catus Linnaeus, 1758",Kanto,animal,east,2,5.0,10,5,True,0.0,0.0,0.0
+"Felis catus Linnaeus, 1758",Kanto,animal,east,3,5.0,10,5,True,0.0,0.0,0.0
+"Felis catus Linnaeus, 1758",Kanto,animal,east,4,5.0,10,5,True,0.037037037037037035,0.020370370370370372,0.037037037037037035
+"Felis catus Linnaeus, 1758",Kanto,animal,east,5,5.0,10,5,True,0.0,0.020200000000000006,0.04
+Fragaria nipponica Makino,Hokkaido east,plant,north,2,5.0,2,2,False,0.0,0.0,0.0
+Fragaria nipponica Makino,Hokkaido east,plant,north,3,5.0,2,2,False,0.0,0.0,0.0
+Fragaria nipponica Makino,Hokkaido east,plant,north,5,5.0,10,5,True,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,1,5.0,1,1,False,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,2,5.0,1,1,False,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,3,5.0,1,1,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,1,5.0,5,5,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,2,5.0,5,5,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,3,5.0,4,4,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,4,5.0,4,4,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,5,5.0,5,5,False,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,1,5.0,6,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,2,5.0,7,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,3,5.0,7,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,4,5.0,5,5,False,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,5,5.0,6,5,True,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,1,5.0,2,2,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,2,5.0,3,3,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,3,5.0,2,2,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,4,5.0,1,1,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,5,5.0,3,3,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,1,5.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,2,5.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,3,5.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,4,5.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,5,5.0,2,2,False,0.2631578947368421,0.26315789473684204,0.2631578947368421
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,1,10.0,1,1,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,2,10.0,2,2,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,3,10.0,2,2,False,0.0,0.0,0.0
+Pentarhizidium orientale (Hook.) Hayata,Tohoku,plant,north,5,10.0,1,1,False,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,1,10.0,11,5,True,0.0,0.0559375,0.125
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,2,10.0,11,5,True,0.04878048780487805,0.04012195121951219,0.07317073170731707
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,3,10.0,12,5,True,0.0,0.0,0.0
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,4,10.0,11,5,True,0.0967741935483871,0.045,0.0967741935483871
+Trachelospermum asiaticum (Siebold & Zucc.) Nakai,Kanto,plant,east,5,10.0,10,5,True,0.06818181818181818,0.03613636363636363,0.06818181818181818
+Eurya japonica Thunb.,Shikoku,plant,west,1,10.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,2,10.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,3,10.0,1,1,False,0.0,0.0,0.0
+Eurya japonica Thunb.,Shikoku,plant,west,4,10.0,2,2,False,0.03225806451612903,0.032258064516129024,0.03225806451612903
+Eurya japonica Thunb.,Shikoku,plant,west,5,10.0,1,1,False,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,1,10.0,12,5,True,0.0,0.12162162162162161,0.2702702702702703
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,2,10.0,11,5,True,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,3,10.0,8,5,True,0.0,0.0,0.0
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,4,10.0,9,5,True,0.0,0.1377777777777778,0.2222222222222222
+"Carabus gehinii Fairmaire, 1876",Hokkaido east,animal,north,5,10.0,5,5,False,0.0,0.0,0.0
+"Anas crecca Linnaeus, 1758",Izu,animal,east,2,10.0,2,2,False,0.25,0.25,0.25
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,1,10.0,2,2,False,0.0,0.0,0.0
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,2,10.0,1,1,False,0.0,0.0,0.0
+"Monticola solitarius (Linnaeus, 1758)",Kinki,animal,west,4,10.0,2,2,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,1,10.0,3,3,False,0.041666666666666664,0.04166666666666666,0.041666666666666664
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,2,10.0,3,3,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,3,10.0,2,2,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,4,10.0,4,4,False,0.0,0.0,0.0
+"Milvus migrans (Boddaert, 1783)",Northern Kyushu,animal,south,5,10.0,3,3,False,0.06666666666666667,0.06666666666666667,0.06666666666666667
+Stellaria radians L.,Hokkaido east,plant,north,1,10.0,10,5,True,0.10526315789473684,0.05394736842105262,0.10526315789473684
+Stellaria radians L.,Hokkaido east,plant,north,2,10.0,9,5,True,0.10526315789473684,0.05868421052631579,0.10526315789473684
+Stellaria radians L.,Hokkaido east,plant,north,3,10.0,11,5,True,0.04,0.039599999999999996,0.08
+Stellaria radians L.,Hokkaido east,plant,north,4,10.0,10,5,True,0.05,0.024249999999999997,0.05
+Stellaria radians L.,Hokkaido east,plant,north,5,10.0,10,5,True,0.05555555555555555,0.028055555555555563,0.05555555555555555
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,1,10.0,13,5,True,0.0,0.04203703703703704,0.1111111111111111
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,2,10.0,11,5,True,0.0,0.034666666666666665,0.06666666666666667
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,3,10.0,13,5,True,0.041666666666666664,0.07645833333333334,0.16666666666666666
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,4,10.0,11,5,True,0.0,0.019375,0.041666666666666664
+Leptogramma mollissima (Fisch. ex Kunze) Ching,Kanto,plant,east,5,10.0,12,5,True,0.04,0.017400000000000002,0.04
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,1,10.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,2,10.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,3,10.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,4,10.0,2,2,False,0.0,0.0,0.0
+Myrsine seguinii H.Lév.,Ryukyu,plant,south,5,10.0,4,4,False,0.0,0.0,0.0
+"Felis catus Linnaeus, 1758",Kanto,animal,east,1,10.0,10,5,True,0.5,0.27375,0.5
+"Felis catus Linnaeus, 1758",Kanto,animal,east,2,10.0,10,5,True,0.0,0.03615384615384616,0.07692307692307693
+"Felis catus Linnaeus, 1758",Kanto,animal,east,3,10.0,10,5,True,0.0,0.017258064516129032,0.03225806451612903
+"Felis catus Linnaeus, 1758",Kanto,animal,east,4,10.0,10,5,True,0.5555555555555556,0.3531481481481482,0.6296296296296297
+"Felis catus Linnaeus, 1758",Kanto,animal,east,5,10.0,10,5,True,0.04,0.3148,0.6
+Fragaria nipponica Makino,Hokkaido east,plant,north,2,10.0,2,2,False,0.0,0.0,0.0
+Fragaria nipponica Makino,Hokkaido east,plant,north,3,10.0,2,2,False,0.0,0.0,0.0
+Fragaria nipponica Makino,Hokkaido east,plant,north,5,10.0,10,5,True,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,1,10.0,1,1,False,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,2,10.0,1,1,False,0.0,0.0,0.0
+Pinus densiflora Siebold & Zucc.,Southern Kyushu,plant,south,3,10.0,1,1,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,1,10.0,5,5,False,0.3170731707317073,0.31707317073170727,0.3170731707317073
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,2,10.0,5,5,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,3,10.0,4,4,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,4,10.0,4,4,False,0.0,0.0,0.0
+"Pandion haliaetus (Linnaeus, 1758)",Tohoku,animal,north,5,10.0,5,5,False,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,1,10.0,6,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,2,10.0,7,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,3,10.0,7,5,True,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,4,10.0,5,5,False,0.0,0.0,0.0
+"Mergus merganser Linnaeus, 1758",Chubu mountains,animal,east,5,10.0,6,5,True,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,1,10.0,2,2,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,2,10.0,3,3,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,3,10.0,2,2,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,4,10.0,1,1,False,0.0,0.0,0.0
+"Sus scrofa Linnaeus, 1758",Chugoku,animal,west,5,10.0,3,3,False,0.0072992700729927005,0.0072992700729927005,0.0072992700729927005
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,1,10.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,2,10.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,3,10.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,4,10.0,1,1,False,0.0,0.0,0.0
+"Actitis hypoleucos (Linnaeus, 1758)",Southern Kyushu,animal,south,5,10.0,2,2,False,0.2631578947368421,0.26315789473684204,0.2631578947368421

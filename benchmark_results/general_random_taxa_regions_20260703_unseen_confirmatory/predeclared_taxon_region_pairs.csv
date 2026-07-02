@@ -1,0 +1,25 @@
+pair_id,status,taxon_group,kingdomKey,geographic_stratum,region_name,west,south,east,north,speciesKey,scientific_name,coordinate_records,record_count_stratum
+1,predeclared,plant,6,north,Tohoku,139.5,38.0,141.5,40.5,4015085,Pentarhizidium orientale (Hook.) Hayata,433,0
+2,predeclared,plant,6,east,Kanto,138.5,35.0,140.5,36.5,7317060,Trachelospermum asiaticum (Siebold & Zucc.) Nakai,1228,1
+3,predeclared,plant,6,west,Shikoku,132.5,32.7,134.5,34.5,7152601,Eurya japonica Thunb.,400,2
+4,predeclared,plant,6,south,Northern Kyushu,129.5,32.5,131.5,34.0,2909527,Paederia foetida L.,300,3
+5,predeclared,animal,1,north,Hokkaido east,143.0,42.5,145.5,44.5,8230689,"Carabus gehinii Fairmaire, 1876",670,0
+6,predeclared,animal,1,east,Izu,138.8,34.0,139.8,35.0,8214667,"Anas crecca Linnaeus, 1758",116,1
+7,predeclared,animal,1,west,Kinki,134.5,33.5,136.5,35.5,2490955,"Monticola solitarius (Linnaeus, 1758)",4513,2
+8,predeclared,animal,1,south,Northern Kyushu,129.5,32.5,131.5,34.0,5229167,"Milvus migrans (Boddaert, 1783)",2787,3
+9,predeclared,plant,6,north,Hokkaido east,143.0,42.5,145.5,44.5,7268265,Stellaria radians L.,116,0
+10,predeclared,plant,6,east,Kanto,138.5,35.0,140.5,36.5,7321222,Leptogramma mollissima (Fisch. ex Kunze) Ching,1213,1
+11,predeclared,plant,6,west,Shikoku,132.5,32.7,134.5,34.5,2650524,Lepisorus thunbergianus (Kaulf.) Ching,394,2
+12,predeclared,plant,6,south,Ryukyu,126.0,24.0,130.0,28.5,3719723,Myrsine seguinii H.Lév.,297,3
+13,predeclared,animal,1,north,Hokkaido east,143.0,42.5,145.5,44.5,5231898,"Cuculus optatus Gould, 1845",701,0
+14,predeclared,animal,1,east,Kanto,138.5,35.0,140.5,36.5,2435035,"Felis catus Linnaeus, 1758",4769,1
+15,predeclared,animal,1,west,Chugoku,131.5,34.0,134.0,35.5,2480876,"Egretta garzetta (Linnaeus, 1766)",1577,2
+16,predeclared,animal,1,south,Ryukyu,126.0,24.0,130.0,28.5,2481726,"Tringa nebularia (Gunnerus, 1767)",2313,3
+17,predeclared,plant,6,north,Hokkaido east,143.0,42.5,145.5,44.5,3029900,Fragaria nipponica Makino,117,0
+18,predeclared,plant,6,east,Izu,138.8,34.0,139.8,35.0,2985994,Hydrangea macrophylla (Thunb.) Ser.,91,1
+19,predeclared,plant,6,west,Chugoku,131.5,34.0,134.0,35.5,3645928,Osmunda japonica Thunb.,346,2
+20,predeclared,plant,6,south,Southern Kyushu,130.0,30.8,131.8,32.5,5285104,Pinus densiflora Siebold & Zucc.,407,3
+21,predeclared,animal,1,north,Tohoku,139.5,38.0,141.5,40.5,2480726,"Pandion haliaetus (Linnaeus, 1758)",544,0
+22,predeclared,animal,1,east,Chubu mountains,136.5,35.0,138.5,37.0,9537647,"Mergus merganser Linnaeus, 1758",1627,1
+23,predeclared,animal,1,west,Chugoku,131.5,34.0,134.0,35.5,7705930,"Sus scrofa Linnaeus, 1758",1390,2
+24,predeclared,animal,1,south,Southern Kyushu,130.0,30.8,131.8,32.5,2481800,"Actitis hypoleucos (Linnaeus, 1758)",1702,3

@@ -1,5 +1,35 @@
 # AI Change Log
 
+## 2026-07-02 - Codex (OpenAI) - Independent retrospective confirmation
+
+Changed files:
+- acsp/validation.py
+- acsp/__init__.py
+- benchmark_general_random_taxa_regions.py
+- test_benchmark_general.py
+- RETROSPECTIVE_VALIDATION_PROTOCOL.md
+- benchmark_results/general_random_taxa_regions_20260703_unseen_confirmatory/{benchmark_summary.json,predeclared_taxon_region_pairs.csv,pair_status.csv,cohort_summary.csv,fold_recovery.csv,robust_inference.csv}
+- .gitignore
+- CHANGELOG_AI.md
+
+Summary:
+- Added failure-inclusive intention-to-evaluate recovery, taxon-region clustered bootstrap intervals, and pair-level sign-flip tests.
+- Added confirmatory taxon exclusion so a new seed cannot reuse any development taxon.
+- Froze 5 km as the primary retrospective endpoint, with 2 and 10 km as sensitivity endpoints, before inspecting the independent cohort.
+
+Validation:
+- Seed `20260703` drew 24 balanced taxon-region pairs with zero taxon overlap with the development cohort.
+- Twelve pairs completed all five folds, five were partial, and seven failed; only 17 pairs were evaluable.
+- Fold completion was 58.3% for plants and 65.0% for animals. Rankable-fold rates were 26.7% and 21.7%, far below the predeclared 90% completion and 80% rankable gates.
+- At the primary 5 km endpoint, animal ITE lift was -0.0041 (95% clustered CI -0.0130 to 0.0006) and plant lift was -0.0005 (-0.0014 to 0.0000).
+- At 10 km, neither animal (-0.0026, CI -0.0130 to 0.0050) nor plant (0.0013, CI -0.0048 to 0.0082) showed confirmed superiority over random.
+- The favorable 10 km animal development result did not replicate. No production-weight or superiority claim is justified.
+
+Known risks / TODO:
+- Candidate-generation stability, not only ranking, is the dominant blocker on unseen taxa.
+- The next algorithm iteration must be developed outside this frozen confirmation set and tested on another excluded-taxon seed.
+- Retrospective robustness cannot identify field access, detectability, or phenology weights; those remain explicitly unvalidated.
+
 ## 2026-07-02 - Codex (OpenAI) - Stratified national taxon-by-region validation
 
 Changed files:
@@ -26,6 +56,10 @@ Validation:
 - On rankable folds at 10 km, animal default recall was 0.135 versus random 0.075 and greedy pool ceiling 0.276. Plant default recall was 0.053 versus random 0.069 and pool ceiling 0.220.
 - At 2 km both groups were effectively unrecoverable; at 5 km default and random were close. No global production-weight change is justified.
 - All 69 Python tests passed.
+- Added intention-to-evaluate inference that assigns zero recovery to failed/missing folds, clusters bootstrap uncertainty by taxon-region pair, and uses pair-level sign-flip tests rather than treating repeated folds as independent.
+- At 5 km, neither group showed a robust lift: animal ITE lift 0.0023 (95% cluster-bootstrap CI -0.0042 to 0.0113) and plant lift 0.0005 (-0.0209 to 0.0203).
+- At 10 km, animals showed lift 0.0475 (0.0138 to 0.0935; pair-level sign-flip p=0.0129), while plants showed -0.0114 (-0.0515 to 0.0173).
+- Version 2 remains a development-set evaluation because its fallback was motivated by version 1 on the same fixed pairs. A new-seed confirmatory cohort is required before treating the 10 km animal result as replicated evidence.
 
 Known risks / TODO:
 - Plant and animal ranking performance diverged, so a single universal scoring model is not supported. The next model should branch by life history/mobility and distribution regime while keeping one-name input.

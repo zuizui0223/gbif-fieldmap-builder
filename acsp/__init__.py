@@ -15,6 +15,7 @@ from .modeling import DEFAULT_ENSEMBLE_ALGORITHMS, make_classifier, predict_equa
 from .sdm import choose_spatial_partition, model_performance_table, sdm_method_record
 from .validation import (
     calibrate_candidate_weights,
+    clustered_recovery_inference,
     calibrate_model_ensemble_weights,
     multi_taxon_weight_benchmark,
     spatial_block_candidate_benchmark,
@@ -39,6 +40,7 @@ __all__ = [
     "predict_equal_weight_ensemble",
     "sdm_method_record",
     "calibrate_candidate_weights",
+    "clustered_recovery_inference",
     "calibrate_model_ensemble_weights",
     "multi_taxon_weight_benchmark",
     "spatial_block_candidate_benchmark",

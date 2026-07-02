@@ -2,6 +2,8 @@ import unittest
 
 import pandas as pd
 
+from acsp import clustered_recovery_inference
+
 from benchmark_general_random_taxa_regions import REGION_CELLS, rectangle_feature, rectangle_wkt, summarize_recovery
 
 
@@ -28,6 +30,26 @@ class GeneralBenchmarkTests(unittest.TestCase):
         row = summarize_recovery(candidates, 5.0, top_k=5, seed=1)[0]
         self.assertTrue(row["rankable_fold"])
         self.assertEqual(row["candidate_pool"], 6)
+
+    def test_clustered_inference_penalizes_failed_declared_pair(self):
+        recovery = pd.DataFrame({
+            "benchmark_taxon": ["A", "A"], "taxon_group": ["plant", "plant"],
+            "radius_km": [5.0, 5.0], "default_recall": [1.0, 1.0],
+            "random_recall": [0.0, 0.0], "greedy_oracle_recall": [1.0, 1.0],
+            "rankable_fold": [True, True],
+        })
+        declared = pd.DataFrame({
+            "benchmark_taxon": ["A", "B"], "taxon_group": ["plant", "plant"],
+        })
+        first = clustered_recovery_inference(
+            recovery, declared, repeats=2, bootstrap_draws=50, permutation_draws=50, random_state=7
+        )
+        second = clustered_recovery_inference(
+            recovery, declared, repeats=2, bootstrap_draws=50, permutation_draws=50, random_state=7
+        )
+        self.assertAlmostEqual(first.loc[0, "ite_default_recall"], 0.5)
+        self.assertAlmostEqual(first.loc[0, "fold_completion_rate"], 0.5)
+        pd.testing.assert_frame_equal(first, second)
 
 
 if __name__ == "__main__":

@@ -744,3 +744,86 @@ def multi_taxon_weight_benchmark(
         "weight_search": search, "taxon_status": status,
         "calibration_summary": calibration,
     }
+
+
+def clustered_recovery_inference(
+    recovery: pd.DataFrame,
+    declared_pairs: pd.DataFrame,
+    *,
+    repeats: int,
+    pair_col: str = "benchmark_taxon",
+    group_col: str = "taxon_group",
+    bootstrap_draws: int = 2000,
+    permutation_draws: int = 10000,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """Summarize recovery without treating folds from one pair as independent.
+
+    Missing/failed folds receive zero recall in the intention-to-evaluate
+    endpoint. Uncertainty and sign-flip tests operate on taxon-region pair means,
+    not on pseudo-replicated folds.
+    """
+    required = {
+        pair_col, group_col, "radius_km", "default_recall", "random_recall",
+        "greedy_oracle_recall", "rankable_fold",
+    }
+    missing = required.difference(recovery.columns)
+    if missing:
+        raise ValueError(f"Recovery table is missing: {', '.join(sorted(missing))}")
+    declared_required = {pair_col, group_col}
+    missing_declared = declared_required.difference(declared_pairs.columns)
+    if missing_declared:
+        raise ValueError(f"Declared-pair table is missing: {', '.join(sorted(missing_declared))}")
+    rng = np.random.default_rng(int(random_state))
+    rows: list[dict[str, Any]] = []
+    n_repeats = max(1, int(repeats))
+    for radius in sorted(pd.to_numeric(recovery["radius_km"], errors="coerce").dropna().unique()):
+        radius_frame = recovery[pd.to_numeric(recovery["radius_km"], errors="coerce").eq(radius)]
+        for group, declared_group in declared_pairs.groupby(group_col, sort=True):
+            pair_ids = declared_group[pair_col].dropna().astype(str).drop_duplicates().tolist()
+            subset = radius_frame[radius_frame[group_col].astype(str).eq(str(group))].copy()
+            expected_folds = len(pair_ids) * n_repeats
+            pair_rows = []
+            for pair_id in pair_ids:
+                pair = subset[subset[pair_col].astype(str).eq(pair_id)]
+                pair_rows.append({
+                    pair_col: pair_id,
+                    "ite_default": float(pair["default_recall"].sum()) / n_repeats,
+                    "ite_random": float(pair["random_recall"].sum()) / n_repeats,
+                    "ite_oracle": float(pair["greedy_oracle_recall"].sum()) / n_repeats,
+                    "evaluated_folds": int(len(pair)),
+                    "rankable_folds": int(pair["rankable_fold"].astype(bool).sum()),
+                })
+            pair_table = pd.DataFrame(pair_rows)
+            pair_table["ite_lift"] = pair_table["ite_default"] - pair_table["ite_random"]
+            values = pair_table["ite_lift"].to_numpy(float)
+            if len(values):
+                samples = rng.choice(values, size=(max(1, int(bootstrap_draws)), len(values)), replace=True).mean(axis=1)
+                ci_low, ci_high = np.quantile(samples, [0.025, 0.975])
+                positive_probability = float(np.mean(samples > 0))
+                signs = rng.choice(np.array([-1.0, 1.0]), size=(max(1, int(permutation_draws)), len(values)))
+                permuted = (signs * values).mean(axis=1)
+                observed = abs(float(values.mean()))
+                permutation_p = float((1 + np.sum(np.abs(permuted) >= observed)) / (len(permuted) + 1))
+            else:
+                ci_low = ci_high = positive_probability = permutation_p = float("nan")
+            rankable = subset[subset["rankable_fold"].astype(bool)]
+            rows.append({
+                "radius_km": float(radius), "taxon_group": str(group),
+                "declared_pairs": int(len(pair_ids)), "expected_folds": int(expected_folds),
+                "evaluated_folds": int(len(subset)),
+                "fold_completion_rate": float(len(subset) / expected_folds) if expected_folds else float("nan"),
+                "rankable_folds": int(len(rankable)),
+                "rankable_rate_of_expected": float(len(rankable) / expected_folds) if expected_folds else float("nan"),
+                "ite_default_recall": float(pair_table["ite_default"].mean()) if len(pair_table) else float("nan"),
+                "ite_random_recall": float(pair_table["ite_random"].mean()) if len(pair_table) else float("nan"),
+                "ite_oracle_recall": float(pair_table["ite_oracle"].mean()) if len(pair_table) else float("nan"),
+                "ite_lift_over_random": float(values.mean()) if len(values) else float("nan"),
+                "ite_lift_ci_low": float(ci_low), "ite_lift_ci_high": float(ci_high),
+                "bootstrap_probability_lift_positive": positive_probability,
+                "cluster_sign_flip_p_value": permutation_p,
+                "rankable_default_recall": float(rankable["default_recall"].mean()) if len(rankable) else float("nan"),
+                "rankable_random_recall": float(rankable["random_recall"].mean()) if len(rankable) else float("nan"),
+                "rankable_oracle_recall": float(rankable["greedy_oracle_recall"].mean()) if len(rankable) else float("nan"),
+            })
+    return pd.DataFrame(rows)
