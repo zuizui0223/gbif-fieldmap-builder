@@ -9,6 +9,7 @@ from .planning import (
     normalize_extent,
     recommend_candidates,
     recommend_survey_zones,
+    select_complementary_candidates,
     zone_agreement_summary,
 )
 from .modeling import DEFAULT_ENSEMBLE_ALGORITHMS, make_classifier, predict_equal_weight_ensemble
@@ -37,6 +38,7 @@ __all__ = [
     "normalize_extent",
     "recommend_candidates",
     "recommend_survey_zones",
+    "select_complementary_candidates",
     "predict_equal_weight_ensemble",
     "sdm_method_record",
     "calibrate_candidate_weights",

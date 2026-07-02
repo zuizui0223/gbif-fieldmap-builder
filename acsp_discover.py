@@ -19,6 +19,49 @@ from acsp.planning import integrated_candidate_scores
 
 EARTH_RADIUS_M = 6_371_008.8
 PLAN_ORDER = ("Balanced", "Discovery", "Learning")
+SURFACE_DOMAINS = ("terrestrial", "inland_aquatic", "coastal", "marine")
+
+
+def infer_surface_domain(
+    taxon_metadata: Optional[Mapping[str, object]] = None,
+    *,
+    occurrence_land_fraction: Optional[float] = None,
+) -> str:
+    """Infer the candidate surface without requiring a second user input.
+
+    Taxonomy supplies a conservative prior; the observed fraction of records
+    falling on the land mask overrides it for marine/coastal species.  This is
+    a candidate-surface decision, not a claim about species ecology.
+    """
+    metadata = {str(key).lower(): str(value or "").strip().lower() for key, value in (taxon_metadata or {}).items()}
+    kingdom = metadata.get("kingdom", "")
+    clazz = metadata.get("class", "")
+    fraction = None if occurrence_land_fraction is None else float(np.clip(occurrence_land_fraction, 0.0, 1.0))
+    if kingdom in {"plantae", "viridiplantae"}:
+        return "terrestrial"
+    aquatic_classes = {"actinopterygii", "chondrichthyes", "myxini", "cephalaspidomorphi"}
+    if fraction is not None:
+        if fraction <= 0.20:
+            return "marine"
+        if fraction <= 0.65:
+            return "coastal"
+    if clazz in aquatic_classes:
+        return "inland_aquatic"
+    return "terrestrial"
+
+
+def primary_recovery_radius_km(
+    taxon_metadata: Optional[Mapping[str, object]] = None,
+    *,
+    surface_domain: str = "terrestrial",
+) -> float:
+    """Predeclared retrospective scale for unlike biological observation units."""
+    metadata = {str(key).lower(): str(value or "").strip().lower() for key, value in (taxon_metadata or {}).items()}
+    if str(surface_domain) in {"marine", "coastal", "inland_aquatic"}:
+        return 10.0
+    if metadata.get("class", "") in {"aves", "mammalia"}:
+        return 10.0
+    return 5.0
 
 
 @dataclass(frozen=True)

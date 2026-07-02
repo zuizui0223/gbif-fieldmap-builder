@@ -1,0 +1,25 @@
+pair_id,status,taxon_group,kingdomKey,geographic_stratum,region_name,west,south,east,north,speciesKey,scientific_name,coordinate_records,record_count_stratum
+1,predeclared,plant,6,north,Tohoku,139.5,38.0,141.5,40.5,7157952,Dryopteris erythrosora (D.C.Eaton) Kuntze,301,0
+2,predeclared,plant,6,east,Kanto,138.5,35.0,140.5,36.5,7335657,Coniogramme intermedia Hieron.,946,1
+3,predeclared,plant,6,west,Chugoku,131.5,34.0,134.0,35.5,7158449,Polystichum polyblepharon (Roem. ex Kunze) C.Presl,271,2
+4,predeclared,plant,6,south,Ryukyu,126.0,24.0,130.0,28.5,7480375,Rhaphiolepis umbellata (Thunb.) Makino,208,3
+5,predeclared,plant,6,north,Hokkaido east,143.0,42.5,145.5,44.5,4164838,Rhododendron diversipilosum (Nakai) Harmaja,80,0
+6,predeclared,plant,6,east,Chubu mountains,136.5,35.0,138.5,37.0,5644496,Athyrium melanolepis (Franch. & Sav.) Christ,657,1
+7,predeclared,plant,6,west,Chugoku,131.5,34.0,134.0,35.5,5341134,Callicarpa japonica Thunb.,242,2
+8,predeclared,plant,6,south,Ryukyu,126.0,24.0,130.0,28.5,7327504,Rhododendron tashiroi Maxim.,237,3
+9,predeclared,plant,6,north,Hokkaido west,140.0,42.5,142.0,44.5,3189693,Actinidia arguta (Siebold & Zucc.) Planch. ex Miq.,53,0
+10,predeclared,plant,6,east,Izu,138.8,34.0,139.8,35.0,3113139,Cirsium nipponicum (Maxim.) Makino,56,1
+11,predeclared,plant,6,west,Chugoku,131.5,34.0,134.0,35.5,2650747,Odontosoria chinensis (L.) J.Sm.,284,2
+12,predeclared,plant,6,south,Southern Kyushu,130.0,30.8,131.8,32.5,4015152,Diplazium hachijoense Nakai,317,3
+13,predeclared,plant,6,north,Hokkaido west,140.0,42.5,142.0,44.5,6363496,Dianthus superbus L.,51,0
+14,predeclared,plant,6,east,Chubu mountains,136.5,35.0,138.5,37.0,3644221,Symplocos coreana (H.Lév.) Ohwi,629,1
+15,predeclared,plant,6,west,Chugoku,131.5,34.0,134.0,35.5,5656584,Dryopteris hondoensis Koidz.,232,2
+16,predeclared,plant,6,south,Southern Kyushu,130.0,30.8,131.8,32.5,4039692,Arachniodes rhomboidea (Schott) Ching,261,3
+17,predeclared,plant,6,north,Tohoku,139.5,38.0,141.5,40.5,3088310,Petasites japonicus (Siebold & Zucc.) Maxim.,272,0
+18,predeclared,plant,6,east,Izu,138.8,34.0,139.8,35.0,7354625,Rosa luciae Franch. & Rochebr. ex Crép.,52,1
+19,predeclared,plant,6,west,Kinki,134.5,33.5,136.5,35.5,4043794,Polystichum tripteron (Kunze) C.Presl,510,2
+20,predeclared,plant,6,south,Ryukyu,126.0,24.0,130.0,28.5,11253557,Pteris fauriei Hieron.,236,3
+21,predeclared,plant,6,north,Hokkaido east,143.0,42.5,145.5,44.5,2669002,Sphagnum fallax (H.Klinggr.) H.Klinggr.,82,0
+22,predeclared,plant,6,east,Kanto,138.5,35.0,140.5,36.5,7306109,Akebia trifoliata (Thunb.) Koidz.,960,1
+23,predeclared,plant,6,west,Shikoku,132.5,32.7,134.5,34.5,2650829,Cyrtomium falcatum (L.fil.) C.Presl,308,2
+24,predeclared,plant,6,south,Northern Kyushu,129.5,32.5,131.5,34.0,7304405,Neolitsea sericea (Blume) Koidz.,302,3

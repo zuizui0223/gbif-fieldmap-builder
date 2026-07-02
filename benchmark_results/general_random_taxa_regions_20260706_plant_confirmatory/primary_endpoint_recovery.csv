@@ -1,0 +1,116 @@
+benchmark_taxon,benchmark_region,taxon_group,geographic_stratum,taxon_class,surface_domain,primary_radius_km,repeat,radius_km,candidate_pool,effective_top_k,rankable_fold,default_recall,random_recall,greedy_oracle_recall
+Dryopteris erythrosora (D.C.Eaton) Kuntze,Tohoku,plant,north,polypodiopsida,terrestrial,5.0,1,5.0,23,5,True,0.0,0.0,0.0
+Dryopteris erythrosora (D.C.Eaton) Kuntze,Tohoku,plant,north,polypodiopsida,terrestrial,5.0,2,5.0,22,5,True,0.0,0.0,0.0
+Dryopteris erythrosora (D.C.Eaton) Kuntze,Tohoku,plant,north,polypodiopsida,terrestrial,5.0,3,5.0,22,5,True,0.0,0.039999999999999994,0.16666666666666666
+Dryopteris erythrosora (D.C.Eaton) Kuntze,Tohoku,plant,north,polypodiopsida,terrestrial,5.0,4,5.0,21,5,True,0.16666666666666666,0.04416666666666666,0.16666666666666666
+Dryopteris erythrosora (D.C.Eaton) Kuntze,Tohoku,plant,north,polypodiopsida,terrestrial,5.0,5,5.0,22,5,True,0.017241379310344827,0.0075,0.034482758620689655
+Coniogramme intermedia Hieron.,Kanto,plant,east,polypodiopsida,terrestrial,5.0,1,5.0,23,5,True,0.0,0.0,0.0
+Coniogramme intermedia Hieron.,Kanto,plant,east,polypodiopsida,terrestrial,5.0,2,5.0,24,5,True,0.0,0.0,0.0
+Coniogramme intermedia Hieron.,Kanto,plant,east,polypodiopsida,terrestrial,5.0,3,5.0,25,5,True,0.0,0.0,0.0
+Coniogramme intermedia Hieron.,Kanto,plant,east,polypodiopsida,terrestrial,5.0,4,5.0,23,5,True,0.09090909090909091,0.019090909090909092,0.09090909090909091
+Coniogramme intermedia Hieron.,Kanto,plant,east,polypodiopsida,terrestrial,5.0,5,5.0,24,5,True,0.08695652173913043,0.04228260869565217,0.1956521739130435
+Polystichum polyblepharon (Roem. ex Kunze) C.Presl,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,1,5.0,1,1,False,0.0,0.0,0.0
+Polystichum polyblepharon (Roem. ex Kunze) C.Presl,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,2,5.0,22,5,True,0.0,0.00609375,0.03125
+Polystichum polyblepharon (Roem. ex Kunze) C.Presl,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,3,5.0,1,1,False,0.0,0.0,0.0
+Polystichum polyblepharon (Roem. ex Kunze) C.Presl,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,4,5.0,1,1,False,0.0,0.0,0.0
+Polystichum polyblepharon (Roem. ex Kunze) C.Presl,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,5,5.0,1,1,False,0.0,0.0,0.0
+Rhaphiolepis umbellata (Thunb.) Makino,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,1,5.0,4,4,False,0.0,0.0,0.0
+Rhaphiolepis umbellata (Thunb.) Makino,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,2,5.0,4,4,False,0.0,0.0,0.0
+Rhaphiolepis umbellata (Thunb.) Makino,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,3,5.0,4,4,False,0.08823529411764706,0.08823529411764706,0.08823529411764706
+Rhaphiolepis umbellata (Thunb.) Makino,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,4,5.0,4,4,False,0.0,0.0,0.0
+Rhaphiolepis umbellata (Thunb.) Makino,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,5,5.0,4,4,False,0.12,0.12000000000000004,0.12
+Rhododendron diversipilosum (Nakai) Harmaja,Hokkaido east,plant,north,magnoliopsida,terrestrial,5.0,1,5.0,18,5,True,0.0,0.042826086956521736,0.13043478260869565
+Rhododendron diversipilosum (Nakai) Harmaja,Hokkaido east,plant,north,magnoliopsida,terrestrial,5.0,2,5.0,19,5,True,0.0,0.04,0.15384615384615385
+Rhododendron diversipilosum (Nakai) Harmaja,Hokkaido east,plant,north,magnoliopsida,terrestrial,5.0,3,5.0,20,5,True,0.0,0.011200000000000002,0.04
+Rhododendron diversipilosum (Nakai) Harmaja,Hokkaido east,plant,north,magnoliopsida,terrestrial,5.0,4,5.0,18,5,True,0.0,0.025,0.1
+Rhododendron diversipilosum (Nakai) Harmaja,Hokkaido east,plant,north,magnoliopsida,terrestrial,5.0,5,5.0,18,5,True,0.041666666666666664,0.031041666666666665,0.125
+Athyrium melanolepis (Franch. & Sav.) Christ,Chubu mountains,plant,east,polypodiopsida,terrestrial,5.0,1,5.0,21,5,True,0.0,0.0,0.0
+Athyrium melanolepis (Franch. & Sav.) Christ,Chubu mountains,plant,east,polypodiopsida,terrestrial,5.0,2,5.0,23,5,True,0.0,0.0,0.0
+Athyrium melanolepis (Franch. & Sav.) Christ,Chubu mountains,plant,east,polypodiopsida,terrestrial,5.0,3,5.0,21,5,True,0.05263157894736842,0.010526315789473684,0.05263157894736842
+Athyrium melanolepis (Franch. & Sav.) Christ,Chubu mountains,plant,east,polypodiopsida,terrestrial,5.0,4,5.0,23,5,True,0.0967741935483871,0.023709677419354834,0.0967741935483871
+Athyrium melanolepis (Franch. & Sav.) Christ,Chubu mountains,plant,east,polypodiopsida,terrestrial,5.0,5,5.0,7,5,True,0.0,0.0,0.0
+Callicarpa japonica Thunb.,Chugoku,plant,west,magnoliopsida,terrestrial,5.0,1,5.0,25,5,True,0.0,0.0,0.0
+Callicarpa japonica Thunb.,Chugoku,plant,west,magnoliopsida,terrestrial,5.0,2,5.0,25,5,True,0.12903225806451613,0.02064516129032258,0.12903225806451613
+Callicarpa japonica Thunb.,Chugoku,plant,west,magnoliopsida,terrestrial,5.0,3,5.0,24,5,True,0.0,0.04954545454545454,0.22727272727272727
+Callicarpa japonica Thunb.,Chugoku,plant,west,magnoliopsida,terrestrial,5.0,4,5.0,24,5,True,0.0,0.03272727272727272,0.18181818181818182
+Callicarpa japonica Thunb.,Chugoku,plant,west,magnoliopsida,terrestrial,5.0,5,5.0,23,5,True,0.0,0.0,0.0
+Rhododendron tashiroi Maxim.,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,1,5.0,9,5,True,0.8333333333333334,0.5041666666666665,0.8333333333333334
+Rhododendron tashiroi Maxim.,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,2,5.0,8,5,True,0.0,0.0,0.0
+Rhododendron tashiroi Maxim.,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,3,5.0,7,5,True,0.0,0.0,0.0
+Rhododendron tashiroi Maxim.,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,4,5.0,8,5,True,0.0,0.15789473684210523,0.2631578947368421
+Rhododendron tashiroi Maxim.,Ryukyu,plant,south,magnoliopsida,terrestrial,5.0,5,5.0,8,5,True,0.6923076923076923,0.4465384615384616,0.6923076923076923
+Actinidia arguta (Siebold & Zucc.) Planch. ex Miq.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,1,5.0,1,1,False,0.0,0.0,0.0
+Actinidia arguta (Siebold & Zucc.) Planch. ex Miq.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,2,5.0,7,5,True,0.0,0.0,0.0
+Actinidia arguta (Siebold & Zucc.) Planch. ex Miq.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,3,5.0,19,5,True,0.0,0.0,0.0
+Actinidia arguta (Siebold & Zucc.) Planch. ex Miq.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,4,5.0,9,5,True,0.0,0.0,0.0
+Actinidia arguta (Siebold & Zucc.) Planch. ex Miq.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,5,5.0,1,1,False,0.0,0.0,0.0
+Cirsium nipponicum (Maxim.) Makino,Izu,plant,east,magnoliopsida,terrestrial,5.0,1,5.0,15,5,True,0.0,0.19,0.5454545454545454
+Cirsium nipponicum (Maxim.) Makino,Izu,plant,east,magnoliopsida,terrestrial,5.0,2,5.0,16,5,True,0.5625,0.2365625,0.6875
+Cirsium nipponicum (Maxim.) Makino,Izu,plant,east,magnoliopsida,terrestrial,5.0,3,5.0,17,5,True,0.5625,0.205,0.625
+Cirsium nipponicum (Maxim.) Makino,Izu,plant,east,magnoliopsida,terrestrial,5.0,4,5.0,15,5,True,0.2,0.2545,0.6
+Cirsium nipponicum (Maxim.) Makino,Izu,plant,east,magnoliopsida,terrestrial,5.0,5,5.0,13,5,True,0.45,0.22625,0.5
+Odontosoria chinensis (L.) J.Sm.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,1,5.0,26,5,True,0.0,0.004838709677419354,0.03225806451612903
+Odontosoria chinensis (L.) J.Sm.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,2,5.0,23,5,True,0.0,0.0,0.0
+Odontosoria chinensis (L.) J.Sm.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,3,5.0,22,5,True,0.03571428571428571,0.008214285714285714,0.03571428571428571
+Odontosoria chinensis (L.) J.Sm.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,4,5.0,22,5,True,0.10714285714285714,0.045357142857142846,0.21428571428571427
+Odontosoria chinensis (L.) J.Sm.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,5,5.0,23,5,True,0.037037037037037035,0.013518518518518517,0.07407407407407407
+Diplazium hachijoense Nakai,Southern Kyushu,plant,south,polypodiopsida,terrestrial,5.0,1,5.0,19,5,True,0.0,0.0,0.0
+Diplazium hachijoense Nakai,Southern Kyushu,plant,south,polypodiopsida,terrestrial,5.0,2,5.0,19,5,True,0.0,0.0,0.0
+Diplazium hachijoense Nakai,Southern Kyushu,plant,south,polypodiopsida,terrestrial,5.0,3,5.0,20,5,True,0.0,0.0,0.0
+Diplazium hachijoense Nakai,Southern Kyushu,plant,south,polypodiopsida,terrestrial,5.0,4,5.0,19,5,True,0.0,0.01909090909090909,0.09090909090909091
+Diplazium hachijoense Nakai,Southern Kyushu,plant,south,polypodiopsida,terrestrial,5.0,5,5.0,20,5,True,0.0,0.0,0.0
+Dianthus superbus L.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,1,5.0,1,1,False,0.0,0.0,0.0
+Dianthus superbus L.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,2,5.0,1,1,False,0.0,0.0,0.0
+Dianthus superbus L.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,3,5.0,1,1,False,0.0,0.0,0.0
+Dianthus superbus L.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,4,5.0,1,1,False,0.0,0.0,0.0
+Dianthus superbus L.,Hokkaido west,plant,north,magnoliopsida,terrestrial,5.0,5,5.0,1,1,False,0.0,0.0,0.0
+Symplocos coreana (H.Lév.) Ohwi,Chubu mountains,plant,east,magnoliopsida,terrestrial,5.0,1,5.0,22,5,True,0.0,0.011818181818181818,0.06060606060606061
+Symplocos coreana (H.Lév.) Ohwi,Chubu mountains,plant,east,magnoliopsida,terrestrial,5.0,2,5.0,21,5,True,0.0,0.0,0.0
+Symplocos coreana (H.Lév.) Ohwi,Chubu mountains,plant,east,magnoliopsida,terrestrial,5.0,3,5.0,22,5,True,0.0,0.0,0.0
+Symplocos coreana (H.Lév.) Ohwi,Chubu mountains,plant,east,magnoliopsida,terrestrial,5.0,4,5.0,21,5,True,0.0,0.0,0.0
+Symplocos coreana (H.Lév.) Ohwi,Chubu mountains,plant,east,magnoliopsida,terrestrial,5.0,5,5.0,21,5,True,0.0,0.0,0.0
+Dryopteris hondoensis Koidz.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,1,5.0,25,5,True,0.0,0.013000000000000001,0.06666666666666667
+Dryopteris hondoensis Koidz.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,2,5.0,24,5,True,0.027777777777777776,0.02402777777777778,0.1111111111111111
+Dryopteris hondoensis Koidz.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,3,5.0,26,5,True,0.0,0.013548387096774193,0.06451612903225806
+Dryopteris hondoensis Koidz.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,4,5.0,26,5,True,0.0,0.010735294117647058,0.058823529411764705
+Dryopteris hondoensis Koidz.,Chugoku,plant,west,polypodiopsida,terrestrial,5.0,5,5.0,27,5,True,0.0,0.024038461538461543,0.11538461538461539
+Petasites japonicus (Siebold & Zucc.) Maxim.,Tohoku,plant,north,magnoliopsida,terrestrial,5.0,1,5.0,18,5,True,0.14285714285714285,0.05119047619047619,0.19047619047619047
+Petasites japonicus (Siebold & Zucc.) Maxim.,Tohoku,plant,north,magnoliopsida,terrestrial,5.0,2,5.0,17,5,True,0.22580645161290322,0.07612903225806451,0.24193548387096775
+Petasites japonicus (Siebold & Zucc.) Maxim.,Tohoku,plant,north,magnoliopsida,terrestrial,5.0,3,5.0,18,5,True,0.0,0.0,0.0
+Petasites japonicus (Siebold & Zucc.) Maxim.,Tohoku,plant,north,magnoliopsida,terrestrial,5.0,4,5.0,18,5,True,0.0,0.0,0.0
+Petasites japonicus (Siebold & Zucc.) Maxim.,Tohoku,plant,north,magnoliopsida,terrestrial,5.0,5,5.0,17,5,True,0.047619047619047616,0.029047619047619048,0.09523809523809523
+Rosa luciae Franch. & Rochebr. ex Crép.,Izu,plant,east,magnoliopsida,terrestrial,5.0,1,5.0,20,5,True,0.0,0.06076923076923077,0.15384615384615385
+Rosa luciae Franch. & Rochebr. ex Crép.,Izu,plant,east,magnoliopsida,terrestrial,5.0,2,5.0,18,5,True,0.0,0.15388888888888888,0.3333333333333333
+Rosa luciae Franch. & Rochebr. ex Crép.,Izu,plant,east,magnoliopsida,terrestrial,5.0,3,5.0,20,5,True,0.0,0.022222222222222223,0.1111111111111111
+Rosa luciae Franch. & Rochebr. ex Crép.,Izu,plant,east,magnoliopsida,terrestrial,5.0,4,5.0,19,5,True,0.05263157894736842,0.14394736842105263,0.5263157894736842
+Rosa luciae Franch. & Rochebr. ex Crép.,Izu,plant,east,magnoliopsida,terrestrial,5.0,5,5.0,18,5,True,0.0,0.2797058823529412,0.6470588235294118
+Polystichum tripteron (Kunze) C.Presl,Kinki,plant,west,polypodiopsida,terrestrial,5.0,1,5.0,22,5,True,0.0,0.0,0.0
+Polystichum tripteron (Kunze) C.Presl,Kinki,plant,west,polypodiopsida,terrestrial,5.0,2,5.0,20,5,True,0.0,0.0,0.0
+Polystichum tripteron (Kunze) C.Presl,Kinki,plant,west,polypodiopsida,terrestrial,5.0,3,5.0,22,5,True,0.0,0.0,0.0
+Polystichum tripteron (Kunze) C.Presl,Kinki,plant,west,polypodiopsida,terrestrial,5.0,4,5.0,21,5,True,0.0,0.0,0.0
+Polystichum tripteron (Kunze) C.Presl,Kinki,plant,west,polypodiopsida,terrestrial,5.0,5,5.0,22,5,True,0.0,0.0,0.0
+Pteris fauriei Hieron.,Ryukyu,plant,south,polypodiopsida,terrestrial,5.0,1,5.0,19,5,True,0.030303030303030304,0.11666666666666668,0.24242424242424243
+Pteris fauriei Hieron.,Ryukyu,plant,south,polypodiopsida,terrestrial,5.0,2,5.0,4,4,False,0.10714285714285714,0.10714285714285714,0.10714285714285714
+Pteris fauriei Hieron.,Ryukyu,plant,south,polypodiopsida,terrestrial,5.0,3,5.0,5,5,False,0.13793103448275862,0.13793103448275865,0.13793103448275862
+Pteris fauriei Hieron.,Ryukyu,plant,south,polypodiopsida,terrestrial,5.0,4,5.0,14,5,True,0.0,0.033749999999999995,0.08333333333333333
+Pteris fauriei Hieron.,Ryukyu,plant,south,polypodiopsida,terrestrial,5.0,5,5.0,16,5,True,0.0,0.0853846153846154,0.23076923076923078
+Sphagnum fallax (H.Klinggr.) H.Klinggr.,Hokkaido east,plant,north,sphagnopsida,terrestrial,5.0,1,5.0,20,5,True,0.0,0.0,0.0
+Sphagnum fallax (H.Klinggr.) H.Klinggr.,Hokkaido east,plant,north,sphagnopsida,terrestrial,5.0,2,5.0,20,5,True,0.0,0.0,0.0
+Sphagnum fallax (H.Klinggr.) H.Klinggr.,Hokkaido east,plant,north,sphagnopsida,terrestrial,5.0,3,5.0,20,5,True,0.0,0.0,0.0
+Sphagnum fallax (H.Klinggr.) H.Klinggr.,Hokkaido east,plant,north,sphagnopsida,terrestrial,5.0,4,5.0,20,5,True,0.0,0.0,0.0
+Sphagnum fallax (H.Klinggr.) H.Klinggr.,Hokkaido east,plant,north,sphagnopsida,terrestrial,5.0,5,5.0,20,5,True,0.0,0.0,0.0
+Akebia trifoliata (Thunb.) Koidz.,Kanto,plant,east,magnoliopsida,terrestrial,5.0,1,5.0,22,5,True,0.0,0.0,0.0
+Akebia trifoliata (Thunb.) Koidz.,Kanto,plant,east,magnoliopsida,terrestrial,5.0,2,5.0,22,5,True,0.14285714285714285,0.033571428571428565,0.14285714285714285
+Akebia trifoliata (Thunb.) Koidz.,Kanto,plant,east,magnoliopsida,terrestrial,5.0,3,5.0,26,5,True,0.06493506493506493,0.01655844155844156,0.07792207792207792
+Akebia trifoliata (Thunb.) Koidz.,Kanto,plant,east,magnoliopsida,terrestrial,5.0,4,5.0,22,5,True,0.1,0.022000000000000002,0.1
+Akebia trifoliata (Thunb.) Koidz.,Kanto,plant,east,magnoliopsida,terrestrial,5.0,5,5.0,20,5,True,0.0625,0.0178125,0.0625
+Cyrtomium falcatum (L.fil.) C.Presl,Shikoku,plant,west,polypodiopsida,terrestrial,5.0,1,5.0,20,5,True,0.0,0.0,0.0
+Cyrtomium falcatum (L.fil.) C.Presl,Shikoku,plant,west,polypodiopsida,terrestrial,5.0,2,5.0,21,5,True,0.14893617021276595,0.0351063829787234,0.14893617021276595
+Cyrtomium falcatum (L.fil.) C.Presl,Shikoku,plant,west,polypodiopsida,terrestrial,5.0,3,5.0,21,5,True,0.05263157894736842,0.01026315789473684,0.05263157894736842
+Cyrtomium falcatum (L.fil.) C.Presl,Shikoku,plant,west,polypodiopsida,terrestrial,5.0,4,5.0,22,5,True,0.13157894736842105,0.03026315789473684,0.13157894736842105
+Cyrtomium falcatum (L.fil.) C.Presl,Shikoku,plant,west,polypodiopsida,terrestrial,5.0,5,5.0,18,5,True,0.07142857142857142,0.020714285714285713,0.07142857142857142
+Neolitsea sericea (Blume) Koidz.,Northern Kyushu,plant,south,magnoliopsida,terrestrial,5.0,1,5.0,2,2,False,0.0,0.0,0.0
+Neolitsea sericea (Blume) Koidz.,Northern Kyushu,plant,south,magnoliopsida,terrestrial,5.0,2,5.0,2,2,False,0.0,0.0,0.0
+Neolitsea sericea (Blume) Koidz.,Northern Kyushu,plant,south,magnoliopsida,terrestrial,5.0,3,5.0,2,2,False,0.0,0.0,0.0
+Neolitsea sericea (Blume) Koidz.,Northern Kyushu,plant,south,magnoliopsida,terrestrial,5.0,4,5.0,1,1,False,0.0,0.0,0.0
+Neolitsea sericea (Blume) Koidz.,Northern Kyushu,plant,south,magnoliopsida,terrestrial,5.0,5,5.0,2,2,False,0.0,0.0,0.0

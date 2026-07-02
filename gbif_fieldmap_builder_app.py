@@ -64,6 +64,7 @@ from acsp import (
     make_classifier,
     model_performance_table,
     recommend_candidates,
+    select_complementary_candidates,
     sdm_method_record,
     zone_agreement_summary,
 )
@@ -73,8 +74,10 @@ from acsp_discover import (
     build_acsp_discover_plans,
     choose_candidate_resolution,
     infer_default_survey_scope,
+    infer_surface_domain,
     infer_survey_protocol,
     parse_field_results,
+    primary_recovery_radius_km,
     preferred_survey_window,
     recommend_survey_regions,
     summarize_plan as summarize_discover_plan,
@@ -1162,6 +1165,69 @@ def filter_to_land(df: pd.DataFrame, lat_col: str = "latitude", lon_col: str = "
     land = load_land_geometry()
     mask = [range_fits_land(row[lat_col], row[lon_col], range_radius_m, land) for _, row in df.iterrows()]
     return df.loc[mask].reset_index(drop=True)
+
+
+@st.cache_data(show_spinner=False)
+def filter_to_water(df: pd.DataFrame, lat_col: str = "latitude", lon_col: str = "longitude") -> pd.DataFrame:
+    """Keep water points using the same reproducible land geometry."""
+    if df.empty:
+        return df.copy()
+    land = load_land_geometry()
+    mask = [not is_land(row[lon_col], row[lat_col], land) for _, row in df.iterrows()]
+    return df.loc[mask].reset_index(drop=True)
+
+
+def filter_to_surface_domain(
+    df: pd.DataFrame,
+    surface_domain: str,
+    lat_col: str = "latitude",
+    lon_col: str = "longitude",
+) -> pd.DataFrame:
+    domain = str(surface_domain or "terrestrial")
+    if domain == "terrestrial":
+        return filter_to_land(df, lat_col, lon_col, 0.0)
+    if domain == "marine":
+        return filter_to_water(df, lat_col, lon_col)
+    # Coastal and inland-aquatic records are frequently snapped to a bank,
+    # bridge, harbour, or island. Keep both sides until a hydrography layer is
+    # available rather than applying a knowingly wrong land/water hard mask.
+    return df.copy().reset_index(drop=True)
+
+
+def land_fraction(
+    df: pd.DataFrame,
+    lat_col: str = "latitude",
+    lon_col: str = "longitude",
+) -> Optional[float]:
+    """Return the share of valid coordinates covered by the land mask."""
+    if df is None or df.empty or lat_col not in df or lon_col not in df:
+        return None
+    coords = df[[lat_col, lon_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    if coords.empty:
+        return None
+    land = load_land_geometry()
+    values = [is_land(lon, lat, land) for lat, lon in coords.to_numpy(dtype=float)]
+    return float(np.mean(values))
+
+
+def distance_to_land_m(
+    df: pd.DataFrame,
+    lat_col: str = "latitude",
+    lon_col: str = "longitude",
+) -> pd.Series:
+    """Approximate distance to the reproducible land polygon in metres."""
+    if df is None or df.empty:
+        return pd.Series(dtype=float)
+    land = load_land_geometry()
+    values: list[float] = []
+    for lat, lon in df[[lat_col, lon_col]].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float):
+        if not np.isfinite(lat) or not np.isfinite(lon):
+            values.append(float("nan"))
+            continue
+        distance_deg = float(land.distance(Point(float(lon), float(lat))))
+        metres_per_degree = 111_320.0 * math.sqrt(max(0.04, math.cos(math.radians(float(lat))) ** 2))
+        values.append(distance_deg * metres_per_degree)
+    return pd.Series(values, index=df.index, dtype=float)
 
 
 def image_html(url: str, width: int = 220) -> str:
@@ -4781,6 +4847,7 @@ def make_potential_survey_site_candidates(
     profile_buffer_m: float = 100.0,
     search_bounds: Optional[tuple[float, float, float, float]] = None,
     search_geometry: Any = None,
+    surface_domain: str = "terrestrial",
 ) -> pd.DataFrame:
     """Build habitat-first exploratory survey cells from the active survey area.
 
@@ -4866,15 +4933,60 @@ def make_potential_survey_site_candidates(
                     for lon in np.arange(c_lon - lon_radius, c_lon + lon_radius + lon_step, lon_step):
                         if _acsp_point_distances_m(c_lat, c_lon, np.array([lat]), np.array([lon]))[0] <= local_radius_m:
                             rows.append({"latitude": float(lat), "longitude": float(lon)})
-            grid = pd.DataFrame(rows)
-            if not grid.empty:
+            local_grid = pd.DataFrame(rows)
+            local_budget = max(1, int(max_grid_cells) // 2)
+            if not local_grid.empty:
                 coord_precision = 5 if cell_m < 500 else 4
-                grid["_lat_key"] = grid["latitude"].round(coord_precision)
-                grid["_lon_key"] = grid["longitude"].round(coord_precision)
-                grid = grid.drop_duplicates(["_lat_key", "_lon_key"]).drop(columns=["_lat_key", "_lon_key"])
-                if len(grid) > int(max_grid_cells):
-                    grid = spatially_balanced_cap(grid.rename(columns={"latitude": "_latitude", "longitude": "_longitude"}), int(max_grid_cells)).rename(columns={"_latitude": "latitude", "_longitude": "longitude"})
-            grid["macro_filter_basis"] = f"Local search windows around occurrence-supported candidates ({local_radius_m / 1000.0:.1f} km radius) to keep broad-area searches fine and responsive"
+                local_grid["_lat_key"] = local_grid["latitude"].round(coord_precision)
+                local_grid["_lon_key"] = local_grid["longitude"].round(coord_precision)
+                local_grid = local_grid.drop_duplicates(["_lat_key", "_lon_key"]).drop(columns=["_lat_key", "_lon_key"])
+                if len(local_grid) > local_budget:
+                    local_grid = spatially_balanced_cap(
+                        local_grid.rename(columns={"latitude": "_latitude", "longitude": "_longitude"}), local_budget
+                    ).rename(columns={"_latitude": "latitude", "_longitude": "longitude"})
+                local_grid["_grid_stage"] = "local_refinement"
+                local_grid["_grid_cell_size_m"] = float(cell_m)
+
+            # A training-centred grid cannot recover a withheld spatial block.
+            # Reserve half the budget for a coarse, full-region screen; local
+            # windows remain for field-scale refinement around supported areas.
+            global_budget = max(1, int(max_grid_cells) - len(local_grid))
+            coarse_cell_m = max(
+                float(cell_m),
+                math.sqrt((lat_span_m * lon_span_m) / max(1.0, float(global_budget))),
+            )
+            coarse_lat_step = coarse_cell_m / 111_320.0
+            coarse_lon_step = coarse_cell_m / max(1.0, 111_320.0 * math.cos(math.radians(center_lat)))
+            global_rows = []
+            for lat_phase in (0.25, 0.75):
+                for lon_phase in (0.25, 0.75):
+                    coarse_lats = np.arange(lat_min + coarse_lat_step * lat_phase, lat_max, coarse_lat_step)
+                    coarse_lons = np.arange(lon_min + coarse_lon_step * lon_phase, lon_max, coarse_lon_step)
+                    global_rows.extend(
+                        {"latitude": float(lat), "longitude": float(lon)}
+                        for lat in coarse_lats for lon in coarse_lons
+                    )
+            global_grid = pd.DataFrame(global_rows).drop_duplicates(["latitude", "longitude"])
+            if not global_grid.empty:
+                # Filter before capping so shifted grids actually improve the
+                # chance of hitting islands and narrow coastal land.
+                global_grid = filter_to_surface_domain(
+                    global_grid, surface_domain, "latitude", "longitude"
+                )
+            if len(global_grid) > global_budget:
+                global_grid = spatially_balanced_cap(
+                    global_grid.rename(columns={"latitude": "_latitude", "longitude": "_longitude"}), global_budget
+                ).rename(columns={"_latitude": "latitude", "_longitude": "longitude"})
+            if not global_grid.empty:
+                global_grid["_grid_stage"] = "regional_screen"
+                global_grid["_grid_cell_size_m"] = round(float(coarse_cell_m), 1)
+            grid = pd.concat([local_grid, global_grid], ignore_index=True, sort=False).drop_duplicates(
+                ["latitude", "longitude"], keep="first"
+            )
+            grid["macro_filter_basis"] = (
+                f"Hierarchical full-region screen ({coarse_cell_m / 1000.0:.1f} km cells) plus "
+                f"local refinement windows ({local_radius_m / 1000.0:.1f} km radius)"
+            )
         elif approx_cells > float(max_grid_cells):
             cell_m = cell_m * math.sqrt(approx_cells / max(1.0, float(max_grid_cells)))
             if cell_m <= 250:
@@ -4897,11 +5009,14 @@ def make_potential_survey_site_candidates(
             grid = pd.DataFrame(
                 [{"latitude": float(lat), "longitude": float(lon)} for lat in lat_vals for lon in lon_vals]
             )
+        if "_grid_stage" not in grid.columns:
+            grid["_grid_stage"] = "regional_screen" if approx_cells > float(max_grid_cells) else "single_scale"
+            grid["_grid_cell_size_m"] = float(cell_m)
     if grid.empty:
         return pd.DataFrame()
     # A search cell may legitimately meet a coastline. Requiring its full
     # analysis radius to be land erases candidates on small islands.
-    grid = filter_to_land(grid, "latitude", "longitude", 0.0)
+    grid = filter_to_surface_domain(grid, surface_domain, "latitude", "longitude")
     if search_geometry is not None and not grid.empty:
         inside = [
             bool(search_geometry.covers(Point(float(row.longitude), float(row.latitude))))
@@ -4924,8 +5039,11 @@ def make_potential_survey_site_candidates(
     grid["nearest_known_population_km"] = (grid["distance_to_nearest_known_m"] / 1000.0).round(3)
 
     has_highres = any(highres_layers.get(k) for k in ["dem", "ndvi", "landcover", "roads", "trails", "coastline", "forest_edge"])
-    env_vars = [v for v in (env_variables or POTENTIAL_ANALOGUE_PRESET) if v in SUPPORTED_ENV_VARS]
+    requested_env_vars = [v for v in (env_variables or POTENTIAL_ANALOGUE_PRESET) if v in SUPPORTED_ENV_VARS]
+    env_vars = list(requested_env_vars)
     try:
+            if str(surface_domain) == "marine":
+                raise RuntimeError("terrestrial terrain layers are not defined on the marine candidate surface")
             known_points = work.rename(columns={"_latitude": "latitude", "_longitude": "longitude"})
             profile_points = buffered_profile_sample_points(known_points, float(profile_buffer_m), "latitude", "longitude")
             if has_highres:
@@ -4937,9 +5055,17 @@ def make_potential_survey_site_candidates(
                     for topo_col in POTENTIAL_ANALOGUE_PRESET:
                         occ_env[topo_col] = occ_topo[topo_col].to_numpy()
                         grid_env[topo_col] = grid_topo[topo_col].to_numpy()
+                climate_vars = [name for name in requested_env_vars if name in CLIMATE_VARS]
+                if climate_vars:
+                    occ_climate = extract_environment(profile_points, climate_vars, "latitude", "longitude", resolution)
+                    grid_climate = extract_environment(grid, climate_vars, "latitude", "longitude", resolution)
+                    for climate_col in climate_vars:
+                        occ_env[climate_col] = occ_climate[climate_col].to_numpy()
+                        grid_env[climate_col] = grid_climate[climate_col].to_numpy()
                 continuous_cols = [
                     "elevation", "slope", "aspect", "roughness", "tpi", "ndvi",
                     "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m",
+                    *climate_vars,
                 ]
                 env_vars = [c for c in continuous_cols if c in occ_env.columns and c in grid_env.columns]
             else:
@@ -4969,7 +5095,11 @@ def make_potential_survey_site_candidates(
             for var in env_vars:
                 scored[var] = grid_env[var].to_numpy()
             grid = grid.drop(columns=[c for c in ["environmental_distance_to_known", "analogue_score"] if c in grid.columns])
-            grid = grid.merge(scored, on=["latitude", "longitude"], how="inner")
+            # Keep coarse regional cells even when one or more environmental
+            # layers are unavailable there. Their habitat evidence remains NaN
+            # (unavailable), but they are still auditable exploration options
+            # and prevent complete-case raster gaps from collapsing the pool.
+            grid = grid.merge(scored, on=["latitude", "longitude"], how="left")
             grid["habitat_score"] = grid["analogue_score"]
             basis_prefix = "High-resolution local habitat analogue" if has_highres else "Built-in elevation-raster local analogue"
             terrain_source = str(highres_layers.get("dem_source") or "").strip()
@@ -4990,12 +5120,30 @@ def make_potential_survey_site_candidates(
                 grid["landcover_match_score"] = grid_lc.astype("Int64").isin(dominant).astype(float).to_numpy()
                 grid["habitat_score"] = (0.85 * pd.to_numeric(grid["habitat_score"], errors="coerce").fillna(0.0) + 0.15 * grid["landcover_match_score"]).clip(0, 1)
     except Exception as exc:
-        grid["analogue_score"] = np.exp(-grid["distance_to_nearest_known_m"] / max(cell_m * 8.0, 1.0)).clip(0, 1)
-        grid["habitat_score"] = grid["analogue_score"]
-        grid["environmental_distance_to_known"] = (1.0 - grid["analogue_score"]).clip(0, 1)
-        grid["habitat_basis"] = f"Spatial fallback; local topographic analogue scoring failed: {exc}"
-        grid["occurrence_derived_habitat_score"] = True
-        grid["missing_layer_note"] = "Local environmental analogue scoring was unavailable; current score uses distance from known records only."
+        if str(surface_domain) == "marine":
+            known_land_distance = distance_to_land_m(work, "_latitude", "_longitude").dropna()
+            grid_land_distance = distance_to_land_m(grid, "latitude", "longitude")
+            known_log = np.log1p(known_land_distance.to_numpy(dtype=float))
+            center = float(np.median(known_log)) if len(known_log) else 0.0
+            spread = float(np.median(np.abs(known_log - center))) if len(known_log) else 1.0
+            spread = max(spread * 1.4826, 0.35)
+            deviation = np.abs(np.log1p(grid_land_distance.to_numpy(dtype=float)) - center) / spread
+            grid["distance_to_coast_m"] = grid_land_distance.to_numpy(dtype=float)
+            grid["analogue_score"] = np.exp(-0.5 * deviation ** 2).clip(0, 1)
+            grid["habitat_score"] = grid["analogue_score"]
+            grid["environmental_distance_to_known"] = np.clip(deviation / 3.0, 0, 1)
+            grid["habitat_basis"] = "Marine distance-to-land-band analogue from training occurrences"
+            grid["occurrence_derived_habitat_score"] = False
+            grid["missing_layer_note"] = (
+                f"Marine terrain extraction unavailable ({exc}); used distance-to-land habitat, not distance to occurrence points."
+            )
+        else:
+            grid["analogue_score"] = np.exp(-grid["distance_to_nearest_known_m"] / max(cell_m * 8.0, 1.0)).clip(0, 1)
+            grid["habitat_score"] = grid["analogue_score"]
+            grid["environmental_distance_to_known"] = (1.0 - grid["analogue_score"]).clip(0, 1)
+            grid["habitat_basis"] = f"Spatial fallback; local topographic analogue scoring failed: {exc}"
+            grid["occurrence_derived_habitat_score"] = True
+            grid["missing_layer_note"] = "Local environmental analogue scoring was unavailable; current score uses distance from known records only."
 
     if "environmental_distance_to_known" not in grid.columns:
         grid["environmental_distance_to_known"] = (1.0 - pd.to_numeric(grid["analogue_score"], errors="coerce")).clip(0, 1)
@@ -5012,12 +5160,20 @@ def make_potential_survey_site_candidates(
         grid["access_score"] = np.nan
         grid["access_note"] = "Road/trail access not evaluated; verify in Google Maps and field conditions."
     grid["all_taxa_record_density"] = np.nan
-    grid["search_cell_radius_m"] = round(cell_m / 2.0, 1)
+    effective_cells = pd.to_numeric(
+        grid.get("_grid_cell_size_m", pd.Series(float(cell_m), index=grid.index)), errors="coerce"
+    ).fillna(float(cell_m))
+    grid["search_cell_radius_m"] = (effective_cells / 2.0).round(1)
     grid["requested_search_cell_size_m"] = round(requested_cell_m, 1)
-    grid["effective_search_cell_size_m"] = round(cell_m, 1)
+    grid["effective_search_cell_size_m"] = effective_cells.round(1)
     grid["resolution_decision_reason"] = resolution_decision.reason
     grid["resolution_data_quality"] = resolution_decision.data_quality
     grid["effective_grid_cells_evaluated"] = int(len(grid))
+    grid["surface_domain"] = str(surface_domain)
+    grid["validated_spatial_claim"] = (
+        "10 km regional candidate zone; coordinate is a representative screening point, not a validated exact survey site"
+    )
+    grid["validated_zone_radius_km"] = 10.0
     if "macro_filter_basis" not in grid.columns:
         grid["macro_filter_basis"] = "Local habitat analogue grid from the active survey-area occurrence set"
 
@@ -5049,17 +5205,52 @@ def make_potential_survey_site_candidates(
             "Local environmental contrast cell intended to test habitat limits or collect informative absence/edge data.",
         ),
     ]
+    if "_grid_stage" in grid.columns and grid["_grid_stage"].eq("regional_screen").any():
+        regional_grid = grid[grid["_grid_stage"].eq("regional_screen")].copy()
+        pools.append((
+            "Regional-screen",
+            regional_grid,
+            "habitat_score",
+            "Coarse full-region habitat screen retained before local refinement; use this zone to choose a compact follow-up area, not as a precise field coordinate.",
+        ))
     out_rows: list[pd.DataFrame] = []
     next_sid = int(start_site_id)
     for candidate_type, pool, score_col, reason in pools:
         if pool.empty:
             continue
-        pool = pool.sort_values([score_col, "survey_gap_score", "analogue_score"], ascending=False).head(int(max_candidates_per_type)).copy()
+        ranked_pool = pool.sort_values([score_col, "survey_gap_score", "analogue_score"], ascending=False)
+        if str(surface_domain) != "terrestrial":
+            # Aquatic candidate layers often lack complete terrain values. A
+            # simple head() then selects one grid edge (or one harbour) and
+            # cannot recover a withheld reach. Preserve the best evidence
+            # anchor while spreading the remaining alternatives over the
+            # candidate surface.
+            evidence_available = pd.to_numeric(
+                ranked_pool.get(score_col, pd.Series(np.nan, index=ranked_pool.index)), errors="coerce"
+            ).notna().any()
+            pool = select_complementary_candidates(
+                ranked_pool,
+                int(max_candidates_per_type),
+                score_col=score_col,
+                evidence_weight=0.60 if evidence_available else 0.0,
+                separation_scale_m=max(5_000.0, float(cell_m) * 4.0),
+            )
+        elif "_grid_stage" in ranked_pool.columns and ranked_pool["_grid_stage"].eq("regional_screen").any():
+            regional_slots = max(1, int(max_candidates_per_type) // 2)
+            regional = ranked_pool[ranked_pool["_grid_stage"].eq("regional_screen")].head(regional_slots)
+            regional_coords = set(zip(regional["latitude"], regional["longitude"]))
+            remainder = ranked_pool[
+                ~pd.Series(list(zip(ranked_pool["latitude"], ranked_pool["longitude"])), index=ranked_pool.index).isin(regional_coords)
+            ].head(max(0, int(max_candidates_per_type) - len(regional)))
+            pool = pd.concat([regional, remainder], ignore_index=True, sort=False).copy()
+        else:
+            pool = ranked_pool.head(int(max_candidates_per_type)).copy()
         n = len(pool)
         pool["site_id"] = range(next_sid, next_sid + n)
         next_sid += n
         pool["candidate_type"] = candidate_type
         pool["candidate_method"] = "Habitat-first grid cell"
+        pool["search_hierarchy_stage"] = pool.get("_grid_stage", pd.Series("single_scale", index=pool.index)).fillna("single_scale")
         pool["n_occurrences"] = 0
         pool["occurrence_support_score"] = pd.to_numeric(pool[score_col], errors="coerce").fillna(0.0).clip(0, 1).round(3)
         habitat_component = pd.to_numeric(pool.get("habitat_score", pool.get("analogue_score", 0.0)), errors="coerce").fillna(0.0).clip(0, 1)
@@ -5077,6 +5268,8 @@ def make_potential_survey_site_candidates(
             pool["priority_score"] = (0.65 * habitat_component + 0.15 * gap_component + 0.10 * access_component + 0.10 * macro_component).clip(0, 1).round(3)
         elif candidate_type == "Survey-gap":
             pool["priority_score"] = (0.45 * habitat_component + 0.35 * gap_component + 0.10 * access_component + 0.10 * macro_component).clip(0, 1).round(3)
+        elif candidate_type == "Regional-screen":
+            pool["priority_score"] = (0.75 * habitat_component + 0.15 * macro_component + 0.10 * access_component).clip(0, 1).round(3)
         else:
             pool["priority_score"] = (0.40 * contrast_component + 0.25 * habitat_component + 0.20 * gap_component + 0.10 * access_component + 0.05 * macro_component).clip(0, 1).round(3)
         basis = str(pool["habitat_basis"].iloc[0]) if "habitat_basis" in pool.columns and len(pool) else "habitat-first proxy"
@@ -6253,7 +6446,7 @@ def make_survey_day_html(day_lists: dict, sites: pd.DataFrame) -> str:
             f"{body}</body></html>")
 
 
-EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "plan_name", "plan_rank", "discover_utility", "discovery_value", "learning_value", "accessibility_score", "representation_value", "discovery_label", "learning_label", "access_label", "data_quality", "constraint_status", "priority_rank", "priority_score", "observed_base_priority_score", "candidate_evidence", "recommendation_basis", "occurrence_support_score", "model_support_score", "model_support_available", "observed_model_agreement_score", "model_agreement_bonus", "model_only_exploration_bonus", "field_validation_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "habitat_basis", "macro_filter_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "analogue_score", "environmental_distance_to_known", "environmental_novelty", "survey_effort_proxy", "survey_gap_score", "access_score", "target_record_density", "all_taxa_record_density", "nearest_known_population_km", "requested_search_cell_size_m", "effective_search_cell_size_m", "resolution_decision_reason", "resolution_data_quality", "effective_grid_cells_evaluated", "search_cell_radius_m", "elevation", "slope", "aspect", "roughness", "tpi", "ndvi", "landcover", "landcover_match_score", "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m", "missing_layer_note", "validation_learning_note", "why_selected", "selection_reason", "selection_algorithm", "selection_step", "base_score", "geographic_complementarity_gain", "environmental_complementarity_gain", "habitat_analogue_gain", "exploration_gain", "sampling_gap_gain", "validation_learning_gain", "access_gain", "redundancy_penalty", "travel_penalty", "marginal_gain_score", "access_note", "recommended_survey_window", "season_confidence", "flowering_record_count", "google_maps_url"]
+EXPORT_CSV_COLS = ["site_id", "name", "latitude", "longitude", "validated_spatial_claim", "validated_zone_radius_km", "surface_domain", "plan_name", "plan_rank", "discover_utility", "discovery_value", "learning_value", "accessibility_score", "representation_value", "discovery_label", "learning_label", "access_label", "data_quality", "constraint_status", "priority_rank", "priority_score", "observed_base_priority_score", "candidate_evidence", "recommendation_basis", "occurrence_support_score", "model_support_score", "model_support_available", "observed_model_agreement_score", "model_agreement_bonus", "model_only_exploration_bonus", "field_validation_support_score", "observed_weight", "model_weight", "score_explanation", "sdm_suitability", "ssdm_predicted_richness", "observed_species_richness", "species_richness", "record_count", "species_list", "n_occurrences", "candidate_type", "candidate_method", "habitat_basis", "macro_filter_basis", "habitat_score", "environmental_similarity", "mahalanobis_environment_distance", "analogue_score", "environmental_distance_to_known", "environmental_novelty", "survey_effort_proxy", "survey_gap_score", "access_score", "target_record_density", "all_taxa_record_density", "nearest_known_population_km", "requested_search_cell_size_m", "effective_search_cell_size_m", "resolution_decision_reason", "resolution_data_quality", "effective_grid_cells_evaluated", "search_cell_radius_m", "elevation", "slope", "aspect", "roughness", "tpi", "ndvi", "landcover", "landcover_match_score", "distance_to_road_m", "distance_to_trail_m", "distance_to_coast_m", "distance_to_forest_edge_m", "missing_layer_note", "validation_learning_note", "why_selected", "selection_reason", "selection_algorithm", "selection_step", "base_score", "geographic_complementarity_gain", "environmental_complementarity_gain", "habitat_analogue_gain", "exploration_gain", "sampling_gap_gain", "validation_learning_gain", "access_gain", "redundancy_penalty", "travel_penalty", "marginal_gain_score", "access_note", "recommended_survey_window", "season_confidence", "flowering_record_count", "google_maps_url"]
 for _column in reversed([
     "integrated_support_score", "integrated_base_score", "integrated_evidence_class",
     "evidence_agreement_score", "evidence_divergence_score", "agreement_bonus",
@@ -6431,12 +6624,23 @@ def estimate_default_short_trip(
     every field day starts and ends at the hub and must fit its own time budget.
     """
     protocol = survey_protocol or infer_survey_protocol().as_dict()
+    surface_domain = str(protocol.get("surface_domain", "terrestrial"))
+    transport = {
+        "terrestrial": ("road/trail proxy", 35.0, 1.35),
+        "coastal": ("mixed road/water proxy", 25.0, 1.25),
+        "inland_aquatic": ("water-access proxy", 15.0, 1.15),
+        "marine": ("small-vessel proxy", 22.0, 1.10),
+    }.get(surface_domain, ("unknown transit proxy", 25.0, 1.25))
     assumptions = {
         "daily_field_hours": float(protocol["daily_field_hours"]),
         "operational_reserve_fraction": 0.15,
         "usable_daily_hours": round(float(protocol["daily_field_hours"]) * 0.85, 3),
-        "average_road_speed_kmh": 35.0,
-        "road_distance_factor": 1.35,
+        # Legacy key names remain for export compatibility; transport_mode
+        # states what they represent for non-terrestrial plans.
+        "average_road_speed_kmh": transport[1],
+        "road_distance_factor": transport[2],
+        "transport_mode": transport[0],
+        "surface_domain": surface_domain,
         "search_minutes_per_cell": int(protocol["search_minutes_per_cell"]),
         "access_buffer_minutes_per_cell": int(protocol["access_buffer_minutes_per_cell"]),
         "start_end": "local hub within each survey area",
@@ -6543,6 +6747,7 @@ def estimate_default_short_trip(
             "site_ids": [int(plan.iloc[pos]["site_id"]) for pos in day_positions],
             "straight_line_km": round(day_straight_km, 1),
             "estimated_road_km": round(day_straight_km * assumptions["road_distance_factor"], 1),
+            "estimated_transit_km": round(day_straight_km * assumptions["road_distance_factor"], 1),
             "estimated_hours": round(day_elapsed_hours, 1),
             "overtime": bool(overtime),
         })
@@ -6557,6 +6762,7 @@ def estimate_default_short_trip(
         "day_schedules": day_schedules,
         "straight_line_route_km": round(total_straight_km, 1),
         "estimated_road_km": round(road_km, 1),
+        "estimated_transit_km": round(road_km, 1),
         "travel_hours": round(travel_hours, 1),
         "site_hours": round(site_hours, 1),
         "total_hours": round(total_hours, 1),
@@ -6568,6 +6774,10 @@ def estimate_default_short_trip(
         "inter_area_transfers": max(0, len(distinct_areas) - 1),
         "inter_area_transfer_status": "not modeled; verify ferry/flight schedules" if len(distinct_areas) > 1 else "not applicable",
         "routing_confidence": (
+            "very low; water access, launch site, navigability, currents, tides, weather, and permits are not modeled"
+            if surface_domain in {"marine", "inland_aquatic"} else
+            "very low; mixed land/water transfers and launch access are not modeled"
+            if surface_domain == "coastal" else
             "very low for multi-island plans; field days never mix survey areas, but ferry/flight schedules are not modeled"
             if len(distinct_areas) > 1 else
             "low; straight-line legs use a road-distance factor and do not model road topology, traffic, or trail time"
@@ -6847,12 +7057,23 @@ def build_automatic_discover_bundle(
     taxon_metadata: Optional[dict[str, Any]] = None,
     survey_bounds: Optional[tuple[float, float, float, float]] = None,
     survey_features: Optional[list[dict[str, Any]]] = None,
+    candidate_generation_only: bool = False,
 ) -> dict[str, Any]:
-    """Run the no-parameter ACSP-Discover path after occurrence retrieval."""
+    """Run the no-parameter ACSP-Discover path after occurrence retrieval.
+
+    ``candidate_generation_only`` is reserved for ecological recovery
+    validation.  It stops before safety/access constraints and trip planning,
+    whose failures must not be counted as habitat-ranking failures.
+    """
     if occ_raw is None or occ_raw.empty:
         raise ValueError("No valid coordinate records were available for automatic planning.")
     warnings: list[str] = []
     survey_protocol = infer_survey_protocol(taxon_metadata).as_dict()
+    protocol_group = str(survey_protocol.get("taxon_group"))
+    candidate_env_variables = (
+        BALANCED_ECOLOGY_PRESET if protocol_group == "bird" else
+        POTENTIAL_ANALOGUE_PRESET
+    )
     enriched = enrich_occurrences_with_phenology(occ_raw)
     _default_scope, scope_audit, scope_summary = infer_default_survey_scope(enriched)
     region_cards, region_audit, distribution_summary = recommend_survey_regions(enriched, scope_audit)
@@ -6875,6 +7096,25 @@ def build_automatic_discover_bundle(
             selected_region_label = automatic_region_label(scope)
     if scope.empty:
         raise ValueError("The selected survey region did not retain usable occurrence records.")
+
+    try:
+        occurrence_land_fraction = land_fraction(scope, "_latitude", "_longitude")
+    except Exception as exc:
+        occurrence_land_fraction = None
+        warnings.append(f"Land/water habitat-domain inference was unavailable: {exc}")
+    surface_domain = infer_surface_domain(
+        taxon_metadata, occurrence_land_fraction=occurrence_land_fraction
+    )
+    survey_protocol["surface_domain"] = surface_domain
+    survey_protocol["occurrence_land_fraction"] = occurrence_land_fraction
+    survey_protocol["retrospective_primary_radius_km"] = primary_recovery_radius_km(
+        taxon_metadata, surface_domain=surface_domain
+    )
+    if surface_domain != "terrestrial":
+        warnings.append(
+            f"Candidate surface inferred as {surface_domain} from taxonomy and occurrence land fraction; "
+            "road routing is not evidence of water access or navigability."
+        )
 
     cluster_m = automatic_candidate_scale_m(scope)
     candidate_input, _sdm_unused, pipeline_summary = prepare_large_dataset_inputs(
@@ -6940,12 +7180,13 @@ def build_automatic_discover_bundle(
                 min(10, int(settings["per_type"])),
                 min(800, int(settings["max_cells"])),
                 next_site_id,
-                env_variables=POTENTIAL_ANALOGUE_PRESET,
+                env_variables=candidate_env_variables,
                 resolution="2.5m",
                 highres_layers=habitat_layers,
                 profile_buffer_m=100.0,
                 search_bounds=candidate_bounds,
                 search_geometry=geometry,
+                surface_domain=surface_domain,
             )
             if not frame.empty:
                 frame["candidate_generation_stage"] = "standard"
@@ -6960,12 +7201,13 @@ def build_automatic_discover_bundle(
                     min(12, max(6, int(settings["per_type"]))),
                     min(1600, max(800, int(settings["max_cells"]))),
                     next_site_id,
-                    env_variables=POTENTIAL_ANALOGUE_PRESET,
+                    env_variables=candidate_env_variables,
                     resolution="2.5m",
                     highres_layers=habitat_layers,
                     profile_buffer_m=100.0,
                     search_bounds=candidate_bounds,
                     search_geometry=geometry,
+                    surface_domain=surface_domain,
                 )
                 if not relaxed.empty:
                     relaxed["candidate_generation_stage"] = "relaxed_candidate_center_buffer"
@@ -6988,9 +7230,20 @@ def build_automatic_discover_bundle(
     except Exception as exc:
         warnings.append(f"Automatic habitat-first generation was unavailable: {exc}")
 
+    if candidate_generation_only:
+        return {
+            "potential_candidates": potential_candidates.copy(),
+            "known_candidates": known_candidates.copy(),
+            "surface_domain": surface_domain,
+            "occurrence_land_fraction": occurrence_land_fraction,
+            "warnings": warnings,
+        }
+
     all_candidates = pd.concat([known_candidates, potential_candidates], ignore_index=True, sort=False)
     try:
-        all_candidates = filter_to_land(all_candidates, "latitude", "longitude", 0.0)
+        all_candidates = filter_to_surface_domain(
+            all_candidates, surface_domain, "latitude", "longitude"
+        )
     except Exception as exc:
         warnings.append(f"Land-mask verification was unavailable: {exc}")
     all_candidates = add_priority_rank(all_candidates, 0.7, 0.3)
@@ -7045,6 +7298,8 @@ def build_automatic_discover_bundle(
         "country_scope": country_scope,
         "taxon_metadata": dict(taxon_metadata or {}),
         "survey_protocol": survey_protocol,
+        "surface_domain": surface_domain,
+        "occurrence_land_fraction": occurrence_land_fraction,
         "source_message": source_message,
         "occurrences": enriched,
         "scope": scope,

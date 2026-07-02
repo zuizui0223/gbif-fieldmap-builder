@@ -173,6 +173,58 @@ def integrated_candidate_scores(
     return out
 
 
+def select_complementary_candidates(
+    candidates: pd.DataFrame,
+    k: int,
+    *,
+    score_col: str = "integrated_support_score",
+    evidence_weight: float = 0.25,
+    separation_scale_m: float = 25_000.0,
+) -> pd.DataFrame:
+    """Select alternative survey regions using evidence plus spatial coverage.
+
+    These rows are alternative regional choices, not a claim that every row is
+    reachable in one trip. Within-region trip planning remains a separate step.
+    """
+    if candidates is None or candidates.empty:
+        return pd.DataFrame() if candidates is None else candidates.copy()
+    work = candidates.dropna(subset=["latitude", "longitude"]).copy().reset_index(drop=True)
+    if work.empty:
+        return work
+    scores = pd.to_numeric(work.get(score_col, pd.Series(0.0, index=work.index)), errors="coerce").fillna(0.0).clip(0, 1).to_numpy(float)
+    lats = pd.to_numeric(work["latitude"], errors="coerce").to_numpy(float)
+    lons = pd.to_numeric(work["longitude"], errors="coerce").to_numpy(float)
+    weight = float(np.clip(evidence_weight, 0.0, 1.0))
+    scale = max(1.0, float(separation_scale_m))
+    selected: list[int] = []
+    utilities: list[float] = []
+    while len(selected) < min(max(1, int(k)), len(work)):
+        best: tuple[float, float, int] | None = None
+        for index in range(len(work)):
+            if index in selected:
+                continue
+            if selected:
+                nearest = float(np.min(_haversine_m(lats[index], lons[index], lats[selected], lons[selected])))
+                representation = 1.0 - math.exp(-nearest / scale)
+            else:
+                representation = 0.5
+            utility = weight * scores[index] + (1.0 - weight) * representation
+            key = (utility, scores[index], -index)
+            if best is None or key > best:
+                best = key
+        assert best is not None
+        chosen = -int(best[2])
+        selected.append(chosen)
+        utilities.append(float(best[0]))
+    out = work.iloc[selected].copy().reset_index(drop=True)
+    out["complementary_selection_rank"] = range(1, len(out) + 1)
+    out["complementary_selection_utility"] = np.round(utilities, 6)
+    out["complementary_selection_policy"] = (
+        f"{weight:.2f} available-evidence + {1.0 - weight:.2f} geographic complementarity; alternatives, not one route"
+    )
+    return out
+
+
 def _plain_role(candidate_type: object) -> str:
     value = str(candidate_type or "").lower()
     if "model-only" in value or "sdm-high" in value or "ssdm-high" in value:

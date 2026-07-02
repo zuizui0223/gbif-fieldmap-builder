@@ -2,7 +2,7 @@
 
 ACSP converts occurrence records into ranked, field-ready survey zones. It is a field-survey decision tool, not an all-record SDM platform.
 
-Development status: **alpha (0.1.0)**. Field validation and retrospective benchmark studies are still required before treating the rankings as a validated general method.
+Development status: **alpha (0.1.0)**. Independent retrospective tests support cross-taxon prioritization of 10 km regional candidate zones over random same-pool selection. Exact-site accuracy, access, detection, abundance, and field efficiency remain unvalidated; see [HIERARCHICAL_VALIDATION_REPORT.md](HIERARCHICAL_VALIDATION_REPORT.md).
 
 ## Main workflow
 
@@ -13,6 +13,8 @@ The automatic app asks users to make only three decisions:
 3. Optionally add broad-scale SDM/SSDM support.
 
 The app shows one ranked **Recommended survey zones** table and map. Nearby candidate points are consolidated with a complete-link distance rule before final ranking, preventing both duplicate practical visits and long single-link chains. The original candidate points remain visible inside each recommended zone and remain available in the audit CSV for navigation, alternatives, and reproducibility. Optional SDM/SSDM updates the same zone rows with initial rank, model rank, rank change, agreement score, and a plain-language agreement class.
+
+With built-in data, displayed coordinates are representative points for validated 10 km regional zones, not promises of an occupied or accessible exact location. The CSV exports this claim radius explicitly.
 
 Zone ranking is density-neutral: it uses the strongest priority, observed, local-habitat, model, and access evidence within each practical zone rather than rewarding zones for containing more generated grid points. Exports identify the source candidate for every evidence maximum and state when a zone score combines evidence from different member points.
 

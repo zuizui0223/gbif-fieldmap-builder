@@ -8,8 +8,10 @@ from acsp_discover import (
     build_acsp_discover_plans,
     choose_candidate_resolution,
     infer_default_survey_scope,
+    infer_surface_domain,
     infer_survey_protocol,
     parse_field_results,
+    primary_recovery_radius_km,
     preferred_survey_window,
     recommend_survey_regions,
     score_discovery_learning,
@@ -17,6 +19,17 @@ from acsp_discover import (
 
 
 class DiscoverV1Tests(unittest.TestCase):
+    def test_surface_domain_combines_taxonomy_with_record_land_fraction(self):
+        self.assertEqual(infer_surface_domain({"kingdom": "Plantae"}, occurrence_land_fraction=0.0), "terrestrial")
+        self.assertEqual(infer_surface_domain({"kingdom": "Animalia", "class": "Aves"}, occurrence_land_fraction=0.1), "marine")
+        self.assertEqual(infer_surface_domain({"kingdom": "Animalia", "class": "Reptilia"}, occurrence_land_fraction=0.5), "coastal")
+        self.assertEqual(infer_surface_domain({"kingdom": "Animalia", "class": "Actinopterygii"}, occurrence_land_fraction=0.9), "inland_aquatic")
+        self.assertEqual(infer_surface_domain({"kingdom": "Animalia", "class": "Mammalia"}, occurrence_land_fraction=0.9), "terrestrial")
+        self.assertEqual(primary_recovery_radius_km({"kingdom": "Plantae"}), 5.0)
+        self.assertEqual(primary_recovery_radius_km({"class": "Aves"}), 10.0)
+        self.assertEqual(primary_recovery_radius_km({"class": "Insecta"}), 5.0)
+        self.assertEqual(primary_recovery_radius_km({"class": "Reptilia"}, surface_domain="marine"), 10.0)
+
     def test_taxonomy_changes_protocol_without_user_parameters(self):
         plant = infer_survey_protocol({"kingdom": "Plantae", "class": "Magnoliopsida"})
         bird = infer_survey_protocol({"kingdom": "Animalia", "class": "Aves"})

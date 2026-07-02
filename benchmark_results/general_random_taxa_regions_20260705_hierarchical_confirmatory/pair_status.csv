@@ -1,0 +1,25 @@
+pair_id,scientific_name,status,valid_repeats,attempted_repeats,failed_repeats
+1,Symplocos sawafutagi Nagam.,ok,5,5,0
+2,Christella acuminata (Houtt.) Holttum,ok,5,5,0
+3,Aucuba japonica Thunb.,ok,5,5,0
+4,Pteris semipinnata L.,ok,5,5,0
+5,"Carabus arvensis Herbst, 1784",ok,5,5,0
+6,"Fulmarus glacialis (Linnaeus, 1761)",ok,5,5,0
+7,"Fringilla montifringilla Linnaeus, 1758",ok,5,5,0
+8,"Mareca penelope (Linnaeus, 1758)",ok,5,5,0
+9,Osmundastrum cinnamomeum (L.) C.Presl,ok,5,5,0
+10,Arisaema angustatum Franch. & Sav.,ok,5,5,0
+11,Onychium japonicum (Thunb.) Kunze,ok,5,5,0
+12,Grypothrix triphylla (Sw.) S.E.Fawc. & A.R.Sm.,partial,4,5,1
+13,"Cygnus olor (J.F.Gmelin, 1789)",ok,5,5,0
+14,"Sternula albifrons (Pallas, 1764)",ok,5,5,0
+15,"Tringa brevipes (Vieillot, 1816)",ok,5,5,0
+16,"Pluvialis squatarola (Linnaeus, 1758)",ok,5,5,0
+17,Sitobolium wilfordii (T.Moore) L.A.Triana & Sundue,ok,5,5,0
+18,Diabelia spathulata (Siebold & Zucc.) Landrein,ok,5,5,0
+19,Deparia lancea (Thunb.) Fraser-Jenk.,ok,5,5,0
+20,Ctenitis subglandulosa (Hance) Ching,ok,5,5,0
+21,"Cynops pyrrhogaster (Boie, 1826)",ok,5,5,0
+22,"Plestiodon finitimus Okamoto & Hikida, 2012",ok,5,5,0
+23,"Eophona personata (Temminck & Schlegel, 1848)",ok,5,5,0
+24,"Spatula clypeata (Linnaeus, 1758)",ok,5,5,0

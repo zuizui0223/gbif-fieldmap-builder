@@ -72,6 +72,18 @@ class AutomaticHierarchyTests(unittest.TestCase):
         self.assertTrue(all(len(day["site_ids"]) == 1 for day in estimate["day_schedules"]))
         self.assertEqual(len({day["survey_area_id"] for day in estimate["day_schedules"]}), 4)
 
+    def test_marine_trip_uses_water_transport_caution_not_road_claim(self):
+        plan = pd.DataFrame({
+            "site_id": [1], "survey_area_id": [1],
+            "latitude": [34.5], "longitude": [139.5],
+        })
+        protocol = infer_survey_protocol({"kingdom": "Animalia", "class": "Reptilia"}).as_dict()
+        protocol["surface_domain"] = "marine"
+        estimate = estimate_default_short_trip(plan, 34.4, 139.4, protocol, target_days=1)
+        self.assertEqual(estimate["transport_mode"], "small-vessel proxy")
+        self.assertIn("launch site", estimate["routing_confidence"])
+        self.assertIn("estimated_transit_km", estimate["day_schedules"][0])
+
     def test_plan_covers_each_survey_area_before_adding_duplicates(self):
         candidates = pd.DataFrame({
             "site_id": [1, 2, 3, 4, 5],
@@ -333,7 +345,8 @@ class AutomaticHierarchyTests(unittest.TestCase):
         with (
             patch("gbif_fieldmap_builder_app.app_provided_habitat_layers", return_value={}),
             patch("gbif_fieldmap_builder_app.make_potential_survey_site_candidates", return_value=pd.DataFrame()),
-            patch("gbif_fieldmap_builder_app.filter_to_land", side_effect=lambda frame, *args, **kwargs: frame) as land_filter,
+            patch("gbif_fieldmap_builder_app.land_fraction", return_value=1.0),
+            patch("gbif_fieldmap_builder_app.filter_to_surface_domain", side_effect=lambda frame, *args, **kwargs: frame) as surface_filter,
         ):
             bundle = build_automatic_discover_bundle(
                 "Example species", occurrences, "synthetic records", "Test"
@@ -349,12 +362,13 @@ class AutomaticHierarchyTests(unittest.TestCase):
         self.assertNotIn("zones_without_sdm", bundle)
         self.assertIn("integrated_support_score", bundle["candidate_pool"].columns)
         self.assertTrue(bundle["warnings"])
-        self.assertEqual(float(land_filter.call_args.args[3]), 0.0)
+        self.assertEqual(surface_filter.call_args.args[1], "terrestrial")
 
         with (
             patch("gbif_fieldmap_builder_app.app_provided_habitat_layers", return_value={}),
             patch("gbif_fieldmap_builder_app.make_potential_survey_site_candidates", return_value=pd.DataFrame()),
-            patch("gbif_fieldmap_builder_app.filter_to_land", side_effect=lambda frame, *args, **kwargs: frame),
+            patch("gbif_fieldmap_builder_app.land_fraction", return_value=1.0),
+            patch("gbif_fieldmap_builder_app.filter_to_surface_domain", side_effect=lambda frame, *args, **kwargs: frame),
         ):
             custom = build_automatic_discover_bundle(
                 "Example species", occurrences, "synthetic records", "Test",

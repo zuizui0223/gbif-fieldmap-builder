@@ -1,0 +1,25 @@
+pair_id,status,taxon_group,kingdomKey,geographic_stratum,region_name,west,south,east,north,speciesKey,scientific_name,coordinate_records,record_count_stratum
+1,predeclared,plant,6,north,Tohoku,139.5,38.0,141.5,40.5,7318892,Symplocos sawafutagi Nagam.,269,0
+2,predeclared,plant,6,east,Kanto,138.5,35.0,140.5,36.5,9627346,Christella acuminata (Houtt.) Holttum,921,1
+3,predeclared,plant,6,west,Kinki,134.5,33.5,136.5,35.5,3033077,Aucuba japonica Thunb.,502,2
+4,predeclared,plant,6,south,Ryukyu,126.0,24.0,130.0,28.5,5613834,Pteris semipinnata L.,188,3
+5,predeclared,animal,1,north,Hokkaido west,140.0,42.5,142.0,44.5,5872829,"Carabus arvensis Herbst, 1784",145,0
+6,predeclared,animal,1,east,Izu,138.8,34.0,139.8,35.0,2481433,"Fulmarus glacialis (Linnaeus, 1761)",39,1
+7,predeclared,animal,1,west,Chugoku,131.5,34.0,134.0,35.5,2494441,"Fringilla montifringilla Linnaeus, 1758",345,2
+8,predeclared,animal,1,south,Southern Kyushu,130.0,30.8,131.8,32.5,8000602,"Mareca penelope (Linnaeus, 1758)",2935,3
+9,predeclared,plant,6,north,Tohoku,139.5,38.0,141.5,40.5,7319895,Osmundastrum cinnamomeum (L.) C.Presl,280,0
+10,predeclared,plant,6,east,Izu,138.8,34.0,139.8,35.0,2866986,Arisaema angustatum Franch. & Sav.,55,1
+11,predeclared,plant,6,west,Kinki,134.5,33.5,136.5,35.5,7335697,Onychium japonicum (Thunb.) Kunze,579,2
+12,predeclared,plant,6,south,Ryukyu,126.0,24.0,130.0,28.5,11424159,Grypothrix triphylla (Sw.) S.E.Fawc. & A.R.Sm.,190,3
+13,predeclared,animal,1,north,Hokkaido west,140.0,42.5,142.0,44.5,2498343,"Cygnus olor (J.F.Gmelin, 1789)",185,0
+14,predeclared,animal,1,east,Kanto,138.5,35.0,140.5,36.5,5789279,"Sternula albifrons (Pallas, 1764)",2129,1
+15,predeclared,animal,1,west,Shikoku,132.5,32.7,134.5,34.5,2481722,"Tringa brevipes (Vieillot, 1816)",133,2
+16,predeclared,animal,1,south,Northern Kyushu,129.5,32.5,131.5,34.0,2480327,"Pluvialis squatarola (Linnaeus, 1758)",1191,3
+17,predeclared,plant,6,north,Tohoku,139.5,38.0,141.5,40.5,12255459,Sitobolium wilfordii (T.Moore) L.A.Triana & Sundue,289,0
+18,predeclared,plant,6,east,Kanto,138.5,35.0,140.5,36.5,8421561,Diabelia spathulata (Siebold & Zucc.) Landrein,950,1
+19,predeclared,plant,6,west,Shikoku,132.5,32.7,134.5,34.5,8582197,Deparia lancea (Thunb.) Fraser-Jenk.,355,2
+20,predeclared,plant,6,south,Ryukyu,126.0,24.0,130.0,28.5,4040546,Ctenitis subglandulosa (Hance) Ching,204,3
+21,predeclared,animal,1,north,Tohoku,139.5,38.0,141.5,40.5,2431862,"Cynops pyrrhogaster (Boie, 1826)",231,0
+22,predeclared,animal,1,east,Kanto,138.5,35.0,140.5,36.5,8186233,"Plestiodon finitimus Okamoto & Hikida, 2012",1384,1
+23,predeclared,animal,1,west,Kinki,134.5,33.5,136.5,35.5,2494143,"Eophona personata (Temminck & Schlegel, 1848)",1891,2
+24,predeclared,animal,1,south,Northern Kyushu,129.5,32.5,131.5,34.0,8332393,"Spatula clypeata (Linnaeus, 1758)",1049,3
