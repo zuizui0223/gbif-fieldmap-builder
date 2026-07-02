@@ -15,6 +15,7 @@ from acsp import (
     make_classifier,
     predict_equal_weight_ensemble,
     recommend_candidates,
+    select_complementary_candidates,
     sdm_method_record,
     spatial_block_recovery_validation,
     spatial_block_candidate_benchmark,
@@ -24,6 +25,15 @@ from acsp import (
 
 
 class AcspPackageTests(unittest.TestCase):
+    def test_complementary_selection_retains_evidence_anchor_and_spatial_alternative(self):
+        candidates = pd.DataFrame({
+            "site_id": [1, 2, 3], "integrated_support_score": [1.0, 0.9, 0.8],
+            "latitude": [35.0, 35.001, 36.0], "longitude": [139.0, 139.001, 140.0],
+        })
+        selected = select_complementary_candidates(candidates, 2, evidence_weight=0.25)
+        self.assertEqual(selected["site_id"].tolist(), [1, 3])
+        self.assertIn("alternatives", selected["complementary_selection_policy"].iloc[0])
+
     def test_integrated_score_renormalizes_when_model_is_unavailable(self):
         candidate = pd.DataFrame({
             "site_id": [1], "occurrence_support_score": [0.8],
@@ -99,10 +109,12 @@ class AcspPackageTests(unittest.TestCase):
             })
 
         candidates, folds, summary = spatial_block_candidate_benchmark(
-            occurrences, builder, repeats=2, top_k=2, hit_radius_km=10, random_draws=5, random_state=9,
+            occurrences, builder, repeats=2, top_k=2, hit_radius_km=10, random_draws=5,
+            random_state=9, selection_evidence_weight=1.0,
         )
         self.assertEqual(summary["valid_repeats"], 2)
         self.assertIn("covered_heldout_ids", candidates)
+        self.assertTrue(folds["selection_evidence_weight"].eq(1.0).all())
         combined = pd.concat([candidates.assign(benchmark_taxon=name) for name in ["a", "b", "c", "d"]])
         search, calibration = calibrate_candidate_weights(combined, search_draws=10, top_k=2, random_state=3)
         self.assertEqual(len(calibration["heldout_evaluation_taxa"]), 2)

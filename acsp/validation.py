@@ -12,7 +12,7 @@ from sklearn.metrics import average_precision_score, brier_score_loss, log_loss,
 
 from .modeling import DEFAULT_ENSEMBLE_ALGORITHMS, make_classifier
 
-from .planning import EARTH_RADIUS_M, integrated_candidate_scores
+from .planning import EARTH_RADIUS_M, integrated_candidate_scores, select_complementary_candidates
 
 
 CALIBRATABLE_DISTANCE_FREE_COMPONENTS = (
@@ -415,6 +415,8 @@ def spatial_block_candidate_benchmark(
     hit_radius_km = float(kwargs.pop("hit_radius_km", 5.0))
     random_draws = max(1, int(kwargs.pop("random_draws", 100)))
     random_state = int(kwargs.pop("random_state", 42))
+    selection_evidence_weight = float(np.clip(kwargs.pop("selection_evidence_weight", 0.25), 0.0, 1.0))
+    selection_score_col = str(kwargs.pop("selection_score_col", "integrated_support_score"))
     if kwargs:
         raise TypeError(f"Unexpected benchmark arguments: {', '.join(sorted(kwargs))}")
     latitude_col, longitude_col = _resolve_occurrence_coordinate_columns(
@@ -477,7 +479,14 @@ def spatial_block_candidate_benchmark(
         ]
         scored["nearest_heldout_km"] = distances.min(axis=0)
         candidate_rows.append(scored)
-        default_top = scored.nlargest(min(top_k, len(scored)), "integrated_support_score")
+        default_top = select_complementary_candidates(
+            scored, min(top_k, len(scored)), score_col=selection_score_col,
+            evidence_weight=selection_evidence_weight,
+        )
+        selected_ids = default_top["benchmark_candidate_id"].astype(int).tolist()
+        rank_lookup = {identifier: rank for rank, identifier in enumerate(selected_ids, start=1)}
+        scored["validation_selection_rank"] = scored["benchmark_candidate_id"].map(rank_lookup).astype("Int64")
+        candidate_rows[-1] = scored
         recovered = set(filter(None, ";".join(default_top["covered_heldout_ids"]).split(";")))
         random_recalls = []
         for _ in range(random_draws):
@@ -488,6 +497,8 @@ def spatial_block_candidate_benchmark(
             "repeat": repeat, "status": "ok", "training_records": len(training),
             "heldout_records": len(heldout), "candidate_pool": len(scored),
             "top_k": min(top_k, len(scored)), "hit_radius_km": hit_radius_km,
+            "selection_evidence_weight": selection_evidence_weight,
+            "selection_score_col": selection_score_col,
             "default_recall": len(recovered) / len(heldout),
             "random_same_pool_recall": float(np.mean(random_recalls)),
         })

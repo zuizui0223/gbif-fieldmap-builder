@@ -1,5 +1,23 @@
 # AI Change Log
 
+## 2026-07-02 - Codex (OpenAI) - Two-stage recovery and complementary ranking
+
+Summary:
+- Added hierarchical regional candidate screening and a deterministic evidence-plus-geographic-complementarity Top-k selector.
+- Separated ecological candidate recovery from downstream safety, legal-access, and short-trip screening; production planning still applies those hard constraints.
+- Added reusable frozen samples, multiple excluded-cohort files, stored validation ranks, and plant/animal development policies without using confirmatory taxa for tuning.
+- Passed resolved GBIF class metadata into the existing bird, mammal, reptile, arthropod, and fish survey-protocol hierarchy.
+
+Validation:
+- All 71 unit tests pass.
+- On the 24-pair development cohort, 120/120 folds completed. Rankable rates rose to 93.3% for plants and 100% for animals. At 5 km, plant lift over random was 0.0119 (95% clustered CI 0.0007 to 0.0263); animal lift was 0.0190 (-0.0016 to 0.0455).
+- A second independent 24-pair cohort excluded every taxon in both prior cohorts. Twenty-two pairs completed and two failed without replacement. At 5 km, plant lift replicated at 0.0442 (0.0045 to 0.1077), while animal lift remained unconfirmed at 0.0195 (-0.0033 to 0.0502).
+- The global superiority gate therefore remains failed: evidence currently supports the plant candidate-ranking branch only, not one universal plant/animal model.
+
+Known risks / TODO:
+- Animal candidates require a habitat-domain hierarchy (terrestrial, freshwater, marine/coastal) before further weight fitting. A land-only candidate surface is invalid for sea turtles, seabirds, and aquatic taxa.
+- Retrospective occurrence recovery does not validate access, detectability, abundance, phenology, or discoveries per field day.
+
 ## 2026-07-02 - Codex (OpenAI) - Independent retrospective confirmation
 
 Changed files:

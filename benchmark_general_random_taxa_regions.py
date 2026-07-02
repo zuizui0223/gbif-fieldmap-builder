@@ -165,7 +165,12 @@ def summarize_recovery(candidates: pd.DataFrame, radius: float, top_k: int, seed
         if not all_ids:
             continue
         k = min(int(top_k), len(fold))
-        chosen = fold.nlargest(k, "integrated_support_score")
+        if "validation_selection_rank" in fold.columns and pd.to_numeric(fold["validation_selection_rank"], errors="coerce").notna().any():
+            chosen = fold[pd.to_numeric(fold["validation_selection_rank"], errors="coerce").notna()].sort_values(
+                "validation_selection_rank"
+            ).head(k)
+        else:
+            chosen = fold.nlargest(k, "integrated_support_score")
         default_ids = set(filter(None, ";".join(chosen["covered_heldout_ids"].astype(str)).split(";")))
         random_values = []
         for _ in range(200):
@@ -193,14 +198,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     output.mkdir(parents=True, exist_ok=True)
     sample_path = output / "predeclared_taxon_region_pairs.csv"
     excluded_taxa: set[str] = set()
-    if args.exclude_sample:
-        exclusion = pd.read_csv(args.exclude_sample)
+    for exclusion_path in args.exclude_sample or []:
+        exclusion = pd.read_csv(exclusion_path)
         if "scientific_name" not in exclusion.columns:
             raise ValueError("Exclusion sample requires a scientific_name column.")
-        excluded_taxa = set(exclusion["scientific_name"].dropna().astype(str))
-    sample = pd.read_csv(sample_path) if sample_path.exists() else predeclare_pairs(
-        args.pairs, args.seed, args.facet_limit, args.minimum_records, excluded_taxa
-    )
+        excluded_taxa.update(exclusion["scientific_name"].dropna().astype(str))
+    if sample_path.exists():
+        sample = pd.read_csv(sample_path)
+    elif args.sample_file:
+        sample = pd.read_csv(args.sample_file).head(int(args.pairs)).copy()
+    else:
+        sample = predeclare_pairs(
+            args.pairs, args.seed, args.facet_limit, args.minimum_records, excluded_taxa
+        )
     if not sample_path.exists():
         sample.to_csv(sample_path, index=False)
     statuses = []
@@ -218,19 +228,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             def builder(training: pd.DataFrame) -> pd.DataFrame:
                 rebuilt = training.copy().reset_index(drop=True)
                 rebuilt["_row_id"] = range(len(rebuilt))
+                metadata = _species_metadata(int(row.speciesKey)) or {}
+                metadata.setdefault("kingdom", "Plantae" if row.taxon_group == "plant" else "Animalia")
                 bundle = build_automatic_discover_bundle(
                     str(row.scientific_name), rebuilt, "general benchmark",
                     str(row.region_name), override_row_ids=rebuilt["_row_id"].tolist(),
-                    taxon_metadata={"kingdom": "Plantae" if row.taxon_group == "plant" else "Animalia"},
+                    taxon_metadata=metadata,
                     survey_bounds=bounds, survey_features=[rectangle_feature(bounds, str(row.region_name))],
+                    candidate_generation_only=True,
                 )
-                return bundle["candidate_pool"]
+                # Measure ecological candidate generation/ranking before the
+                # separate logistics and safety screen.  Using candidate_pool
+                # here mixed dangerous-slope/access exclusions into a habitat
+                # recovery endpoint and often left <= top_k cells, making the
+                # ranking statistically unidentifiable.  The production bundle
+                # still applies hard constraints before making a field plan.
+                return bundle["potential_candidates"]
 
             candidates, folds, _ = spatial_block_candidate_benchmark(
                 occurrences, builder, block_degrees=args.block_degrees, repeats=args.repeats,
                 holdout_fraction=args.holdout_fraction, top_k=args.top_k,
                 hit_radius_km=max(args.radii), random_draws=args.random_draws,
                 random_state=args.seed + int(row.pair_id),
+                # Development-only sensitivity analysis selected stronger local
+                # habitat evidence for both groups. Animals retain 25%
+                # geographic complementarity; plants use pure habitat ordering
+                # at this candidate-screening stage.
+                selection_evidence_weight=1.0 if str(row.taxon_group) == "plant" else 0.75,
+                selection_score_col="component_local_habitat_score",
             )
             for frame in (candidates, folds):
                 frame["benchmark_taxon"] = str(row.scientific_name)
@@ -308,7 +333,11 @@ def parser() -> argparse.ArgumentParser:
     command.add_argument("--minimum-records", type=int, default=20)
     command.add_argument("--facet-limit", type=int, default=160)
     command.add_argument("--seed", type=int, default=20260702)
-    command.add_argument("--exclude-sample", default="", help="CSV whose scientific_name taxa are excluded from a confirmatory draw.")
+    command.add_argument(
+        "--exclude-sample", action="append", default=[],
+        help="CSV whose scientific_name taxa are excluded; repeat for multiple development/confirmation cohorts.",
+    )
+    command.add_argument("--sample-file", default="", help="Reuse a frozen sample CSV; --pairs limits it for development runs.")
     command.add_argument("--block-degrees", type=float, default=0.10)
     command.add_argument("--holdout-fraction", type=float, default=0.20)
     command.add_argument("--top-k", type=int, default=5)

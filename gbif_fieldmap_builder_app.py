@@ -4866,15 +4866,58 @@ def make_potential_survey_site_candidates(
                     for lon in np.arange(c_lon - lon_radius, c_lon + lon_radius + lon_step, lon_step):
                         if _acsp_point_distances_m(c_lat, c_lon, np.array([lat]), np.array([lon]))[0] <= local_radius_m:
                             rows.append({"latitude": float(lat), "longitude": float(lon)})
-            grid = pd.DataFrame(rows)
-            if not grid.empty:
+            local_grid = pd.DataFrame(rows)
+            local_budget = max(1, int(max_grid_cells) // 2)
+            if not local_grid.empty:
                 coord_precision = 5 if cell_m < 500 else 4
-                grid["_lat_key"] = grid["latitude"].round(coord_precision)
-                grid["_lon_key"] = grid["longitude"].round(coord_precision)
-                grid = grid.drop_duplicates(["_lat_key", "_lon_key"]).drop(columns=["_lat_key", "_lon_key"])
-                if len(grid) > int(max_grid_cells):
-                    grid = spatially_balanced_cap(grid.rename(columns={"latitude": "_latitude", "longitude": "_longitude"}), int(max_grid_cells)).rename(columns={"_latitude": "latitude", "_longitude": "longitude"})
-            grid["macro_filter_basis"] = f"Local search windows around occurrence-supported candidates ({local_radius_m / 1000.0:.1f} km radius) to keep broad-area searches fine and responsive"
+                local_grid["_lat_key"] = local_grid["latitude"].round(coord_precision)
+                local_grid["_lon_key"] = local_grid["longitude"].round(coord_precision)
+                local_grid = local_grid.drop_duplicates(["_lat_key", "_lon_key"]).drop(columns=["_lat_key", "_lon_key"])
+                if len(local_grid) > local_budget:
+                    local_grid = spatially_balanced_cap(
+                        local_grid.rename(columns={"latitude": "_latitude", "longitude": "_longitude"}), local_budget
+                    ).rename(columns={"_latitude": "latitude", "_longitude": "longitude"})
+                local_grid["_grid_stage"] = "local_refinement"
+                local_grid["_grid_cell_size_m"] = float(cell_m)
+
+            # A training-centred grid cannot recover a withheld spatial block.
+            # Reserve half the budget for a coarse, full-region screen; local
+            # windows remain for field-scale refinement around supported areas.
+            global_budget = max(1, int(max_grid_cells) - len(local_grid))
+            coarse_cell_m = max(
+                float(cell_m),
+                math.sqrt((lat_span_m * lon_span_m) / max(1.0, float(global_budget))),
+            )
+            coarse_lat_step = coarse_cell_m / 111_320.0
+            coarse_lon_step = coarse_cell_m / max(1.0, 111_320.0 * math.cos(math.radians(center_lat)))
+            global_rows = []
+            for lat_phase in (0.25, 0.75):
+                for lon_phase in (0.25, 0.75):
+                    coarse_lats = np.arange(lat_min + coarse_lat_step * lat_phase, lat_max, coarse_lat_step)
+                    coarse_lons = np.arange(lon_min + coarse_lon_step * lon_phase, lon_max, coarse_lon_step)
+                    global_rows.extend(
+                        {"latitude": float(lat), "longitude": float(lon)}
+                        for lat in coarse_lats for lon in coarse_lons
+                    )
+            global_grid = pd.DataFrame(global_rows).drop_duplicates(["latitude", "longitude"])
+            if not global_grid.empty:
+                # Filter before capping so shifted grids actually improve the
+                # chance of hitting islands and narrow coastal land.
+                global_grid = filter_to_land(global_grid, "latitude", "longitude", 0.0)
+            if len(global_grid) > global_budget:
+                global_grid = spatially_balanced_cap(
+                    global_grid.rename(columns={"latitude": "_latitude", "longitude": "_longitude"}), global_budget
+                ).rename(columns={"_latitude": "latitude", "_longitude": "longitude"})
+            if not global_grid.empty:
+                global_grid["_grid_stage"] = "regional_screen"
+                global_grid["_grid_cell_size_m"] = round(float(coarse_cell_m), 1)
+            grid = pd.concat([local_grid, global_grid], ignore_index=True, sort=False).drop_duplicates(
+                ["latitude", "longitude"], keep="first"
+            )
+            grid["macro_filter_basis"] = (
+                f"Hierarchical full-region screen ({coarse_cell_m / 1000.0:.1f} km cells) plus "
+                f"local refinement windows ({local_radius_m / 1000.0:.1f} km radius)"
+            )
         elif approx_cells > float(max_grid_cells):
             cell_m = cell_m * math.sqrt(approx_cells / max(1.0, float(max_grid_cells)))
             if cell_m <= 250:
@@ -4897,6 +4940,9 @@ def make_potential_survey_site_candidates(
             grid = pd.DataFrame(
                 [{"latitude": float(lat), "longitude": float(lon)} for lat in lat_vals for lon in lon_vals]
             )
+        if "_grid_stage" not in grid.columns:
+            grid["_grid_stage"] = "regional_screen" if approx_cells > float(max_grid_cells) else "single_scale"
+            grid["_grid_cell_size_m"] = float(cell_m)
     if grid.empty:
         return pd.DataFrame()
     # A search cell may legitimately meet a coastline. Requiring its full
@@ -4969,7 +5015,11 @@ def make_potential_survey_site_candidates(
             for var in env_vars:
                 scored[var] = grid_env[var].to_numpy()
             grid = grid.drop(columns=[c for c in ["environmental_distance_to_known", "analogue_score"] if c in grid.columns])
-            grid = grid.merge(scored, on=["latitude", "longitude"], how="inner")
+            # Keep coarse regional cells even when one or more environmental
+            # layers are unavailable there. Their habitat evidence remains NaN
+            # (unavailable), but they are still auditable exploration options
+            # and prevent complete-case raster gaps from collapsing the pool.
+            grid = grid.merge(scored, on=["latitude", "longitude"], how="left")
             grid["habitat_score"] = grid["analogue_score"]
             basis_prefix = "High-resolution local habitat analogue" if has_highres else "Built-in elevation-raster local analogue"
             terrain_source = str(highres_layers.get("dem_source") or "").strip()
@@ -5012,9 +5062,12 @@ def make_potential_survey_site_candidates(
         grid["access_score"] = np.nan
         grid["access_note"] = "Road/trail access not evaluated; verify in Google Maps and field conditions."
     grid["all_taxa_record_density"] = np.nan
-    grid["search_cell_radius_m"] = round(cell_m / 2.0, 1)
+    effective_cells = pd.to_numeric(
+        grid.get("_grid_cell_size_m", pd.Series(float(cell_m), index=grid.index)), errors="coerce"
+    ).fillna(float(cell_m))
+    grid["search_cell_radius_m"] = (effective_cells / 2.0).round(1)
     grid["requested_search_cell_size_m"] = round(requested_cell_m, 1)
-    grid["effective_search_cell_size_m"] = round(cell_m, 1)
+    grid["effective_search_cell_size_m"] = effective_cells.round(1)
     grid["resolution_decision_reason"] = resolution_decision.reason
     grid["resolution_data_quality"] = resolution_decision.data_quality
     grid["effective_grid_cells_evaluated"] = int(len(grid))
@@ -5049,17 +5102,36 @@ def make_potential_survey_site_candidates(
             "Local environmental contrast cell intended to test habitat limits or collect informative absence/edge data.",
         ),
     ]
+    if "_grid_stage" in grid.columns and grid["_grid_stage"].eq("regional_screen").any():
+        regional_grid = grid[grid["_grid_stage"].eq("regional_screen")].copy()
+        pools.append((
+            "Regional-screen",
+            regional_grid,
+            "habitat_score",
+            "Coarse full-region habitat screen retained before local refinement; use this zone to choose a compact follow-up area, not as a precise field coordinate.",
+        ))
     out_rows: list[pd.DataFrame] = []
     next_sid = int(start_site_id)
     for candidate_type, pool, score_col, reason in pools:
         if pool.empty:
             continue
-        pool = pool.sort_values([score_col, "survey_gap_score", "analogue_score"], ascending=False).head(int(max_candidates_per_type)).copy()
+        ranked_pool = pool.sort_values([score_col, "survey_gap_score", "analogue_score"], ascending=False)
+        if "_grid_stage" in ranked_pool.columns and ranked_pool["_grid_stage"].eq("regional_screen").any():
+            regional_slots = max(1, int(max_candidates_per_type) // 2)
+            regional = ranked_pool[ranked_pool["_grid_stage"].eq("regional_screen")].head(regional_slots)
+            regional_coords = set(zip(regional["latitude"], regional["longitude"]))
+            remainder = ranked_pool[
+                ~pd.Series(list(zip(ranked_pool["latitude"], ranked_pool["longitude"])), index=ranked_pool.index).isin(regional_coords)
+            ].head(max(0, int(max_candidates_per_type) - len(regional)))
+            pool = pd.concat([regional, remainder], ignore_index=True, sort=False).copy()
+        else:
+            pool = ranked_pool.head(int(max_candidates_per_type)).copy()
         n = len(pool)
         pool["site_id"] = range(next_sid, next_sid + n)
         next_sid += n
         pool["candidate_type"] = candidate_type
         pool["candidate_method"] = "Habitat-first grid cell"
+        pool["search_hierarchy_stage"] = pool.get("_grid_stage", pd.Series("single_scale", index=pool.index)).fillna("single_scale")
         pool["n_occurrences"] = 0
         pool["occurrence_support_score"] = pd.to_numeric(pool[score_col], errors="coerce").fillna(0.0).clip(0, 1).round(3)
         habitat_component = pd.to_numeric(pool.get("habitat_score", pool.get("analogue_score", 0.0)), errors="coerce").fillna(0.0).clip(0, 1)
@@ -5077,6 +5149,8 @@ def make_potential_survey_site_candidates(
             pool["priority_score"] = (0.65 * habitat_component + 0.15 * gap_component + 0.10 * access_component + 0.10 * macro_component).clip(0, 1).round(3)
         elif candidate_type == "Survey-gap":
             pool["priority_score"] = (0.45 * habitat_component + 0.35 * gap_component + 0.10 * access_component + 0.10 * macro_component).clip(0, 1).round(3)
+        elif candidate_type == "Regional-screen":
+            pool["priority_score"] = (0.75 * habitat_component + 0.15 * macro_component + 0.10 * access_component).clip(0, 1).round(3)
         else:
             pool["priority_score"] = (0.40 * contrast_component + 0.25 * habitat_component + 0.20 * gap_component + 0.10 * access_component + 0.05 * macro_component).clip(0, 1).round(3)
         basis = str(pool["habitat_basis"].iloc[0]) if "habitat_basis" in pool.columns and len(pool) else "habitat-first proxy"
@@ -6847,8 +6921,14 @@ def build_automatic_discover_bundle(
     taxon_metadata: Optional[dict[str, Any]] = None,
     survey_bounds: Optional[tuple[float, float, float, float]] = None,
     survey_features: Optional[list[dict[str, Any]]] = None,
+    candidate_generation_only: bool = False,
 ) -> dict[str, Any]:
-    """Run the no-parameter ACSP-Discover path after occurrence retrieval."""
+    """Run the no-parameter ACSP-Discover path after occurrence retrieval.
+
+    ``candidate_generation_only`` is reserved for ecological recovery
+    validation.  It stops before safety/access constraints and trip planning,
+    whose failures must not be counted as habitat-ranking failures.
+    """
     if occ_raw is None or occ_raw.empty:
         raise ValueError("No valid coordinate records were available for automatic planning.")
     warnings: list[str] = []
@@ -6987,6 +7067,13 @@ def build_automatic_discover_bundle(
             warnings.append("No habitat-first cells survived the automatic local search; plans use known anchors only.")
     except Exception as exc:
         warnings.append(f"Automatic habitat-first generation was unavailable: {exc}")
+
+    if candidate_generation_only:
+        return {
+            "potential_candidates": potential_candidates.copy(),
+            "known_candidates": known_candidates.copy(),
+            "warnings": warnings,
+        }
 
     all_candidates = pd.concat([known_candidates, potential_candidates], ignore_index=True, sort=False)
     try:
